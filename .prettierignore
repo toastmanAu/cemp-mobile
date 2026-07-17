@@ -1,0 +1,11 @@
+# Vendored reference code stays byte-identical to its source
+reference/
+
+# Lockfile
+pnpm-lock.yaml
+
+# Build output
+dist/
+coverage/
+target/
+node_modules/

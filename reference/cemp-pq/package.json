@@ -1,0 +1,26 @@
+{
+  "name": "cemp-pq",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CKB Post-Quantum Encrypted Messaging Protocol (vendored from ~/ecms/cemp-pq)",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./tx-builder": {
+      "default": "./tx-builder.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@ckb-ccc/core": "^1.12.0",
+    "@noble/hashes": "^1.8.0",
+    "@noble/post-quantum": "^0.2.1"
+  }
+}

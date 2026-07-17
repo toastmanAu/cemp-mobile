@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Rust
+target/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Mobile (populated when the React Native app is scaffolded)
+apps/android/android/.gradle/
+apps/android/android/app/build/
+apps/android/ios/Pods/

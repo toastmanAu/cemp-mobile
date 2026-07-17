@@ -1,0 +1,26 @@
+// CKB Post-Quantum Encrypted Messaging Protocol (CEMP-PQ)
+// Molecule Schema
+
+vector Bytes <byte>;
+
+table EncryptedMessage {
+    kem_ciphertext: Bytes; // ML-KEM-768 encapsulated key/ciphertext
+    nonce: Bytes;          // Symmetric encryption nonce (e.g., for AES-GCM or ChaCha20)
+    ciphertext: Bytes;      // Actual message payload encrypted with the KEM-derived key
+}
+
+table MessagePointer {
+    tx_hash: Bytes;        // 32-byte CKB Transaction Hash
+    index: uint32;         // Output index of the Message Cell
+}
+
+table Receipt {
+    message_hash: Bytes;   // blake2b hash of the Message Cell data
+    status: byte;          // 0x01 for success, etc.
+}
+
+table Profile {
+    ml_dsa_public_key: Bytes; // ML-DSA-65 public key (1952 bytes)
+    ml_kem_public_key: Bytes; // ML-KEM-768 public key (1184 bytes)
+    metadata: Bytes;          // Optional JSON or Molecule metadata (handle/name)
+}

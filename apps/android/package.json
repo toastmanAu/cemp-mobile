@@ -1,0 +1,6 @@
+{
+  "name": "@cemp/android-app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CEMP Mobile Android app (React Native). Bootstrapped during app implementation — see ckd.txt Phase 0 exit criteria and Phase 6."
+}

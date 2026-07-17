@@ -1,0 +1,9 @@
+[package]
+name = "cemp-message-type"
+description = "CEMP message type script (placeholder — on-chain script lands in a later phase)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib"]

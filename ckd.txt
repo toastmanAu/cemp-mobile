@@ -1,0 +1,1589 @@
+# CEMP Mobile: Android-First Post-Quantum Messaging on Nervos CKB
+
+## 1. Product definition
+
+CEMP Mobile is a direct-messaging application in which encrypted message transport is performed through Nervos CKB cells.
+
+The application should resemble a conventional private messenger:
+
+* Conversation list
+* Contact profiles and avatars
+* Text and image messages
+* Delivery and acknowledgement states
+* QR-based contact exchange
+* Local notifications
+* Searchable local message history
+
+Unlike a conventional messenger, there is no central messaging server holding user messages. Encrypted payloads are temporarily published to CKB, downloaded by the recipient, decrypted locally, and then reclaimed by the sender after acknowledgement.
+
+The blockchain is the transport and temporary availability layer. The phone is the permanent message store.
+
+The initial target is Android. The architecture must keep platform-specific services isolated so that an iOS client can later share the protocol, cryptography, transaction-building, database schema, and most UI logic.
+
+---
+
+# 2. Core principles
+
+## 2.1 Messaging application first
+
+The user should interact with CEMP Mobile as a messaging application, not as a blockchain explorer or general-purpose wallet.
+
+Blockchain details should normally be translated into familiar states:
+
+| Blockchain state                      | User-facing state     |
+| ------------------------------------- | --------------------- |
+| Transaction being assembled           | Preparing             |
+| Transaction submitted                 | Sending               |
+| Transaction in mempool                | Pending               |
+| Message cell committed                | Sent                  |
+| Recipient response references message | Received              |
+| Sender reclaims message cell          | Cleared               |
+| Transaction rejected                  | Failed                |
+| Insufficient CKB capacity             | Messaging balance low |
+
+Transaction hashes, cell outpoints, fees, lock scripts, and capacity details belong in an optional advanced details screen.
+
+## 2.2 Local-first storage
+
+Permanent user data is stored only on the device unless the user explicitly exports a backup.
+
+This includes:
+
+* Contacts
+* Contact names and notes
+* Contact avatars
+* Conversation history
+* Decrypted messages
+* Downloaded images
+* Drafts
+* Read state
+* Transaction mappings
+* Reclaim state
+* Profile metadata
+* Application preferences
+
+On-chain data should be considered temporary encrypted transport data.
+
+## 2.3 Sender-funded temporary storage
+
+The sender provides the CKB capacity needed to create:
+
+* Text message cells
+* Image manifest cells
+* CKBFS data cells
+* Any protocol metadata cells
+
+The sender retains authority to reclaim those cells.
+
+Recipients should not have to spend their own CKB merely to receive a message. Sending a response is a new outbound operation funded from the recipient’s own messaging float.
+
+## 2.4 Explicit wallet warning
+
+The wallet is an operational wallet for CEMP Mobile.
+
+The onboarding and wallet screens should state:
+
+> This wallet is intended to hold a limited CKB balance for messaging operations. It has not been designed, audited, or recommended as a primary wallet or long-term store of funds.
+
+The application should encourage a configurable maximum operational balance rather than encouraging users to deposit substantial funds.
+
+---
+
+# 3. Findings from the supplied projects
+
+The supplied projects establish a useful prototype foundation:
+
+* `cemp-pq` implements ML-KEM-768 encapsulation, AES-256-GCM payload encryption, ML-DSA-65 signing support and Molecule structures.
+* It has testnet examples for profile creation and encrypted message publication.
+* `ckb-mldsa-lock` supplies deployed and smoke-tested post-quantum lock variants.
+* ML-DSA-65 currently produces an approximately 5.3 KB witness.
+* The supplied ML-DSA deployment is explicitly not ready for mainnet.
+* The readiness checklist still requires fuzzing, cryptographic vector testing, external review, reproducible builds and a complete protocol specification.
+* The current benchmark documentation notes that the demonstrated signing digest covers the transaction hash rather than the complete production-grade CKB sighash-all construction.
+* `key-vault-wasm` provides useful patterns for password-based encrypted seed storage, Scrypt, HKDF, IndexedDB and secure buffer handling, but it is designed around SPHINCS+ and a custom multi-part mnemonic format.
+
+Consequently:
+
+1. Initial development should target CKB testnet.
+2. The application must not hard-code a single lock deployment into business logic.
+3. The key vault needs an ML-DSA/ML-KEM-specific implementation.
+4. Standard BIP39 compatibility should not reuse the custom 36/54/72-word SPHINCS+ mnemonic system.
+5. A security review and upgraded transaction signing implementation are hard gates before mainnet.
+
+---
+
+# 4. Proposed system architecture
+
+## 4.1 Recommended application stack
+
+For an Android-first application that must later support iOS:
+
+### Application layer
+
+* React Native with TypeScript
+* Native Android modules in Kotlin where required
+* Native iOS modules in Swift later
+* React Navigation
+* TanStack Query or a small purpose-built state synchronisation layer
+* Zustand or Redux Toolkit for transient application state
+
+React Native is a practical fit because the supplied CEMP code and CCC integration are already TypeScript-based.
+
+### Shared protocol package
+
+Create a standalone TypeScript package:
+
+```text
+packages/cemp-core
+```
+
+It should contain:
+
+* Protocol schemas
+* Message serialization
+* Payload encryption and decryption
+* Transaction construction
+* Cell discovery
+* Reclaim transaction construction
+* Receipt processing
+* Conversation identifiers
+* Network configuration
+* CKBFS manifest handling
+* Compatibility tests and vectors
+
+It must not import React Native UI modules.
+
+### Native security package
+
+Create:
+
+```text
+packages/cemp-secure-vault
+```
+
+With a TypeScript-facing interface and native implementations:
+
+* Android Keystore integration
+* iOS Keychain/Secure Enclave-compatible wrapping later
+* Encrypted vault file
+* Password/PIN derivation
+* Biometric unlock
+* Memory clearing where practical
+* Transaction signing without exporting secret keys to ordinary JavaScript
+
+For the earliest testnet prototype, a WASM or TypeScript signer can be used behind the same interface, but production signing should migrate into audited Rust or native code.
+
+### Local database
+
+Use encrypted SQLite rather than AsyncStorage for core data.
+
+Recommended logical components:
+
+* SQLite
+* SQLCipher or equivalent database encryption
+* Attachment files encrypted separately
+* Encryption key wrapped by Android Keystore
+* Database migrations with explicit schema versions
+
+---
+
+## 4.2 Service boundaries
+
+```text
+UI
+ ├── Conversations
+ ├── Contacts
+ ├── Wallet
+ ├── Settings
+ └── Diagnostics
+       │
+Application services
+ ├── MessageService
+ ├── ContactService
+ ├── WalletService
+ ├── SyncService
+ ├── ReclaimService
+ └── NotificationService
+       │
+Shared protocol
+ ├── CEMP codec
+ ├── Crypto provider
+ ├── Transaction builders
+ ├── Cell query provider
+ ├── Receipt state machine
+ └── CKBFS adapter
+       │
+Infrastructure
+ ├── CKB RPC
+ ├── CKB indexer
+ ├── Local encrypted database
+ ├── Android background worker
+ └── Android secure vault
+```
+
+Every major component should be interface-driven.
+
+For example:
+
+```ts
+interface CryptoProvider {
+  generateIdentity(seed: Uint8Array): Promise<IdentityKeys>;
+  encryptForRecipient(
+    plaintext: Uint8Array,
+    recipientKemPublicKey: Uint8Array,
+    context: EncryptionContext
+  ): Promise<EncryptedEnvelope>;
+  decryptEnvelope(
+    envelope: EncryptedEnvelope,
+    recipientKemSecretKeyRef: KeyReference
+  ): Promise<Uint8Array>;
+  signTransaction(
+    transaction: CkbTransaction,
+    signingKeyRef: KeyReference
+  ): Promise<CkbTransaction>;
+}
+```
+
+---
+
+# 5. Identity and wallet specification
+
+## 5.1 One mnemonic, separated purposes
+
+The wallet must use a standards-compliant BIP39 mnemonic:
+
+* 12 or 24 English words
+* Valid BIP39 checksum
+* Optional BIP39 passphrase
+* Full import/export compatibility at the mnemonic level
+
+The application should derive one root seed using the standard BIP39 seed function and then derive independent domain-separated sub-seeds.
+
+Example:
+
+```text
+BIP39 seed
+ ├── CEMP/CKB/ML-DSA/identity/v1
+ ├── CEMP/CKB/ML-KEM/messaging/v1
+ ├── CEMP/LOCAL/database/v1
+ ├── CEMP/CONTACT/exchange/v1
+ └── CEMP/BACKUP/encryption/v1
+```
+
+Use HKDF-SHA-256 or HKDF-BLAKE2b with explicit domain strings.
+
+Do not use non-hardened BIP32 derivation for post-quantum private keys. BIP39 is the recovery container; domain-separated HKDF is the deterministic key derivation mechanism.
+
+## 5.2 Generated key material
+
+Initial identity:
+
+* ML-DSA-65 signing key pair
+* ML-KEM-768 encryption key pair
+* Optional classical compatibility key only where necessary for tooling or migration
+* Random local database key
+* Random attachment encryption key
+
+The ML-DSA and ML-KEM seeds must be independently derived. They must not reuse the same bytes directly.
+
+## 5.3 On-chain profile
+
+Each user may create one discoverable CEMP profile cell containing:
+
+* Protocol version
+* ML-DSA algorithm and parameter identifiers
+* ML-DSA public key
+* ML-KEM algorithm and parameter identifiers
+* ML-KEM public key
+* Messaging address or lock script hash
+* Supported protocol versions
+* Supported attachment formats
+* Optional display handle
+* Optional profile icon hash or small icon reference
+* Key creation epoch
+* Key rotation sequence
+* Previous profile reference when rotated
+* Revocation state
+
+Sensitive contact information must not be placed in this profile.
+
+The stable identity should be the profile Type ID rather than a mutable display name.
+
+## 5.4 Address display
+
+The app should display:
+
+* Human-readable CKB address
+* CEMP Profile ID
+* QR code containing a versioned contact bundle
+
+Contact bundle example:
+
+```json
+{
+  "protocol": "cemp-contact",
+  "version": 1,
+  "network": "ckb_testnet",
+  "profileTypeId": "0x...",
+  "lockScriptHash": "0x...",
+  "address": "ckt1...",
+  "fingerprint": "ABCD-1234-..."
+}
+```
+
+The QR should not contain secret material.
+
+## 5.5 Wallet functionality
+
+Required wallet operations:
+
+* Create wallet
+* Import BIP39 mnemonic
+* Export mnemonic after authentication
+* Display CKB address
+* Display confirmed balance
+* Display pending balance
+* Receive CKB
+* Send CKB
+* Scan payment QR
+* Display transaction history
+* Estimate fees
+* Warn about low messaging capacity
+* Reserve capacity for pending messages
+* Reclaim eligible message and image cells
+* Consolidate fragmented cells
+* Change RPC and indexer endpoints
+* Switch between testnet and supported future networks
+
+The wallet should distinguish:
+
+```text
+Total balance
+Available balance
+Reserved for pending messages
+Reclaimable capacity
+Pending transaction capacity
+```
+
+---
+
+# 6. Revised CEMP message cell model
+
+The prototype’s separate recipient-owned notification cell conflicts with prompt sender reclamation. If a cell is locked to the recipient, the sender cannot directly reclaim its capacity.
+
+The production design should instead use sender-owned cells with recipient-indexable type data.
+
+## 6.1 Message cell
+
+A message cell should have:
+
+### Lock
+
+The sender’s ML-DSA lock.
+
+This ensures the sender retains spending and reclaim authority.
+
+### Type script
+
+A CEMP message type script, or initially a consistent indexing type convention, containing enough information to query messages addressed to a recipient without revealing excessive information.
+
+Recommended type arguments:
+
+```text
+version
+recipient_route_tag
+conversation_tag
+message_nonce
+```
+
+The exact recipient lock hash should not necessarily be exposed directly. A route tag can be derived:
+
+```text
+route_tag = blake2b(
+  "CEMP-ROUTE-V1" ||
+  recipient_profile_id ||
+  routing_epoch
+)
+```
+
+This still permits traffic analysis, so it should be documented as pseudonymous routing rather than metadata-private messaging.
+
+### Cell data
+
+The cell data should contain a versioned encrypted envelope:
+
+```text
+CempEnvelopeV1
+ ├── protocol_version
+ ├── content_type
+ ├── message_id
+ ├── conversation_id
+ ├── sender_profile_id
+ ├── recipient_profile_id or encrypted identity block
+ ├── created_at_client
+ ├── reply_to
+ ├── expiry_hint
+ ├── kem_ciphertext
+ ├── nonce
+ ├── authenticated_header
+ └── encrypted_payload
+```
+
+Fields that need not be public should be placed inside the encrypted payload.
+
+## 6.2 Encrypted payload
+
+```text
+EncryptedMessagePayloadV1
+ ├── message_id
+ ├── body_type
+ ├── text
+ ├── attachment_manifests[]
+ ├── reply_to_message_id
+ ├── reply_to_outpoint
+ ├── client_timestamp
+ ├── sender_device_id
+ ├── receipt_request
+ └── padding
+```
+
+Authenticated encryption additional data should bind:
+
+* Protocol version
+* Network
+* Sender profile
+* Recipient profile
+* Message ID
+* Conversation ID
+* Payload type
+* CKB output identity where available
+
+## 6.3 Conversation identifier
+
+For one-to-one conversations:
+
+```text
+conversation_id = blake2b(
+  "CEMP-CONVERSATION-V1" ||
+  sort(profile_id_A, profile_id_B)
+)
+```
+
+This provides deterministic conversation association.
+
+A separate routing tag should be rotated periodically if reducing long-term linkability becomes a priority.
+
+---
+
+# 7. Message lifecycle
+
+## 7.1 Sending
+
+1. User composes a message.
+2. App resolves the contact’s current Profile Cell.
+3. App verifies the saved profile fingerprint and detects key changes.
+4. Message ID and client nonce are generated.
+5. Payload is encrypted using the recipient’s ML-KEM key.
+6. Transaction builder creates a sender-owned CEMP message cell.
+7. The sender signs using ML-DSA.
+8. Transaction is broadcast.
+9. Local message is stored immediately as `submitting`.
+10. Sync worker follows the transaction until committed.
+11. Status becomes `available_on_chain`.
+
+## 7.2 Receiving
+
+1. Recipient sync worker queries for CEMP cells matching its active route tags.
+2. Unknown outpoints are downloaded.
+3. Envelope structure and size limits are validated before decryption.
+4. ML-KEM decapsulation and AEAD decryption are attempted.
+5. Sender identity and profile state are checked.
+6. Message is saved in the encrypted local database.
+7. Attachments are queued for download.
+8. Message is displayed.
+9. A local notification is generated.
+10. The app schedules a receipt or includes it in the recipient’s next response.
+
+Reading a message must not spend the message cell.
+
+## 7.3 Response as acknowledgement
+
+A response message includes:
+
+* `reply_to_message_id`
+* `reply_to_outpoint`
+* Receipt status for the original message
+* Optional attachment receipt hashes
+* Response body
+
+When the original sender receives this response:
+
+1. The response is decrypted.
+2. The referenced outgoing message is found locally.
+3. Its state becomes `acknowledged`.
+4. Its message cell and related CKBFS cells become eligible for reclaim.
+5. Reclaim service batches eligible cells into a transaction.
+6. After the reclaim transaction commits, the original message becomes `reclaimed`.
+
+## 7.4 Recipient-side cleanup monitoring
+
+The user who sent the response should monitor the original message outpoint.
+
+State sequence:
+
+```text
+received
+→ response_sent
+→ awaiting_sender_reclaim
+→ source_cell_spent
+→ local_reclaim_marker_removed
+```
+
+When `get_live_cell` or indexer state shows that the initial sender has spent the original cell:
+
+* Mark the remote transport copy as reclaimed.
+* Delete the local outpoint-monitor record.
+* Remove temporary encrypted transport blobs.
+* Retain the locally decrypted message unless the user has enabled disappearing local messages.
+
+“Mark itself for deletion” should apply to the transport-monitoring record and temporary downloaded chain data, not automatically to the user’s permanent conversation history.
+
+## 7.5 No-response fallback
+
+Some messages may never receive a response.
+
+The sender therefore needs:
+
+* Manual reclaim
+* Reclaim after recipient read receipt
+* Reclaim after configurable age
+* Reclaim all eligible cells
+* Emergency capacity recovery
+
+A default expiry policy might be:
+
+* Reclaim after explicit acknowledgement: immediately or in next batch
+* Reclaim unacknowledged text after 14 days
+* Reclaim unacknowledged images after 3–7 days
+* Ask before reclaiming messages that may not have been downloaded
+
+Expiry is a local policy hint, not proof that the recipient received the message.
+
+---
+
+# 8. Receipt model
+
+Receipt statuses:
+
+```text
+0x00 unknown
+0x01 downloaded
+0x02 decrypted
+0x03 displayed
+0x04 replied
+0x05 attachment_downloaded
+0x06 rejected
+```
+
+For privacy, the default user-facing system should send only:
+
+* `received`
+* `replied`
+
+Read receipts should be opt-in.
+
+Receipts can be:
+
+1. Included in the next response message.
+2. Batched into a lightweight receipt message.
+3. Sent immediately when the user has enabled delivery receipts.
+
+An acknowledgement cell should also remain sender-owned by the acknowledgement sender, making it reclaimable after the other party responds or after expiry.
+
+---
+
+# 9. CKBFS image transport
+
+## 9.1 Client-side preprocessing
+
+Before encryption or upload:
+
+1. Remove unsupported metadata.
+2. Correct orientation.
+3. Preserve aspect ratio.
+4. Resize to a respectful maximum.
+5. Re-encode.
+6. Generate a thumbnail.
+7. Show the expected CKB capacity and fee before sending.
+
+Suggested initial limits:
+
+* Maximum longest edge: 1280 pixels
+* Preferred chat image longest edge: 960 pixels
+* Thumbnail longest edge: 320 pixels
+* Preferred format: WebP
+* JPEG fallback for photographic content
+* Maximum compressed image target: 300–500 KB
+* Hard initial protocol maximum: 1 MB
+* Animated images: unsupported in version 1
+
+The compressor should progressively reduce:
+
+1. Dimensions
+2. Quality
+3. Chroma detail
+
+It should not distort aspect ratio.
+
+## 9.2 Encryption before CKBFS
+
+Images must be encrypted before their chunks are published.
+
+Process:
+
+```text
+resized image
+→ random attachment key
+→ AEAD encryption
+→ encrypted chunking
+→ CKBFS cells
+→ encrypted manifest in message payload
+```
+
+The attachment key is placed only inside the message’s ML-KEM-protected encrypted payload.
+
+CKBFS should never receive plaintext private images.
+
+## 9.3 Attachment manifest
+
+```text
+AttachmentManifestV1
+ ├── attachment_id
+ ├── ckbfs_root
+ ├── chunk_outpoints[]
+ ├── encrypted_size
+ ├── plaintext_size
+ ├── mime_type
+ ├── width
+ ├── height
+ ├── thumbnail
+ ├── content_hash
+ ├── cipher_hash
+ ├── encryption_nonce
+ ├── encryption_algorithm
+ └── reclaim_group_id
+```
+
+Where possible, use a compact root/manifest reference rather than listing every outpoint inside the main message.
+
+## 9.4 Receiving images
+
+1. Decrypt message manifest.
+2. Validate declared size against limits.
+3. Fetch CKBFS chunks.
+4. Validate encrypted chunk hashes.
+5. Reassemble encrypted image.
+6. Decrypt locally.
+7. Validate plaintext content hash.
+8. Decode in a sandboxed image pipeline.
+9. Store encrypted local copy.
+10. Render from local storage.
+11. Send attachment receipt.
+12. Remove raw downloaded chunk cache.
+
+## 9.5 Image reclaiming
+
+The original image sender owns:
+
+* CKBFS data cells
+* Manifest cells
+* Main message cell
+
+After an attachment receipt or response:
+
+* Add all related cells to one reclaim group.
+* Build a batched reclaim transaction.
+* Return capacity to the sender’s operational wallet.
+* Mark the attachment transport state as reclaimed.
+
+The recipient monitors the manifest or root cell and removes its reclaim-monitor record once spent.
+
+---
+
+# 10. Contact system
+
+## 10.1 Adding contacts
+
+Supported methods:
+
+* Scan CEMP contact QR
+* Paste CKB address
+* Paste CEMP Profile ID
+* Import contact bundle
+* Share own contact QR
+* Later: Android contact-sheet integration, without uploading data
+
+## 10.2 Contact record
+
+Locally encrypted contact data:
+
+```text
+Contact
+ ├── local_id
+ ├── profile_type_id
+ ├── current_ckb_address
+ ├── current_lock_script
+ ├── ml_dsa_public_key
+ ├── ml_kem_public_key
+ ├── fingerprint
+ ├── display_name
+ ├── nickname
+ ├── avatar_path
+ ├── notes
+ ├── trust_state
+ ├── verified_at
+ ├── key_rotation_sequence
+ ├── blocked
+ └── created_at / updated_at
+```
+
+Profile icons selected by the user remain local by default.
+
+A contact’s on-chain profile icon should not silently replace a user-assigned local icon.
+
+## 10.3 Trust states
+
+* Unverified
+* QR verified
+* Fingerprint verified
+* Key changed
+* Revoked
+* Blocked
+
+Unexpected key changes should interrupt sending until acknowledged.
+
+---
+
+# 11. Local database model
+
+Core tables:
+
+```text
+wallets
+wallet_balances
+accounts
+profiles
+contacts
+conversations
+messages
+message_chain_refs
+attachments
+attachment_chunks
+receipts
+outgoing_transactions
+reclaim_groups
+watched_outpoints
+sync_cursors
+network_endpoints
+security_events
+settings
+```
+
+Suggested message states:
+
+```text
+draft
+queued
+encrypting
+building_transaction
+awaiting_signature
+submitting
+pending
+committed
+available_on_chain
+downloaded_by_recipient
+acknowledged
+reclaim_queued
+reclaim_pending
+reclaimed
+expired
+failed
+```
+
+Incoming states:
+
+```text
+discovered
+downloading
+decrypting
+received
+displayed
+response_queued
+response_sent
+awaiting_remote_reclaim
+remote_reclaimed
+invalid
+```
+
+All state transitions should be idempotent and persisted.
+
+---
+
+# 12. Background synchronisation
+
+Android background work should use WorkManager.
+
+Workers:
+
+* Profile refresh worker
+* Incoming message discovery worker
+* Pending transaction worker
+* Watched outpoint worker
+* Attachment download worker
+* Receipt sender worker
+* Reclaim batch worker
+* Balance refresh worker
+* Database maintenance worker
+
+Because Android may delay background jobs, the app should also perform an immediate synchronisation when:
+
+* Opened
+* Returned to foreground
+* Conversation opened
+* User pulls to refresh
+* User sends a message
+* Network becomes available
+
+Do not promise real-time delivery equivalent to a push-server messenger. Initial delivery latency depends on:
+
+* Block production
+* Transaction inclusion
+* Indexer synchronisation
+* Android background execution
+
+An optional notification relay could eventually report only that new route-tag activity exists, without carrying message content. It must not be required for protocol operation.
+
+---
+
+# 13. Network layer
+
+Define provider interfaces:
+
+```ts
+interface CkbRpcProvider {
+  getTipHeader(): Promise<Header>;
+  sendTransaction(tx: Transaction): Promise<Hash>;
+  getTransaction(hash: Hash): Promise<TransactionStatus>;
+  getLiveCell(outPoint: OutPoint): Promise<LiveCellStatus>;
+}
+
+interface CkbIndexerProvider {
+  findCells(query: CellQuery): AsyncIterable<Cell>;
+  findTransactions(query: TransactionQuery): AsyncIterable<IndexedTransaction>;
+}
+
+interface CkbfsProvider {
+  buildUpload(data: Uint8Array, owner: Script): Promise<CkbfsUploadPlan>;
+  fetch(manifest: CkbfsManifest): Promise<Uint8Array>;
+  buildReclaim(manifest: CkbfsManifest): Promise<ReclaimPlan>;
+}
+```
+
+Support:
+
+* Bundled public testnet endpoints
+* User-configurable RPC/indexer
+* Multiple fallback endpoints
+* Health checking
+* Endpoint pinning
+* Local node support
+* Tor/proxy support as a later privacy feature
+
+Never silently switch network during wallet operation.
+
+---
+
+# 14. Cryptographic requirements
+
+## 14.1 Version 1 algorithms
+
+* Transaction authorization: ML-DSA-65
+* Recipient key encapsulation: ML-KEM-768
+* Payload encryption: AES-256-GCM
+* KDF: HKDF-SHA-256 or carefully specified BLAKE2b KDF
+* Hashing: CKB-compatible BLAKE2b-256 where chain compatibility is required
+* Local password derivation: Argon2id preferred; Scrypt acceptable where implementation constraints apply
+* Randomness: operating-system CSPRNG only
+
+The current prototype’s “shared secret directly through personalized BLAKE2b” construction should be replaced by a formally specified HKDF construction.
+
+Example:
+
+```text
+PRK = HKDF-Extract(
+  salt = envelope_nonce,
+  IKM = ml_kem_shared_secret
+)
+
+message_key = HKDF-Expand(
+  PRK,
+  "CEMP-MESSAGE-KEY-V1" || sender_id || recipient_id,
+  32
+)
+```
+
+## 14.2 Domain separation
+
+Distinct domain strings must be used for:
+
+* ML-DSA transaction signatures
+* Profile signatures
+* Contact bundle signatures
+* Conversation IDs
+* Routing tags
+* Message IDs
+* Payload encryption keys
+* Attachment encryption keys
+* Local backup encryption
+* Device pairing
+
+## 14.3 Transaction signing gate
+
+Before mainnet, replace the prototype transaction-hash-only signing path with the exact reviewed CKB sighash-all algorithm expected by the deployed lock.
+
+Tests must prove that signing commits to:
+
+* Raw transaction
+* Relevant witness groups
+* Input ordering
+* Output capacities
+* Output locks
+* Output type scripts
+* Output data
+* Cell dependencies
+* Header dependencies
+
+## 14.4 Algorithm agility
+
+Every serialized object must identify:
+
+* Algorithm family
+* Parameter set
+* Protocol version
+* Serialization version
+
+Do not assume ML-DSA-65 and ML-KEM-768 will remain the only choices.
+
+---
+
+# 15. Privacy limitations
+
+The application provides payload confidentiality but does not automatically hide blockchain metadata.
+
+Observers may infer:
+
+* That a message-like cell was created
+* Cell size
+* Transaction timing
+* Funding source
+* Reclaim timing
+* Repeated route-tag activity
+* Probable relationships between transaction participants
+* Attachment size ranges
+
+The product must not claim to provide Monero-like metadata privacy.
+
+Potential later mitigations:
+
+* Rotating routing tags
+* Message padding buckets
+* Reclaim batching
+* Delayed reclaim windows
+* Coin selection designed to reduce linkage
+* Multiple derived operational accounts
+* Off-chain rendezvous combined with on-chain settlement
+* Fiber-based transport modes
+* Private RPC access
+* Tor support
+
+---
+
+# 16. User interface specification
+
+## 16.1 Main navigation
+
+Bottom navigation:
+
+1. Chats
+2. Contacts
+3. Wallet
+4. Settings
+
+## 16.2 Chats
+
+Conversation list shows:
+
+* Contact avatar
+* Contact name
+* Last local message preview
+* Relative timestamp
+* Unread count
+* Pending/reclaim warning where necessary
+
+Conversation screen:
+
+* Familiar left/right message bubbles
+* Text and image messages
+* Reply preview
+* Delivery state
+* Date separators
+* Local-only deletion
+* On-chain transport details through long press
+* Compose box
+* Image picker
+* Send button
+* Low-float warning
+
+## 16.3 Wallet
+
+Wallet home:
+
+* Available CKB
+* Reserved CKB
+* Reclaimable CKB
+* Pending capacity
+* Receive
+* Send
+* Add funds
+* Reclaim now
+* Consolidate
+
+Use “Messaging balance” as the primary label, with “CKB wallet balance” in details.
+
+## 16.4 Reclaim centre
+
+Provide a dedicated advanced screen:
+
+* Acknowledged message cells
+* Expired message cells
+* Image reclaim groups
+* Estimated returned capacity
+* Estimated fee
+* Automatic reclaim settings
+* Failed reclaim transactions
+
+## 16.5 Security centre
+
+* Backup status
+* Verify mnemonic
+* Change PIN/password
+* Enable biometrics
+* Auto-lock period
+* Export diagnostics
+* View active profile
+* Verify contact fingerprints
+* Revoke local session
+* Wipe wallet
+
+---
+
+# 17. MVP scope
+
+## Included
+
+* Android application
+* Testnet only
+* BIP39 wallet creation and import
+* ML-DSA-65 lock support
+* ML-KEM-768 message encryption
+* AES-256-GCM message payloads
+* Profile Cell creation and lookup
+* QR contact exchange
+* Local contacts and avatars
+* One-to-one text messaging
+* Sender-owned message cells
+* Response-linked acknowledgements
+* Sender reclaiming
+* Recipient outpoint monitoring
+* Encrypted SQLite message storage
+* Basic CKB receive/send
+* RPC/indexer configuration
+* Manual and automatic sync
+* Manual and batched reclaim
+* Clear testnet and experimental warnings
+
+## Excluded from first MVP
+
+* Mainnet
+* Group chats
+* Voice or video
+* Audio messages
+* Multi-device synchronisation
+* Push notification relay
+* Contact discovery by phone number
+* Disappearing local messages
+* CKBFS images
+* iOS
+* Hardware wallet integration
+* Account recovery beyond mnemonic
+* Metadata privacy claims
+
+Images should be phase two, after the complete text lifecycle and reclaim model are stable.
+
+---
+
+# 18. Implementation plan for a coding agent
+
+## Phase 0: Repository preparation
+
+Create a monorepo:
+
+```text
+cemp-mobile/
+├── apps/
+│   └── android/
+├── packages/
+│   ├── cemp-core/
+│   ├── cemp-ckb/
+│   ├── cemp-crypto/
+│   ├── cemp-database/
+│   ├── cemp-secure-vault/
+│   ├── cemp-ui/
+│   └── cemp-test-vectors/
+├── contracts/
+│   ├── cemp-message-type/
+│   └── deployment/
+├── tools/
+│   ├── devnet/
+│   ├── faucet-helper/
+│   └── protocol-inspector/
+└── docs/
+    ├── protocol/
+    ├── architecture/
+    ├── threat-model/
+    └── adr/
+```
+
+Tasks:
+
+1. Import the supplied CEMP-PQ code as reference, not as unreviewed production code.
+2. Pin dependencies.
+3. Configure TypeScript strict mode.
+4. Configure ESLint, formatting and unit tests.
+5. Add Rust workspace if the secure vault or crypto bridge uses Rust.
+6. Establish Android debug and release build variants.
+7. Add testnet configuration.
+8. Add architecture decision records.
+
+Exit criteria:
+
+* Android shell launches.
+* Shared packages compile independently.
+* Unit tests run in CI.
+* No wallet or cryptographic secret is stored yet.
+
+---
+
+## Phase 1: Formalise protocol version 1
+
+Tasks:
+
+1. Write `CEMP-PROTOCOL-V1.md`.
+2. Define every byte-level structure.
+3. Replace manually scattered Molecule offsets with generated or centrally tested codecs.
+4. Define:
+
+   * Profile
+   * Message envelope
+   * Encrypted payload
+   * Receipt
+   * Attachment manifest
+   * Reclaim group
+5. Add strict maximum lengths.
+6. Add protocol version and algorithm identifiers.
+7. Define malformed-input behaviour.
+8. Produce golden serialization vectors.
+9. Produce cross-runtime TypeScript/Rust vectors.
+10. Document metadata leakage.
+
+Exit criteria:
+
+* Identical vectors pass in all implementations.
+* Fuzz-style malformed inputs fail safely.
+* No transaction code depends on UI models.
+
+---
+
+## Phase 2: Build the cryptographic core
+
+Tasks:
+
+1. Wrap ML-DSA-65 and ML-KEM-768 behind `CryptoProvider`.
+2. Replace direct BLAKE2b shared-secret derivation with specified HKDF.
+3. Implement AES-256-GCM with authenticated headers.
+4. Add domain separation constants.
+5. Add deterministic identity derivation from BIP39 seed.
+6. Verify that the ML-DSA public and secret keys generated from derived seed bytes match expected library behaviour.
+7. Add zeroisation in Rust/native memory where available.
+8. Create tests for:
+
+   * Encrypt/decrypt
+   * Wrong recipient
+   * Modified ciphertext
+   * Modified nonce
+   * Modified authenticated data
+   * Truncated payload
+   * Oversized payload
+   * Key rotation
+9. Benchmark low- and mid-range Android devices.
+
+Exit criteria:
+
+* No plaintext survives in temporary files.
+* Altered envelopes are rejected.
+* Test vectors are deterministic where appropriate.
+* Randomized encryption produces unique ciphertext.
+
+---
+
+## Phase 3: Secure wallet vault
+
+Tasks:
+
+1. Implement 12/24-word standard BIP39 generation.
+2. Implement mnemonic import and checksum validation.
+3. Derive separate ML-DSA and ML-KEM seeds using HKDF.
+4. Store encrypted root seed in the vault.
+5. Wrap database encryption key with Android Keystore.
+6. Add PIN/password unlock.
+7. Add optional biometric unlock.
+8. Add automatic lock after inactivity.
+9. Add secure mnemonic reveal flow.
+10. Add mnemonic confirmation test.
+11. Add complete wallet wipe.
+12. Ensure logs never contain mnemonic, seed, secret key, plaintext or decrypted database key.
+
+Exit criteria:
+
+* Reinstall without mnemonic cannot recover the wallet.
+* Restoring the same mnemonic recreates the same identity.
+* Locking the app removes usable key material from ordinary application state.
+* Database cannot be opened without the wrapped key.
+
+---
+
+## Phase 4: CKB wallet foundation
+
+Tasks:
+
+1. Implement ML-DSA signer adapter.
+2. Implement address generation.
+3. Implement indexer cell collection.
+4. Implement fee estimation.
+5. Implement CKB send transaction.
+6. Implement incoming transfer history.
+7. Implement balance categories.
+8. Implement pending transaction monitoring.
+9. Implement cell consolidation.
+10. Add testnet faucet instructions.
+11. Display the experimental operational-wallet warning.
+
+Critical task:
+
+Reconcile the signer implementation with the exact lock version being used. Do not assume the prototype signer and newest deployed lock share identical witness encoding or signing rules.
+
+Exit criteria:
+
+* Wallet can receive testnet CKB.
+* Wallet can send testnet CKB.
+* Pending and committed balances reconcile.
+* Restarting the app does not lose pending transaction state.
+
+---
+
+## Phase 5: Profile Cell support
+
+Tasks:
+
+1. Finalise profile schema.
+2. Build Profile Cell creation transaction.
+3. Save Type ID locally.
+4. Query profiles by Type ID.
+5. Validate profile field lengths.
+6. Implement profile refresh.
+7. Implement profile key-rotation chain.
+8. Add local fingerprint generation.
+9. Create contact QR bundle.
+10. Verify QR contact import.
+
+Exit criteria:
+
+* Two clean installations can exchange QR codes.
+* Each can resolve and validate the other’s Profile Cell.
+* Unexpected profile key changes generate a blocking warning.
+
+---
+
+## Phase 6: Local database and messenger shell
+
+Tasks:
+
+1. Create database migrations.
+2. Build contact repository.
+3. Build conversation repository.
+4. Build message repository.
+5. Build attachment repository.
+6. Build watched-outpoint repository.
+7. Implement conversation list.
+8. Implement contact list.
+9. Implement contact edit screen.
+10. Implement chat composer.
+11. Implement message bubble states.
+12. Implement local notification channels.
+13. Add database backup/export design, but do not expose unsafe plaintext export.
+
+Exit criteria:
+
+* Local conversations work without blockchain transport.
+* App restart preserves all state.
+* Contact avatars and notes remain local and encrypted.
+
+---
+
+## Phase 7: Text message publication
+
+Tasks:
+
+1. Implement message ID generation.
+2. Resolve recipient Profile Cell.
+3. Build encrypted payload.
+4. Build sender-owned message cell.
+5. Add recipient route tag.
+6. Sign and submit.
+7. Persist transaction and outpoint mappings.
+8. Monitor transaction status.
+9. Map failures to user-readable errors.
+10. Implement safe retries without duplicate logical messages.
+
+Use an idempotency key:
+
+```text
+logical_message_id
+```
+
+A retry may produce a new transaction hash but must remain the same message in the local UI.
+
+Exit criteria:
+
+* Device A sends to Device B.
+* Device B discovers and decrypts.
+* Device A sees committed state.
+* Duplicate indexing does not create duplicate chat messages.
+
+---
+
+## Phase 8: Response and reclaim lifecycle
+
+Tasks:
+
+1. Add `reply_to_message_id`.
+2. Add `reply_to_outpoint`.
+3. Add receipt data.
+4. Process incoming response acknowledgements.
+5. Queue original outgoing cell for reclaim.
+6. Build batch reclaim transactions.
+7. Track reclaim transaction status.
+8. Return capacity accounting to available balance.
+9. On the responding device, create a watched-outpoint record.
+10. Detect when the original cell is spent.
+11. Remove the watched record and temporary chain data.
+12. Preserve decrypted local chat history.
+
+Exit criteria:
+
+* A sends message to B.
+* B replies.
+* A receives reply.
+* A reclaims original message cell.
+* B detects the original cell is spent.
+* Both local histories remain readable.
+* Both operational balances reconcile.
+
+This is the first true end-to-end MVP milestone.
+
+---
+
+## Phase 9: Background operation
+
+Tasks:
+
+1. Add WorkManager tasks.
+2. Add network constraints.
+3. Add exponential retry.
+4. Add sync cursor persistence.
+5. Add foreground catch-up sync.
+6. Add battery-conscious polling intervals.
+7. Add endpoint failure rotation.
+8. Add notification generation.
+9. Prevent concurrent workers from processing the same outpoint.
+10. Add database locks or leases for reclaim jobs.
+
+Exit criteria:
+
+* Messages are discovered after the app has been backgrounded.
+* Reboot does not lose scheduled work.
+* Duplicate workers do not produce duplicate responses or reclaim transactions.
+
+---
+
+## Phase 10: CKBFS images
+
+Tasks:
+
+1. Implement image picker.
+2. Strip metadata.
+3. Resize with preserved aspect ratio.
+4. Encode WebP/JPEG.
+5. Enforce dimensions and byte limits.
+6. Show estimated capacity cost.
+7. Encrypt image before chunking.
+8. Upload encrypted chunks through CKBFS.
+9. Create encrypted attachment manifest.
+10. Send manifest in message.
+11. Download and validate chunks.
+12. Decrypt and save locally.
+13. Send attachment receipt.
+14. Reclaim message, manifest and chunks as one group.
+15. Detect remote reclaim and remove temporary chain cache.
+
+Exit criteria:
+
+* A sends a resized image.
+* No plaintext image appears on-chain.
+* B renders the locally saved image.
+* A reclaims every related cell.
+* No orphan CKBFS cell remains in test scenarios.
+
+---
+
+## Phase 11: Hardening
+
+Tasks:
+
+1. Threat-model every trust boundary.
+2. Fuzz all parsers.
+3. Test corrupted indexer responses.
+4. Test malicious cell data.
+5. Test oversized image declarations.
+6. Test decompression bombs.
+7. Test repeated and replayed messages.
+8. Test route-tag spam.
+9. Add per-contact and global rate limits.
+10. Add block/report controls.
+11. Add transaction simulation where supported.
+12. Add crash-safe transaction journals.
+13. Add log redaction.
+14. Add dependency vulnerability scanning.
+15. Add reproducible builds.
+16. Commission independent review of:
+
+    * ML-DSA lock
+    * Sighash implementation
+    * Key derivation
+    * Vault
+    * Molecule parsers
+    * Reclaim protocol
+
+Exit criteria:
+
+* Security checklist is complete.
+* All mainnet blockers are explicitly resolved.
+* Testnet beta has operated without unreconciled capacity loss.
+
+---
+
+## Phase 12: iOS preparation
+
+Before starting the iOS interface:
+
+1. Remove Android assumptions from shared packages.
+2. Define an iOS secure-vault implementation.
+3. Define iOS background-fetch expectations.
+4. Replace filesystem assumptions with platform adapters.
+5. Ensure image processing has equivalent iOS behaviour.
+6. Add shared protocol conformance tests.
+7. Keep database migrations identical.
+
+Only then create `apps/ios` or enable the iOS target in the React Native application.
+
+---
+
+# 19. Coding-agent operating rules
+
+Give the coding agent these permanent constraints:
+
+```text
+1. Do not change protocol serialization without updating the protocol
+   specification, golden vectors and migration version.
+
+2. Never log mnemonics, seeds, secret keys, decrypted payloads, vault
+   passwords, database keys or plaintext attachments.
+
+3. Never store permanent plaintext messages or images outside the encrypted
+   application database and encrypted attachment directory.
+
+4. Treat RPC and indexer responses as hostile input.
+
+5. Every background operation must be idempotent.
+
+6. Every transaction must be journaled locally before broadcast.
+
+7. Never infer successful delivery from transaction commitment alone.
+
+8. Never delete local user history merely because its transport cell was
+   reclaimed.
+
+9. The sender must retain reclaim authority over message and attachment cells.
+
+10. Do not introduce a central service as a protocol dependency.
+
+11. Testnet and mainnet configuration must be structurally separate.
+
+12. Do not enable mainnet until the configured ML-DSA lock deployment and
+    transaction signing implementation have passed the formal readiness gate.
+
+13. All cryptographic algorithms and serialized objects must be versioned.
+
+14. New native functionality must be exposed through a platform-neutral
+    interface so an iOS implementation can be added later.
+
+15. Keep blockchain terminology out of the ordinary chat workflow unless an
+    error requires it.
+```
+
+---
+
+# 20. Recommended first coding milestone
+
+The first coding-agent assignment should not attempt the entire mobile app.
+
+Build a headless two-user testnet reference client that proves:
+
+```text
+Create Alice from BIP39
+Create Bob from BIP39
+Create both Profile Cells
+Alice discovers Bob
+Alice encrypts and publishes a message
+Bob discovers and decrypts it
+Bob publishes a response referencing Alice’s outpoint
+Alice discovers the response
+Alice reclaims the original cell
+Bob detects the original cell was spent
+All balances and local state reconcile
+```
+
+Once this lifecycle is deterministic and covered by integration tests, connect it to the Android messenger UI.
+
+That order prevents the most difficult part—the cell ownership, acknowledgement and reclaim state machine—from becoming entangled with mobile interface work.
+

@@ -233,6 +233,135 @@ export async function buildCreateProfileTx(
   return finalize(tx, signer.client);
 }
 
+// ── rotate profile (spec §5.3 key-rotation chain) ───────────────────────────
+
+export interface BuildRotateProfileTxOptions {
+  /**
+   * The live profile cell being rotated away from. Its type args are the
+   * CURRENT profile id; its lock MUST be the signer's lock (only the owner
+   * rotates).
+   */
+  oldProfileCell: Cell;
+  /**
+   * New profile fields: caller sets `rotation_sequence` (old + 1) and
+   * `previous_profile_id` (the current profile id). The builder verifies the
+   * back-reference against the spent cell's type args.
+   */
+  newProfile: codec.CempProfileV1Encodable;
+  /**
+   * Lock of the ROTATED identity (e.g. from `deriveRotatedIdentityKeys`) —
+   * the new profile cell's lock. May equal the old lock when only the KEM
+   * half is rotated; differs for a full identity rotation.
+   */
+  newLock: ScriptLike;
+  /** Signer owning the CURRENT profile cell (the pre-rotation identity). */
+  signer: MlDsaV2TxSigner;
+  feeRate?: NumLike;
+}
+
+function toHexOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return hexFrom(value);
+  }
+  return null;
+}
+
+/**
+ * Rotate a profile: spend the current profile cell (its Type ID script
+ * executes on destruction — burns are allowed) and create the successor cell
+ * with a NEW Type ID derived from the spent cell's outpoint (the rotation
+ * recipe fixes input 0). The old cell's capacity rolls into the new one;
+ * `previous_profile_id` must name the spent cell's type args, which is what
+ * makes the on-chain lineage checkable (spec §5.3, protocol §5).
+ */
+export async function buildRotateProfileTx(
+  options: BuildRotateProfileTxOptions,
+): Promise<BuiltTransaction> {
+  const { oldProfileCell, signer } = options;
+  const ownerLock = signer.lockScript();
+  if (!scriptEquals(oldProfileCell.output.lock, ownerLock)) {
+    throw new CempCkbError(
+      "buildRotateProfileTx",
+      "the profile cell is not locked by the signer's lock — only the owner rotates",
+    );
+  }
+  const oldType = oldProfileCell.output.type;
+  if (oldType === undefined || oldType === null || oldType.codeHash !== TYPE_ID_CODE_HASH) {
+    throw new CempCkbError("buildRotateProfileTx", "the spent cell is not a Type ID profile cell");
+  }
+  const previousProfileId = toHexOrNull(options.newProfile.previous_profile_id);
+  if (previousProfileId === null || previousProfileId !== oldType.args) {
+    throw new CempCkbError(
+      "buildRotateProfileTx",
+      "newProfile.previous_profile_id must equal the spent cell's type args (the current profile id)",
+    );
+  }
+
+  const data = codec.encodeCempProfileV1(options.newProfile);
+  const validation = codec.validateProfile(data);
+  if (!validation.ok) {
+    throw new CempCkbError(
+      "buildRotateProfileTx",
+      `rotated profile rejected: ${validation.reason}`,
+    );
+  }
+
+  let oldIndex: bigint;
+  try {
+    oldIndex = numFrom(oldProfileCell.outPoint.index);
+  } catch (err) {
+    throw new CempCkbError(
+      "buildRotateProfileTx",
+      `old profile cell has an unparseable index ${JSON.stringify(oldProfileCell.outPoint.index)}`,
+      { cause: err },
+    );
+  }
+  const tx = Transaction.from({
+    inputs: [
+      { previousOutput: { txHash: oldProfileCell.outPoint.txHash, index: oldIndex }, since: 0 },
+    ],
+    outputs: [
+      {
+        lock: options.newLock,
+        type: {
+          codeHash: TYPE_ID_CODE_HASH,
+          hashType: "type",
+          // Placeholder; replaced with the Type ID args after coin selection.
+          args: hexFrom(new Uint8Array(32)),
+        },
+        // The old cell's capacity rolls into its successor.
+        capacity: numFrom(oldProfileCell.output.capacity),
+      },
+    ],
+    outputsData: [hexFrom(data)],
+  });
+  // Type ID executes twice here (burn of the old id, creation of the new).
+  await tx.addCellDepsOfKnownScripts(signer.client, KnownScript.TypeId);
+
+  await tx.completeInputsByCapacity(signer);
+  const firstInput = tx.inputs[0];
+  if (firstInput === undefined) {
+    throw new CempCkbError("buildRotateProfileTx", "coin selection added no inputs");
+  }
+  // The rotation recipe: the new Type ID is fixed by the SPENT profile cell's
+  // outpoint at output index 0 (append-only coin selection keeps input 0).
+  const typeArgs = hashTypeId({ previousOutput: firstInput.previousOutput }, 0);
+  const typeScript = tx.outputs[0]?.type;
+  if (typeScript === undefined) {
+    throw new CempCkbError("buildRotateProfileTx", "internal: type script missing");
+  }
+  typeScript.args = typeArgs;
+
+  await tx.completeFeeBy(signer, options.feeRate ?? DEFAULT_FEE_RATE);
+  return finalize(tx, signer.client);
+}
+
 // ── send message (spec §6–§7) ───────────────────────────────────────────────
 
 export interface BuildSendMessageTxOptions {

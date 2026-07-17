@@ -178,4 +178,72 @@ export class ContactRepository {
       throw new DatabaseError("not-found", `contact ${String(id)} does not exist`);
     }
   }
+
+  /* --------------------------------------- profile trust material (v2) -- */
+
+  /**
+   * Store the contact's verified on-chain profile material (Phase 5): the
+   * profile's Type ID, public keys and computed fingerprint, plus the latest
+   * trust verdict from `evaluateContactProfile`. These bytes are PUBLIC (the
+   * profile cell publishes them); they are stored locally so unexpected key
+   * changes are detectable offline.
+   */
+  async setProfileSecurity(
+    id: number,
+    security: {
+      profileTypeIdHex: string;
+      mlDsaPublicKey: Uint8Array;
+      mlKemPublicKey: Uint8Array;
+      fingerprint: string;
+      trustVerdict: string;
+    },
+  ): Promise<void> {
+    const result = await this.#db.run(
+      `UPDATE contacts SET profile_type_id_hex = ?, ml_dsa_public_key = ?, ml_kem_public_key = ?,
+         fingerprint = ?, trust_verdict = ?, updated_at_ms = ?
+       WHERE id = ?`,
+      [
+        security.profileTypeIdHex,
+        security.mlDsaPublicKey,
+        security.mlKemPublicKey,
+        security.fingerprint,
+        security.trustVerdict,
+        Date.now(),
+        id,
+      ],
+    );
+    if (result.changes === 0) {
+      throw new DatabaseError("not-found", `contact ${String(id)} does not exist`);
+    }
+  }
+
+  /** The stored profile-trust material, or undefined when the contact is gone. */
+  async getProfileSecurity(id: number): Promise<ContactProfileSecurity | undefined> {
+    const row = await this.#db.get(
+      "SELECT profile_type_id_hex, ml_dsa_public_key, ml_kem_public_key, fingerprint, trust_verdict FROM contacts WHERE id = ?",
+      [id],
+    );
+    if (row === undefined) {
+      return undefined;
+    }
+    const blob = (v: unknown): Uint8Array | null =>
+      v === null || v === undefined ? null : (v as Uint8Array);
+    const text = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
+    return {
+      profileTypeIdHex: text(row.profile_type_id_hex),
+      mlDsaPublicKey: blob(row.ml_dsa_public_key),
+      mlKemPublicKey: blob(row.ml_kem_public_key),
+      fingerprint: text(row.fingerprint),
+      trustVerdict: text(row.trust_verdict),
+    };
+  }
+}
+
+/** A contact's stored profile-trust material (schema v2). */
+export interface ContactProfileSecurity {
+  readonly profileTypeIdHex: string | null;
+  readonly mlDsaPublicKey: Uint8Array | null;
+  readonly mlKemPublicKey: Uint8Array | null;
+  readonly fingerprint: string | null;
+  readonly trustVerdict: string | null;
 }

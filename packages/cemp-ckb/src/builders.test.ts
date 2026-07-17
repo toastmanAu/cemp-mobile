@@ -35,6 +35,7 @@ import {
   buildDeployDataCellTx,
   buildMessageTypeArgs,
   buildReclaimTx,
+  buildRotateProfileTx,
   buildSendMessageTx,
 } from "./builders.js";
 import { MlDsaV2TxSigner, staticCellResolver } from "./signing.js";
@@ -543,5 +544,128 @@ describe("buildDeployDataCellTx", () => {
     await expect(buildDeployDataCellTx({ data: new Uint8Array(0), signer })).rejects.toThrow(
       /empty data cell/,
     );
+  });
+});
+
+describe("buildRotateProfileTx", () => {
+  const OLD_TYPE_ARGS = `0x${"ab".repeat(32)}`;
+
+  function oldProfileCell(ckb: number, seed: number, lock = fixtureSigner.lockScript()): Cell {
+    return Cell.from({
+      outPoint: { txHash: fill(seed, 32), index: 0 },
+      cellOutput: toOutputLike(
+        CellOutput.from({
+          capacity: fixedPointFrom(ckb),
+          lock,
+          type: { codeHash: TYPE_ID_CODE_HASH, hashType: "type", args: OLD_TYPE_ARGS },
+        }),
+      ),
+      outputData: "0x1234",
+    });
+  }
+
+  function toWireCell(cell: Cell): WireCell {
+    const type = cell.cellOutput.type;
+    return {
+      outPoint: { txHash: cell.outPoint.txHash, index: `0x${cell.outPoint.index.toString(16)}` },
+      output: {
+        capacity: `0x${cell.cellOutput.capacity.toString(16)}`,
+        lock: {
+          codeHash: cell.cellOutput.lock.codeHash,
+          hashType: cell.cellOutput.lock.hashType,
+          args: cell.cellOutput.lock.args,
+        },
+        type:
+          type === undefined
+            ? null
+            : { codeHash: type.codeHash, hashType: type.hashType, args: type.args },
+      },
+      data: cell.outputData,
+    };
+  }
+
+  it("spends the current profile cell and issues the successor with a new Type ID", async () => {
+    const oldCell = oldProfileCell(4000, 0xb1);
+    const funds = [fundingCell(2000, 0xf3)];
+    const { signer } = makeSigner(oldCell, ...funds);
+    const rotatedLock = { ...signer.lockScript(), args: `0x${"cd".repeat(37)}` };
+    const newProfile = {
+      ...codec.buildProfileMinimal(),
+      rotation_sequence: 1,
+      previous_profile_id: bytesFrom(OLD_TYPE_ARGS),
+    };
+
+    const { tx, estimatedFee } = await buildRotateProfileTx({
+      oldProfileCell: toWireCell(oldCell),
+      newProfile,
+      newLock: rotatedLock,
+      signer,
+    });
+
+    // Input 0 is the spent profile cell (the rotation recipe's anchor).
+    expect(tx.inputs[0]!.previousOutput.txHash).toBe(oldCell.outPoint.txHash);
+    const output = tx.outputs[0]!;
+    // The NEW Type ID derives from the spent cell's outpoint at output index 0.
+    expect(output.type!.args).toBe(hashTypeId({ previousOutput: tx.inputs[0]!.previousOutput }, 0));
+    expect(output.type!.args).not.toBe(OLD_TYPE_ARGS);
+    // The rotated lock owns the successor; the old cell's capacity rolls over.
+    expect(output.lock.args).toBe(rotatedLock.args);
+    expect(output.capacity >= fixedPointFrom(4000)).toBe(true);
+    // Rotation fields survive the codec round-trip.
+    const decoded = codec.decodeCempProfileV1(bytesFrom(tx.outputsData[0]!));
+    expect(decoded.rotation_sequence).toBe(1);
+    expect(`0x${bytesToHex(decoded.previous_profile_id!)}`).toBe(OLD_TYPE_ARGS);
+    // Type ID dep present; tx signable offline.
+    expect(tx.cellDeps.some((dep) => dep.outPoint.txHash === mlDsaDeployment.txHash)).toBe(true);
+    const allCells = [oldCell, ...funds];
+    const resolver = staticCellResolver(
+      allCells.map((cell) => ({
+        outPoint: cell.outPoint,
+        cellOutput: cell.cellOutput,
+        data: bytesFrom(cell.outputData),
+      })),
+    );
+    const signed = await signer.signTransaction(tx, resolver);
+    expect(signer.verifyOwnSignature(signed, resolveInOrder(tx, allCells))).toBe(true);
+    expect(estimatedFee > 0n).toBe(true);
+  });
+
+  it("refuses to rotate a profile cell the signer does not own", async () => {
+    const foreignLock = Script.from({
+      codeHash: fixtureSigner.lockScript().codeHash,
+      hashType: fixtureSigner.lockScript().hashType,
+      args: `0x${"99".repeat(37)}`,
+    });
+    const oldCell = oldProfileCell(4000, 0xb2, foreignLock);
+    const { signer } = makeSigner(oldCell, fundingCell(2000, 0xf4));
+    await expect(
+      buildRotateProfileTx({
+        oldProfileCell: toWireCell(oldCell),
+        newProfile: {
+          ...codec.buildProfileMinimal(),
+          rotation_sequence: 1,
+          previous_profile_id: bytesFrom(OLD_TYPE_ARGS),
+        },
+        newLock: signer.lockScript(),
+        signer,
+      }),
+    ).rejects.toThrow(/only the owner rotates/);
+  });
+
+  it("requires previous_profile_id to name the spent cell's type args", async () => {
+    const oldCell = oldProfileCell(4000, 0xb3);
+    const { signer } = makeSigner(oldCell, fundingCell(2000, 0xf5));
+    await expect(
+      buildRotateProfileTx({
+        oldProfileCell: toWireCell(oldCell),
+        newProfile: {
+          ...codec.buildProfileMinimal(),
+          rotation_sequence: 1,
+          previous_profile_id: new Uint8Array(32),
+        },
+        newLock: signer.lockScript(),
+        signer,
+      }),
+    ).rejects.toThrow(/previous_profile_id/);
   });
 });

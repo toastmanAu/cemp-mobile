@@ -4,9 +4,15 @@
  * The database is encrypted SQLite (SQLCipher or equivalent) with the key
  * wrapped by the platform keystore. Every schema change requires a migration
  * with an explicit version bump (AGENTS.md conventions).
+ *
+ * Version history:
+ * - 1: initial schema (spec §11 core tables).
+ * - 2: profile security (Phase 5) — profiles.previous_profile_id_hex rotation
+ *   lineage; contacts profile security material (type id, public keys,
+ *   fingerprint, trust verdict).
  */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [

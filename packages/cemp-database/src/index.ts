@@ -7,4 +7,5 @@ export * from "./repositories/contacts.js";
 export * from "./repositories/conversations.js";
 export * from "./repositories/messages.js";
 export * from "./repositories/attachments.js";
+export * from "./repositories/profiles.js";
 export * from "./repositories/watched-outpoints.js";

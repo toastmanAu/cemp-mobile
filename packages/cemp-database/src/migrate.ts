@@ -176,6 +176,18 @@ const SCHEMA_V1_STATEMENTS: readonly string[] = [
 /** The ordered, append-only migration list. v1 is the initial schema. */
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, description: "initial schema (spec §11)", statements: SCHEMA_V1_STATEMENTS },
+  {
+    version: 2,
+    description: "profile security: rotation lineage + contact trust material (Phase 5)",
+    statements: [
+      "ALTER TABLE profiles ADD COLUMN previous_profile_id_hex TEXT",
+      "ALTER TABLE contacts ADD COLUMN profile_type_id_hex TEXT",
+      "ALTER TABLE contacts ADD COLUMN ml_dsa_public_key BLOB",
+      "ALTER TABLE contacts ADD COLUMN ml_kem_public_key BLOB",
+      "ALTER TABLE contacts ADD COLUMN fingerprint TEXT",
+      "ALTER TABLE contacts ADD COLUMN trust_verdict TEXT",
+    ],
+  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

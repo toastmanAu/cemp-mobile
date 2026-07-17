@@ -6,8 +6,9 @@ describe("schema constants", () => {
     expect(new Set(TABLE_NAMES).size).toBe(TABLE_NAMES.length);
   });
 
-  it("starts at schema version 1", () => {
-    expect(SCHEMA_VERSION).toBe(1);
+  it("tracks the current schema version (bump on every migration)", () => {
+    // v2: profile security (Phase 5 rotation lineage + contact trust material).
+    expect(SCHEMA_VERSION).toBe(2);
   });
 
   it("covers the spec §11 core tables", () => {

@@ -120,6 +120,51 @@ CempProfileV1
   chains are validated by following `previous_profile_id` and checking
   signatures continuity during contact trust evaluation (spec §10.3).
 
+### 5.1 Key rotation
+
+Rotation N replaces BOTH messaging keypairs. The rotated keys are derived
+deterministically from the same BIP39 seed (vault `withUnlockedSeed`):
+
+```text
+ml_dsa_sub_seed_N = HKDF-SHA-256(ml_dsa_sub_seed,  salt nil,
+                      "CEMP/CKB/ML-DSA/identity/v1/rotation" ‖ u32le(N), 32)
+ml_kem_sub_seed_N = HKDF-SHA-256(ml_kem_sub_seed,  salt nil,
+                      "CEMP/CKB/ML-KEM/messaging/v1/rotation" ‖ u32le(N), 32)
+```
+
+with the unchanged deterministic keygen on the rotated sub-seeds (rotation 0
+IS the base identity, byte-for-byte). The local database key never rotates.
+
+On-chain, rotation spends the current profile cell and creates the successor
+with a NEW Type ID (recipe: `hashTypeId(spent_profile_outpoint, 0)`) and
+`previous_profile_id` = the spent cell's type args; `rotation_sequence`
+increments by 1. Chain validation (`validateRotationChain`) requires the
+sequence to start at 0, increment by exactly 1, and each link to name its
+predecessor's profile id. Contact trust (`evaluateContactProfile`) yields
+`first-use` / `trusted` / `rotation-verified` (valid chain from the saved
+profile id) / `key-changed-blocking` — the last is a BLOCKING UI warning
+(spec Phase 5 exit criterion).
+
+### 5.2 Fingerprints and contact bundles
+
+```text
+fingerprint = blake2b-256(personal "cemp-fingerprint",
+              profile_id ‖ ml_dsa_public_key ‖ ml_kem_public_key)[0..16]
+```
+
+displayed as 8 dash-separated groups of 4 uppercase hex characters
+("ABCD-1234-…"). The BLAKE2b personalisation is the version marker.
+
+The QR contact bundle is a versioned JSON document (spec §5.4) with the
+canonical key order `protocol, version, network, profileTypeId,
+lockScriptHash, address, fingerprint`. It carries NO secret material.
+Decoding is strict (hostile input): unknown `protocol`/`version` rejected,
+`network` must equal the build's network (mainnet bundles are rejected by
+testnet builds, rule 11), hashes are 0x-prefixed lowercase 32-byte hex, the
+address must match the network prefix, and the fingerprint must parse
+canonically. The fingerprint is verified against the RESOLVED on-chain
+profile, not trusted from the bundle alone.
+
 ## 6. Message Cell
 
 - **Lock:** the **sender's** ML-DSA-65 v2 lock — the sender retains spending
@@ -140,10 +185,10 @@ a breaking layout change. Senders MUST zero it; validators MUST reject nonzero
 reserved bytes. Route-tag discovery queries prefix-match the leading 33 bytes
 (`version ‖ route_tag`).
 
-The type script itself is initially the network's indexing-type convention
-(ADR 0003 deployment `cempMessageType: null`); the args layout above is the
-discovery contract. A dedicated CEMP type script may later enforce it on-chain
-(`contracts/cemp-message-type`) without changing this layout.
+The type script is the deployed `cemp-message-type` contract (testnet
+deployment pinned in `packages/cemp-core/src/network.ts`; it enforces the
+81-byte args length and version byte on-chain); the args layout above is the
+discovery contract.
 
 - **Data:** `CempEnvelopeV1` (§7).
 

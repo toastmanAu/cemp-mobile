@@ -14,6 +14,14 @@ export const KDF_DOMAIN = {
    * applied on top of `MessagingMlKem`'s output, never on the BIP39 seed.
    */
   MlKemKeygen: "CEMP/CKB/ML-KEM/messaging/v1/keygen",
+  /**
+   * Profile key rotation (spec §5.3 key-rotation chain, protocol §5):
+   * rotation N re-derives each sub-seed as HKDF(baseSubSeed, salt nil,
+   * info = rotationDomain ‖ u32le(N)). The base domains stay stable; the
+   * rotation suffix is what changes the keys.
+   */
+  RotationMlDsa: "CEMP/CKB/ML-DSA/identity/v1/rotation",
+  RotationMlKem: "CEMP/CKB/ML-KEM/messaging/v1/rotation",
   LocalDatabase: "CEMP/LOCAL/database/v1",
   ContactExchange: "CEMP/CONTACT/exchange/v1",
   BackupEncryption: "CEMP/BACKUP/encryption/v1",

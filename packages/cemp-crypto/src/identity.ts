@@ -9,6 +9,12 @@
  *     │    → 64 B FIPS-203 keygen seed (d‖z) → deterministic ML-KEM-768 keygen
  *     └─ HKDF(info "CEMP/LOCAL/database/v1")               → 32 B local database key
  *
+ * Profile key rotation (spec §5.3, protocol §5): rotation N ≥ 1 advances each
+ * sub-seed once — HKDF(baseSubSeed, salt nil, info = rotationDomain ‖
+ * u32le(N)) — and the rotated sub-seeds feed the same deterministic keygen.
+ * Rotation 0 is byte-for-byte {@link deriveIdentityKeys}. The local database
+ * key never rotates (local material, not messaging identity).
+ *
  * The ML-DSA and ML-KEM sub-seeds are independent (spec §5.2). All domain
  * strings live in `domains.ts` and are part of the protocol (AGENTS.md
  * rule 13): changing one changes every derived key.
@@ -92,6 +98,82 @@ export function deriveIdentityKeys(bip39Seed: Uint8Array): IdentityKeyBundle {
   }
   const mlDsaSubSeed = deriveSubSeed(bip39Seed, KDF_DOMAIN.IdentityMlDsa);
   const mlKemSubSeed = deriveSubSeed(bip39Seed, KDF_DOMAIN.MessagingMlKem);
+  return keygenFromSubSeeds(mlDsaSubSeed, mlKemSubSeed, deriveLocalDatabaseKey(bip39Seed));
+}
+
+/**
+ * Rotation-N identity keys (spec §5.3 key-rotation chain, protocol §5):
+ * each base sub-seed is advanced as
+ * `HKDF(baseSubSeed, salt nil, info = rotationDomain ‖ u32le(N))` and the
+ * rotated sub-seeds feed the same deterministic keygen. `rotation === 0` is
+ * byte-for-byte identical to {@link deriveIdentityKeys} (backward compat).
+ * The local database key is NOT rotated — it is local material, not
+ * messaging identity.
+ */
+export function deriveRotatedIdentityKeys(
+  bip39Seed: Uint8Array,
+  rotation: number,
+): IdentityKeyBundle {
+  if (rotation === 0) {
+    return deriveIdentityKeys(bip39Seed);
+  }
+  if (!Number.isInteger(rotation) || rotation < 0 || rotation > 0xff_ff_ff_ff) {
+    throw new CempCryptoError(
+      `deriveRotatedIdentityKeys: rotation ${String(rotation)} is not a uint32`,
+    );
+  }
+  if (bip39Seed.length !== BIP39_SEED_BYTES) {
+    throw new CempCryptoError(
+      `deriveRotatedIdentityKeys: bip39Seed length ${bip39Seed.length} != ${BIP39_SEED_BYTES}`,
+    );
+  }
+  const suffix = new Uint8Array(4);
+  new DataView(suffix.buffer).setUint32(0, rotation, true);
+  const encoder = new TextEncoder();
+  const mlDsaBase = deriveSubSeed(bip39Seed, KDF_DOMAIN.IdentityMlDsa);
+  const mlKemBase = deriveSubSeed(bip39Seed, KDF_DOMAIN.MessagingMlKem);
+  let mlDsaSubSeed: Uint8Array | null = null;
+  let mlKemSubSeed: Uint8Array | null = null;
+  try {
+    mlDsaSubSeed = hkdfSha256(
+      mlDsaBase,
+      undefined,
+      concatBytes(encoder.encode(KDF_DOMAIN.RotationMlDsa), suffix),
+      32,
+    );
+    mlKemSubSeed = hkdfSha256(
+      mlKemBase,
+      undefined,
+      concatBytes(encoder.encode(KDF_DOMAIN.RotationMlKem), suffix),
+      32,
+    );
+    return keygenFromSubSeeds(mlDsaSubSeed, mlKemSubSeed, deriveLocalDatabaseKey(bip39Seed));
+  } finally {
+    // Rotated copies are wiped inside keygenFromSubSeeds; the BASE sub-seeds
+    // are this function's intermediates (deriveIdentityKeys owns its own).
+    mlDsaBase.fill(0);
+    mlKemBase.fill(0);
+    mlDsaSubSeed?.fill(0);
+    mlKemSubSeed?.fill(0);
+  }
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+/**
+ * Deterministic keygen from a pair of sub-seeds plus the (un-rotated) local
+ * database key. Wipes the sub-seed inputs before returning.
+ */
+function keygenFromSubSeeds(
+  mlDsaSubSeed: Uint8Array,
+  mlKemSubSeed: Uint8Array,
+  localDatabaseKey: Uint8Array,
+): IdentityKeyBundle {
   let mlKemKeygenSeed: Uint8Array | null = null;
   try {
     const mlDsa = mldsaV2KeygenFromSeed(mlDsaSubSeed);
@@ -107,7 +189,7 @@ export function deriveIdentityKeys(bip39Seed: Uint8Array): IdentityKeyBundle {
     return {
       mlDsa,
       mlKem: { publicKey, secretKey },
-      localDatabaseKey: deriveLocalDatabaseKey(bip39Seed),
+      localDatabaseKey,
     };
   } finally {
     // Best-effort wipe of intermediates (see module header for the limits).

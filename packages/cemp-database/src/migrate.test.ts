@@ -39,7 +39,7 @@ describe("migrate", () => {
       await migrate(db);
       await migrate(db);
       const rows = await db.all("SELECT * FROM cemp_schema_migrations");
-      expect(rows).toHaveLength(1);
+      expect(rows).toHaveLength(MIGRATIONS.length);
     } finally {
       await db.close();
     }
@@ -56,7 +56,7 @@ describe("migrate", () => {
 
       const second = new NodeSqliteAdapter({ path });
       await migrate(second); // no-op on an up-to-date file
-      expect(await currentSchemaVersion(second)).toBe(1);
+      expect(await currentSchemaVersion(second)).toBe(SCHEMA_VERSION);
       const row = await second.get("SELECT value FROM settings WHERE key = ?", ["theme"]);
       expect(row?.value).toBe("dark");
       await second.close();

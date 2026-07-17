@@ -10,9 +10,12 @@
  * - 2: profile security (Phase 5) — profiles.previous_profile_id_hex rotation
  *   lineage; contacts profile security material (type id, public keys,
  *   fingerprint, trust verdict).
+ * - 3: response/reclaim lifecycle (Phase 8) — messages.envelope_message_id_hex
+ *   (receipt/reply matching); outgoing_transactions.capacity_shannon
+ *   (reclaim accounting across crash-resume).
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [

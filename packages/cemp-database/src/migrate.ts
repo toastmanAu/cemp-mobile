@@ -188,6 +188,15 @@ export const MIGRATIONS: readonly Migration[] = [
       "ALTER TABLE contacts ADD COLUMN trust_verdict TEXT",
     ],
   },
+  {
+    version: 3,
+    description: "response/reclaim lifecycle: envelope message ids + reclaim capacity (Phase 8)",
+    statements: [
+      "ALTER TABLE messages ADD COLUMN envelope_message_id_hex TEXT",
+      "CREATE INDEX messages_envelope_message_id ON messages(envelope_message_id_hex)",
+      "ALTER TABLE outgoing_transactions ADD COLUMN capacity_shannon TEXT",
+    ],
+  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

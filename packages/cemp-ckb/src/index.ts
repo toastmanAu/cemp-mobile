@@ -13,3 +13,4 @@ export * from "./monitor.js";
 export * from "./profiles.js";
 export * from "./publisher.js";
 export * from "./incoming.js";
+export * from "./lifecycle.js";

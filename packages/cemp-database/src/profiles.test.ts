@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SqliteAdapter } from "./adapter.js";
 import { currentSchemaVersion, MIGRATIONS, migrate } from "./migrate.js";
+import { SCHEMA_VERSION } from "./schema.js";
 import { NodeSqliteAdapter } from "./node.js";
 import { ContactRepository } from "./repositories/contacts.js";
 import { ProfileRepository } from "./repositories/profiles.js";
@@ -113,7 +114,7 @@ describe("schema v1 → v2 upgrade", () => {
       );
 
       await migrate(db);
-      expect(await currentSchemaVersion(db)).toBe(2);
+      expect(await currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
 
       // The legacy row survived and gained the (null) security columns.
       const contacts = new ContactRepository(db);

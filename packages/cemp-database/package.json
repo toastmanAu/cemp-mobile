@@ -22,5 +22,10 @@
   },
   "dependencies": {
     "@cemp/ckb": "workspace:*"
+  },
+  "devDependencies": {
+    "@ckb-ccc/core": "1.12.5",
+    "@cemp/crypto": "workspace:*",
+    "@cemp/core": "workspace:*"
   }
 }

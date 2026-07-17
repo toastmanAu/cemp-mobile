@@ -43,6 +43,8 @@ export interface PublicationStore {
     messageRowId: number,
     ref: { txHash: string; outpointIndex: number },
   ): Promise<void>;
+  /** Persist the envelope's 16-byte message id (Phase 8 receipt matching). */
+  setEnvelopeMessageId(messageRowId: number, envelopeMessageIdHex: string): Promise<void>;
   recordOutgoingTx(input: {
     txHash: string;
     purpose: string;
@@ -239,6 +241,8 @@ export class MessagePublisher {
         submittedAtMs: Date.now(),
       });
       await store.setMessageChainRef(input.messageRowId, { txHash, outpointIndex: 0 });
+      // Receipts and reply_to reference the ENVELOPE message id (Phase 8).
+      await store.setEnvelopeMessageId(input.messageRowId, codec.bytesToHex(assembled.messageId));
 
       const wire = cccTransactionToWire(signed);
       const accepted = await this.#deps.client.sendTransaction(wire);

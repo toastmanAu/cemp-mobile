@@ -7,8 +7,8 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v2: profile security (Phase 5 rotation lineage + contact trust material).
-    expect(SCHEMA_VERSION).toBe(2);
+    // v3: response/reclaim lifecycle (Phase 8 envelope ids + reclaim capacity).
+    expect(SCHEMA_VERSION).toBe(3);
   });
 
   it("covers the spec §11 core tables", () => {

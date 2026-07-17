@@ -259,4 +259,30 @@ export class MessageRepository {
     );
     return result.lastInsertRowid;
   }
+
+  /* ------------------------------------------- envelope id (Phase 8) -- */
+
+  /**
+   * Persist the envelope's 16-byte message id for an OUTGOING message
+   * (schema v3). This is the key receipts and `reply_to_message_id` reference
+   * — without it an incoming acknowledgement cannot be matched to the local
+   * row (Phase 8 task 4).
+   */
+  async setEnvelopeMessageId(id: number, envelopeMessageIdHex: string): Promise<void> {
+    const result = await this.#db.run(
+      "UPDATE messages SET envelope_message_id_hex = ?, updated_at_ms = ? WHERE id = ?",
+      [envelopeMessageIdHex, Date.now(), id],
+    );
+    if (result.changes === 0) {
+      throw new DatabaseError("not-found", `message ${String(id)} does not exist`);
+    }
+  }
+
+  /** Find a message by its envelope message id (receipt/reply matching). */
+  async getByEnvelopeMessageId(envelopeMessageIdHex: string): Promise<Message | undefined> {
+    const row = await this.#db.get("SELECT * FROM messages WHERE envelope_message_id_hex = ?", [
+      envelopeMessageIdHex,
+    ]);
+    return row === undefined ? undefined : rowToMessage(row);
+  }
 }

@@ -1,13 +1,4 @@
-import {
-  Cell,
-  CellOutput,
-  Script,
-  Transaction,
-  bytesFrom,
-  fixedPointFrom,
-  hexFrom,
-  numFrom,
-} from "@ckb-ccc/core";
+import { Cell, CellOutput, Script, bytesFrom, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
 import { CKB_TESTNET, codec } from "@cemp/core";
 import { deriveIdentityKeys, mldsaV2KeygenFromSeed, wipeIdentityKeyBundle } from "@cemp/crypto";
 import { describe, expect, it } from "vitest";
@@ -17,6 +8,7 @@ import { CempClient, type JsonRpcTransport } from "./client.js";
 import { MessagePublisher, PublicationError, type PublicationStore } from "./publisher.js";
 import { MlDsaV2TxSigner } from "./signing.js";
 import { MockCkbClient, fillHex, toOutputLike } from "./testing/mock-ccc-client.js";
+import { hashFromRpcBody } from "./testing/rpc-body.js";
 
 /**
  * Phase 7 publisher pipeline tests (offline): state-transition order,
@@ -66,6 +58,11 @@ class FakeStore implements PublicationStore {
     return Promise.resolve();
   }
 
+  setEnvelopeMessageId(_id: number, envelopeMessageIdHex: string): Promise<void> {
+    this.events.push({ kind: "chainref", detail: `envelope:${envelopeMessageIdHex}` });
+    return Promise.resolve();
+  }
+
   recordOutgoingTx(input: { txHash: string; purpose: string; state: string }): Promise<void> {
     this.txs.set(input.txHash, {
       txHash: input.txHash,
@@ -96,58 +93,6 @@ class FakeStore implements PublicationStore {
 interface FakeChainOptions {
   readonly profileCellJson?: unknown;
   readonly onBroadcast?: () => void;
-}
-
-/** Recompute the signed tx hash from the send_transaction RPC body (via CCC). */
-function hashFromRpcBody(body: Record<string, unknown>): string {
-  type AnyRec = Record<string, unknown>;
-  const tx = Transaction.from({
-    version: numFrom(body.version as string),
-    cellDeps: (body.cell_deps as AnyRec[]).map((dep) => {
-      const outPoint = dep.out_point as AnyRec;
-      return {
-        outPoint: {
-          txHash: outPoint.tx_hash as string,
-          index: numFrom(outPoint.index as string),
-        },
-        depType: dep.dep_type as "code" | "depGroup",
-      };
-    }),
-    headerDeps: body.header_deps as string[],
-    inputs: (body.inputs as AnyRec[]).map((input) => {
-      const previous = input.previous_output as AnyRec;
-      return {
-        previousOutput: {
-          txHash: previous.tx_hash as string,
-          index: numFrom(previous.index as string),
-        },
-        since: numFrom(input.since as string),
-      };
-    }),
-    outputs: (body.outputs as AnyRec[]).map((output) => {
-      const lock = output.lock as AnyRec;
-      const type = output.type as AnyRec | null;
-      return {
-        capacity: numFrom(output.capacity as string),
-        lock: {
-          codeHash: lock.code_hash as string,
-          hashType: lock.hash_type as "type",
-          args: lock.args as string,
-        },
-        type:
-          type === null
-            ? null
-            : {
-                codeHash: type.code_hash as string,
-                hashType: type.hash_type as "type",
-                args: type.args as string,
-              },
-      };
-    }),
-    outputsData: body.outputs_data as string[],
-    witnesses: body.witnesses as string[],
-  });
-  return tx.hash();
 }
 
 function makeFakeChain(options: FakeChainOptions): {

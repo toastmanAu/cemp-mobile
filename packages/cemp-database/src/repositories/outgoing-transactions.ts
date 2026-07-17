@@ -20,6 +20,8 @@ export interface OutgoingTransaction {
   readonly submittedAtMs: number | null;
   readonly committedAtMs: number | null;
   readonly blockHash: string | null;
+  /** Capacity moved by this tx (schema v3; null for non-reclaim txs). */
+  readonly capacityShannon: string | null;
 }
 
 function rowToTx(row: SqlRow): OutgoingTransaction {
@@ -34,6 +36,7 @@ function rowToTx(row: SqlRow): OutgoingTransaction {
     submittedAtMs: num(row.submitted_at_ms),
     committedAtMs: num(row.committed_at_ms),
     blockHash: text(row.block_hash),
+    capacityShannon: text(row.capacity_shannon),
   };
 }
 
@@ -51,10 +54,12 @@ export class OutgoingTransactionRepository {
     state: string;
     feeShannon?: string | undefined;
     submittedAtMs?: number | undefined;
+    /** Capacity moved by this tx (schema v3: reclaim accounting, decimal shannon). */
+    capacityShannon?: string | undefined;
   }): Promise<OutgoingTransaction> {
     await this.#db.run(
-      `INSERT INTO outgoing_transactions (tx_hash, purpose, state, fee_shannon, submitted_at_ms)
-       VALUES (?, ?, ?, ?, ?)
+      `INSERT INTO outgoing_transactions (tx_hash, purpose, state, fee_shannon, submitted_at_ms, capacity_shannon)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT (tx_hash) DO NOTHING`,
       [
         input.txHash,
@@ -62,6 +67,7 @@ export class OutgoingTransactionRepository {
         input.state,
         input.feeShannon ?? null,
         input.submittedAtMs ?? null,
+        input.capacityShannon ?? null,
       ],
     );
     const row = await this.#db.get("SELECT * FROM outgoing_transactions WHERE tx_hash = ?", [
@@ -85,6 +91,15 @@ export class OutgoingTransactionRepository {
     const row = await this.#db.get(
       "SELECT * FROM outgoing_transactions WHERE purpose = ? ORDER BY id DESC LIMIT 1",
       [purpose],
+    );
+    return row === undefined ? undefined : rowToTx(row);
+  }
+
+  /** The LATEST record whose purpose starts with `prefix` (batch resume, Phase 8). */
+  async findLatestByPurposePrefix(prefix: string): Promise<OutgoingTransaction | undefined> {
+    const row = await this.#db.get(
+      `SELECT * FROM outgoing_transactions WHERE purpose LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1`,
+      [`${prefix.replace(/[%_\\]/g, (c) => `\\${c}`)}%`],
     );
     return row === undefined ? undefined : rowToTx(row);
   }

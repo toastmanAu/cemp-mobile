@@ -144,4 +144,16 @@ export class WatchedOutpointRepository {
     );
     return rows.map(rowToWatched);
   }
+
+  /**
+   * Delete spent watch records (Phase 8 task 11): watched outpoints are
+   * TEMPORARY chain data — once the spend is recorded and the related message
+   * transitioned, the record has no further purpose. Chat history lives in
+   * the messages table and is never touched here (rule 8). Returns the number
+   * of deleted rows.
+   */
+  async pruneSpent(): Promise<number> {
+    const result = await this.#db.run("DELETE FROM watched_outpoints WHERE status = 'spent'");
+    return result.changes;
+  }
 }

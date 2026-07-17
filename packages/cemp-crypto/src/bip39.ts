@@ -13,7 +13,9 @@
  */
 
 import {
+  entropyToMnemonic as scureEntropyToMnemonic,
   generateMnemonic as scureGenerateMnemonic,
+  mnemonicToEntropy as scureMnemonicToEntropy,
   mnemonicToSeedSync,
   validateMnemonic as scureValidateMnemonic,
 } from "@scure/bip39";
@@ -45,4 +47,26 @@ export function validateMnemonic(words: string): boolean {
  */
 export function mnemonicToSeed(words: string, passphrase?: string): Uint8Array {
   return mnemonicToSeedSync(words, passphrase);
+}
+
+/**
+ * The inverse of {@link entropyToMnemonic}: extract the raw 16-byte (12-word)
+ * or 32-byte (24-word) entropy from a checksum-valid mnemonic. The vault
+ * stores entropy — never the phrase — so this is how imported mnemonics are
+ * reduced to their canonical byte form (packages/cemp-secure-vault).
+ *
+ * Throws on an invalid mnemonic; @scure/bip39's messages are fixed strings
+ * about checksums/word counts and carry no phrase contents.
+ */
+export function mnemonicToEntropy(words: string): Uint8Array {
+  return scureMnemonicToEntropy(words, wordlist);
+}
+
+/**
+ * Rebuild the English mnemonic from 16 or 32 bytes of entropy (BIP39
+ * checksum appended). Used by the vault's authentication-gated reveal flow
+ * (spec §5.5): the stored entropy re-derives the phrase on demand.
+ */
+export function entropyToMnemonic(entropy: Uint8Array): string {
+  return scureEntropyToMnemonic(entropy, wordlist);
 }

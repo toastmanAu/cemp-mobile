@@ -95,7 +95,14 @@ importers:
 
   packages/cemp-database: {}
 
-  packages/cemp-secure-vault: {}
+  packages/cemp-secure-vault:
+    dependencies:
+      '@cemp/crypto':
+        specifier: workspace:*
+        version: link:../cemp-crypto
+      '@noble/hashes':
+        specifier: 2.2.0
+        version: 2.2.0
 
   packages/cemp-test-vectors: {}
 

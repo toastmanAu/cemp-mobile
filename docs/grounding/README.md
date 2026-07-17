@@ -8,6 +8,9 @@ docs describe what actually exists on-chain and in code.
 - [reference-projects.md](reference-projects.md) — cemp-pq prototype,
   key-vault-wasm, ckb-mldsa-lock: deployments, formats, incompatibilities,
   reusable patterns, and the cross-codebase conclusions that shape Phases 1–4.
+- [mldsa-v2-signing-pipeline.md](mldsa-v2-signing-pipeline.md) — the exact v2
+  lock construction ported to TypeScript: lock args, CighashAll stream,
+  digest + FIPS-204 M' framing, witness format, tx-building flow.
 - [ckb-knowledge-graph-routes.md](ckb-knowledge-graph-routes.md) — ML-DSA lock,
   CCC transaction construction, indexer/route-tag discovery, and Type ID
   routes traced through `~/ckb-knowledge-graphs` with node-level citations.

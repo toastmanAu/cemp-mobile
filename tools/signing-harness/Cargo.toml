@@ -1,0 +1,31 @@
+[package]
+name = "signing-harness"
+version = "0.1.0"
+edition = "2021"
+description = "Golden-vector generator and external-signature verifier for the v2 ML-DSA-65 CKB signing pipeline (mldsa65-lock-v2-rust)"
+license = "MIT"
+publish = false
+
+# Standalone crate. The empty workspace table keeps this crate independent of
+# the surrounding repo's cargo workspaces (contracts/ is a separate one) so
+# `cargo build` here never leaks into them or vice versa.
+[workspace]
+
+[dependencies]
+# Versions pinned to the exact resolutions in
+# ~/code/key-vault-wasm/Cargo.lock (commit 5cc0c1e) so the vendored pipeline
+# runs on the same dependency set as the production signer/verifier.
+fips204 = { version = "=0.4.6", default-features = false, features = [
+    "ml-dsa-44",
+    "ml-dsa-65",
+    "ml-dsa-87",
+] }
+ckb-types = "=0.200.0"
+# ckb-contract feature selects the pure-Rust blake2b-ref backend, identical
+# choice to the vendored crate; byte-for-byte equal to the default backend.
+ckb-hash = { version = "=0.200.0", default-features = false, features = ["ckb-contract"] }
+
+# JSON / hex plumbing for the vector file (versions also from the same lock).
+serde = { version = "=1.0.219", features = ["derive"] }
+serde_json = "=1.0.142"
+hex = "=0.4.3"

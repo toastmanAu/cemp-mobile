@@ -56,6 +56,13 @@ Corpus: `raw/ccc/packages/core/src/{signer,client,ckb,molecule}` (~558 CCC core 
 - **Broadcast**: `client.sendTransaction()` (client.ts L594) / `signer.sendTransaction()`
   (signer/index.ts L458); status via `client.getTransaction()` (L613).
 
+⚠️ **Version caveat (found during the v2 signer port, 2026-07-17):** CCC 1.16.1's
+`Transaction.fromBytes` re-enters `CellOutput.from(decoded, outputData)`, whose
+automatic capacity recalculation silently raises output capacity to at least the
+occupied size when `outputData != null` — decode mutates the tx hash. The repo pins
+**1.12.5** (faithful round-trip) per ADR 0004; the cighash byte-equality tests are
+the tripwire for any future upgrade.
+
 ## Route 3 — Cell discovery / indexer / watched outpoints
 
 - **CCC indexer queries**: `client.findCellsPaged()` (client.ts L263), `findCellsOnChain()`

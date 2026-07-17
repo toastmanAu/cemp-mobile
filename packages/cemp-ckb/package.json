@@ -17,6 +17,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@cemp/core": "workspace:*",
+    "@cemp/crypto": "workspace:*",
     "@ckb-ccc/core": "1.12.5"
   }
 }

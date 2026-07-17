@@ -4,12 +4,14 @@ Rust workspace for CEMP's on-chain scripts.
 
 ## Members
 
-- `cemp-message-type/` — the CEMP message type script (placeholder crate; the
-  actual contract lands in a later phase, see ckd.txt §6 and Phase 1/11).
-  Until it exists, cell discovery uses the indexing-type convention described
-  in the spec (version || route_tag || conversation_tag || message_nonce).
+- `cemp-message-type/` — the CEMP message type script: a minimal on-chain
+  validator for the 81-byte discovery args (`version || route_tag ||
+conversation_tag || message_nonce`, ckd.txt §6, protocol spec §6). The
+  platform-neutral logic is host-testable; the CKB-VM entry builds for
+  riscv64 (see the crate README).
 - `deployment/` — deployment records (code hashes, out points, networks) for
-  every contract release. Nothing is deployed yet.
+  every contract release. Nothing is deployed yet; the planned
+  cemp-message-type deployment is recorded there.
 
 ## Relationship to the ML-DSA lock
 
@@ -24,5 +26,8 @@ the signing implementation pass the readiness gate.
 ## Build
 
 ```bash
-cargo test   # host-side checks for now; on-chain builds target riscv64 later
+cargo test   # host-side checks (validation logic + constants)
+
+# on-chain binary (riscv64, ckb-std):
+cd cemp-message-type && ./build.sh
 ```

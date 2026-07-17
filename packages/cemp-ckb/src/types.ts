@@ -45,7 +45,11 @@ export interface Cell {
   outPoint: OutPoint;
   output: CellOutput;
   data: HexString;
-  blockNumber: string;
+  /**
+   * Block the cell was created in. Always present for indexer results;
+   * absent for `get_live_cell` views, which do not report it.
+   */
+  blockNumber?: string;
 }
 
 export interface Transaction {

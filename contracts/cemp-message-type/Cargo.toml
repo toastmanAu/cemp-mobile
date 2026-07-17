@@ -1,9 +1,26 @@
 [package]
 name = "cemp-message-type"
-description = "CEMP message type script (placeholder — on-chain script lands in a later phase)"
+description = "CEMP message type script — on-chain validation of the 81-byte discovery args (protocol v1)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
 crate-type = ["rlib"]
+
+[[bin]]
+name = "cemp-message-type"
+path = "src/main.rs"
+
+# ckb-std only builds for the on-chain target. Host builds and `cargo test`
+# never compile it, and the CKB-VM entry point in src/main.rs is gated on the
+# same cfg, so the plain riscv64 build command needs no extra flags.
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+ckb-std = "=1.1.0"
+# Transitive deps of ckb-std, pinned exactly per repo convention. The 1.1.1
+# point releases declare rust-version 1.95, newer than this repo's toolchain;
+# 1.1.0 builds with rustc 1.92. default-features must stay false here so
+# feature unification does not enable ckb-gen-types' std-only deps (its `std`
+# feature pulls in crates that do not build for riscv64imac no_std).
+ckb-gen-types = { version = "=1.1.0", default-features = false }
+ckb-hash = { version = "=1.1.0", default-features = false }

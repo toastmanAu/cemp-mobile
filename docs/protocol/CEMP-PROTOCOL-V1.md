@@ -131,7 +131,14 @@ version            u8         = 1
 route_tag          [u8; 32]   // recipient's route tag for the current routing_epoch
 conversation_tag   [u8; 16]
 message_nonce      [u8; 16]
+reserved           [u8; 16]   // MUST be all zero in v1; rejected otherwise
 ```
+
+The named fields sum to 65 bytes; the 16-byte reserved suffix rounds the
+layout to 81 and buys forward-extensibility (e.g. flags or epoch ids) without
+a breaking layout change. Senders MUST zero it; validators MUST reject nonzero
+reserved bytes. Route-tag discovery queries prefix-match the leading 33 bytes
+(`version ‖ route_tag`).
 
 The type script itself is initially the network's indexing-type convention
 (ADR 0003 deployment `cempMessageType: null`); the args layout above is the

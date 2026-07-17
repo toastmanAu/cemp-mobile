@@ -7,8 +7,8 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v3: response/reclaim lifecycle (Phase 8 envelope ids + reclaim capacity).
-    expect(SCHEMA_VERSION).toBe(3);
+    // v4: background operation (Phase 9 worker leases).
+    expect(SCHEMA_VERSION).toBe(4);
   });
 
   it("covers the spec §11 core tables", () => {

@@ -177,6 +177,28 @@ importers:
         specifier: 2.2.0
         version: 2.2.0
 
+  packages/cemp-sync:
+    dependencies:
+      '@cemp/ckb':
+        specifier: workspace:*
+        version: link:../cemp-ckb
+      '@cemp/core':
+        specifier: workspace:*
+        version: link:../cemp-core
+      '@cemp/crypto':
+        specifier: workspace:*
+        version: link:../cemp-crypto
+      '@cemp/database':
+        specifier: workspace:*
+        version: link:../cemp-database
+      '@cemp/ui':
+        specifier: workspace:*
+        version: link:../cemp-ui
+    devDependencies:
+      '@ckb-ccc/core':
+        specifier: 1.12.5
+        version: 1.12.5(typescript@5.9.3)
+
   packages/cemp-test-vectors: {}
 
   packages/cemp-ui:

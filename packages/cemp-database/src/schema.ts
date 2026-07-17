@@ -13,9 +13,12 @@
  * - 3: response/reclaim lifecycle (Phase 8) — messages.envelope_message_id_hex
  *   (receipt/reply matching); outgoing_transactions.capacity_shannon
  *   (reclaim accounting across crash-resume).
+ * - 4: background operation (Phase 9) — worker_leases (concurrency control
+ *   for workers and reclaim jobs, tasks 9–10). Sync cursors reuse the v1
+ *   sync_cursors table.
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [

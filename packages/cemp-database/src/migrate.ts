@@ -197,6 +197,18 @@ export const MIGRATIONS: readonly Migration[] = [
       "ALTER TABLE outgoing_transactions ADD COLUMN capacity_shannon TEXT",
     ],
   },
+  {
+    version: 4,
+    description: "background operation: worker leases + sync cursors (Phase 9 tasks 4, 9, 10)",
+    statements: [
+      `CREATE TABLE worker_leases (
+         resource TEXT PRIMARY KEY,
+         owner TEXT NOT NULL,
+         acquired_at_ms INTEGER NOT NULL,
+         expires_at_ms INTEGER NOT NULL
+       )`,
+    ],
+  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

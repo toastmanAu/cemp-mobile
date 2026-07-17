@@ -28,6 +28,8 @@ export interface Message {
   readonly state: MessageState;
   readonly body: string | null;
   readonly logicalMessageId: string;
+  /** Envelope message id (schema v3; null until published/processed). */
+  readonly envelopeMessageIdHex: string | null;
   readonly createdAtMs: number;
   readonly updatedAtMs: number;
 }
@@ -48,6 +50,10 @@ function rowToMessage(row: SqlRow): Message {
     state: String(row.state) as MessageState,
     body: row.body === null || row.body === undefined ? null : String(row.body),
     logicalMessageId: String(row.logical_message_id),
+    envelopeMessageIdHex:
+      row.envelope_message_id_hex === null || row.envelope_message_id_hex === undefined
+        ? null
+        : String(row.envelope_message_id_hex),
     createdAtMs: Number(row.created_at_ms),
     updatedAtMs: Number(row.updated_at_ms),
   };

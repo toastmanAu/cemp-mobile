@@ -10,5 +10,7 @@ export * from "./repositories/attachments.js";
 export * from "./repositories/profiles.js";
 export * from "./repositories/outgoing-transactions.js";
 export * from "./repositories/balances.js";
+export * from "./repositories/worker-leases.js";
+export * from "./repositories/sync-cursors.js";
 export * from "./repositories/publication-store.js";
 export * from "./repositories/watched-outpoints.js";

@@ -1,0 +1,386 @@
+import { Script, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
+import { CKB_TESTNET } from "@cemp/core";
+import {
+  MessagePublisher,
+  ResponseLifecycle,
+  assembleTextMessage,
+  currentRoutingEpoch,
+  incomingLogicalMessageId,
+  type CempMessageTypeRef,
+} from "@cemp/ckb";
+import { CempClient, type JsonRpcTransport } from "@cemp/ckb";
+import { MockCkbClient, fillHex, hashFromRpcBody } from "@cemp/ckb/testing";
+import { deriveIdentityKeys, mldsaV2KeygenFromSeed, mnemonicToSeed } from "@cemp/crypto";
+import {
+  BalanceRepository,
+  ContactRepository,
+  ConversationRepository,
+  DatabasePublicationStore,
+  MessageRepository,
+  OutgoingTransactionRepository,
+  SyncCursorRepository,
+  WatchedOutpointRepository,
+  WorkerLeaseRepository,
+  migrate,
+} from "@cemp/database";
+import { NodeSqliteAdapter } from "@cemp/database/node";
+import type { NotificationContent, Notifier } from "@cemp/ui";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
+import { InMemoryScheduler, SyncEngine } from "./engine.js";
+import { BackoffPolicy } from "./retry.js";
+import { EndpointRotator } from "./endpoints.js";
+import { buildWorkerSpecs, type SyncWorkerDeps } from "./workers.js";
+
+/**
+ * Phase 9 worker end-to-end (offline): background discovery, dedup,
+ * pending-tx completion, reboot continuity, lease-gated reclaim, endpoint
+ * rotation. Real DB stack + real assembly; fake chain transport.
+ */
+
+function hexToBytes(hex: string): Uint8Array {
+  const bare = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const out = new Uint8Array(bare.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Number.parseInt(bare.slice(2 * i, 2 * i + 2), 16);
+  }
+  return out;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const BOB = deriveIdentityKeys(
+  mnemonicToSeed("letter advice cage absurd amount doctor acoustic avoid letter advice cage above"),
+);
+const BOB_PROFILE_ID = hexToBytes("bb".repeat(32));
+const ALICE_PROFILE_ID = hexToBytes("aa".repeat(32));
+const signerKeyPair = mldsaV2KeygenFromSeed(hexToBytes(vectors.keygen[0]!.seed));
+
+const MESSAGE_TYPE_REF: CempMessageTypeRef = {
+  codeHash: CKB_TESTNET.deployments.cempMessageType!.codeHash,
+  hashType: CKB_TESTNET.deployments.cempMessageType!.hashType,
+  cellDep: {
+    txHash: CKB_TESTNET.deployments.cempMessageType!.txHash,
+    index: "0x0",
+    depType: "code",
+  },
+};
+
+class RecordingNotifier implements Notifier {
+  readonly posted: NotificationContent[] = [];
+  post(content: NotificationContent): Promise<void> {
+    this.posted.push(content);
+    return Promise.resolve();
+  }
+  cancel(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+/** A discovered message cell addressed to Bob (alice → bob), indexer JSON. */
+function discoveryCellJson(
+  text: string,
+  messageId?: Uint8Array,
+): { json: unknown; messageId: Uint8Array } {
+  const assembled = assembleTextMessage({
+    text,
+    senderProfileId: ALICE_PROFILE_ID,
+    recipientProfileId: BOB_PROFILE_ID,
+    recipientKemPublicKey: BOB.mlKem.publicKey,
+    senderDeviceId: hexToBytes("01".repeat(16)),
+    receiptRequest: 0,
+    ...(messageId === undefined ? {} : { messageId }),
+  });
+  const typeArgs = new Uint8Array(81);
+  typeArgs[0] = 1;
+  typeArgs.set(assembled.routeTag, 1);
+  typeArgs.set(assembled.conversationTag, 33);
+  typeArgs.set(assembled.messageNonce, 49);
+  const lock = Script.from({
+    codeHash: fillHex(0x77, 32),
+    hashType: "type",
+    args: `0x${"42".repeat(37)}`,
+  });
+  return {
+    messageId: assembled.messageId,
+    json: {
+      out_point: { tx_hash: fillHex(0xd1, 32), index: "0x0" },
+      output: {
+        capacity: `0x${fixedPointFrom(500).toString(16)}`,
+        lock: { code_hash: lock.codeHash, hash_type: "type", args: lock.args },
+        type: {
+          code_hash: MESSAGE_TYPE_REF.codeHash,
+          hash_type: MESSAGE_TYPE_REF.hashType,
+          args: hexFrom(typeArgs),
+        },
+      },
+      output_data: hexFrom(assembled.envelopeBytes),
+      block_number: "0x1",
+    },
+  };
+}
+
+function makeTransport(cells: unknown[]): JsonRpcTransport {
+  return {
+    call(_url, method, params) {
+      switch (method) {
+        case "get_cells":
+          // First page only: a follow-up call with an `after` cursor (params[3])
+          // returns the empty page, so pagination terminates.
+          if (params[3] !== undefined) {
+            return Promise.resolve({ objects: [], last_cursor: "0x64" });
+          }
+          return Promise.resolve({ objects: cells, last_cursor: "0x64" });
+        case "get_transaction":
+          return Promise.resolve({
+            tx_status: { status: "committed", block_hash: fillHex(0x99, 32) },
+          });
+        case "get_header":
+          return Promise.resolve({
+            number: "0x100",
+            epoch: "0x0",
+            timestamp: "0x0",
+            hash: fillHex(0x99, 32),
+          });
+        case "send_transaction":
+          return Promise.resolve(hashFromRpcBody(params[0] as Record<string, unknown>));
+        case "get_live_cell":
+          return Promise.resolve({ cell: null, status: "dead" });
+        default:
+          return Promise.reject(new Error(`unexpected method ${method}`));
+      }
+    },
+  };
+}
+
+interface Stack {
+  db: NodeSqliteAdapter;
+  engine: SyncEngine;
+  deps: SyncWorkerDeps;
+  notifier: RecordingNotifier;
+  messages: MessageRepository;
+  contacts: ContactRepository;
+  conversations: ConversationRepository;
+  outgoingTxs: OutgoingTransactionRepository;
+  leases: WorkerLeaseRepository;
+  cursors: SyncCursorRepository;
+}
+
+async function makeStack(
+  opts: { cells?: unknown[]; db?: NodeSqliteAdapter; engineId?: string } = {},
+): Promise<Stack> {
+  const db = opts.db ?? new NodeSqliteAdapter();
+  await migrate(db);
+  const contacts = new ContactRepository(db);
+  const conversations = new ConversationRepository(db);
+  const messages = new MessageRepository(db);
+  const outgoingTxs = new OutgoingTransactionRepository(db);
+  const watchedOutpoints = new WatchedOutpointRepository(db);
+  const balances = new BalanceRepository(db);
+  const cursors = new SyncCursorRepository(db);
+  const leases = new WorkerLeaseRepository(db);
+  const walletId = await balances.ensureWallet("main");
+  const store = new DatabasePublicationStore(messages, outgoingTxs, {
+    watchedOutpoints,
+    balances,
+    walletId,
+  });
+
+  const client = new CempClient({ transport: makeTransport(opts.cells ?? []) });
+  const mockChain = new MockCkbClient();
+  const signer = new (await import("@cemp/ckb")).MlDsaV2TxSigner({
+    keyPair: signerKeyPair,
+    client: mockChain,
+  });
+  const lifecycle = new ResponseLifecycle({ client, signer, messageType: MESSAGE_TYPE_REF, store });
+  const publisher = new MessagePublisher({
+    client,
+    signer,
+    messageType: MESSAGE_TYPE_REF,
+    store,
+    senderProfileId: BOB_PROFILE_ID,
+    senderDeviceId: hexToBytes("02".repeat(16)),
+  });
+  const notifier = new RecordingNotifier();
+  const engineId = opts.engineId ?? "engine-test";
+  const deps: SyncWorkerDeps = {
+    client,
+    messageType: MESSAGE_TYPE_REF,
+    lifecycle,
+    publisher,
+    messages,
+    contacts,
+    conversations,
+    outgoingTxs,
+    cursors,
+    leases,
+    notifier,
+    engineId,
+    ownProfileId: BOB_PROFILE_ID,
+    ownKemSecretKey: BOB.mlKem.secretKey,
+  };
+  const engine = new SyncEngine({
+    scheduler: new InMemoryScheduler(),
+    leases,
+    cursors,
+    workers: buildWorkerSpecs(deps),
+    backoff: new BackoffPolicy({ jitter: 0 }),
+    engineId,
+  });
+  return {
+    db,
+    engine,
+    deps,
+    notifier,
+    messages,
+    contacts,
+    conversations,
+    outgoingTxs,
+    leases,
+    cursors,
+  };
+}
+
+const tempDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+describe("incoming-discovery worker (exit criterion 1)", () => {
+  it("discovers, decrypts, inserts, notifies — and a second run does not duplicate", async () => {
+    const { json, messageId } = discoveryCellJson("background hello");
+    const stack = await makeStack({ cells: [json] });
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const contact = (await stack.contacts.list())[0]!;
+      expect(contact.displayName.startsWith("unknown-")).toBe(true);
+      const conv = (await stack.conversations.listWithPreview())[0]!;
+      expect(conv.lastMessageBody).toBe("background hello");
+      const stored = await stack.messages.getByLogicalId(incomingLogicalMessageId(messageId));
+      expect(stored?.state).toBe("received");
+      expect(stored?.envelopeMessageIdHex).toBe(bytesToHex(messageId));
+      expect(stack.notifier.posted).toHaveLength(1);
+      expect(stack.notifier.posted[0]!.channel).toBe("messages");
+      // Cursors persisted for BOTH epochs (task 4).
+      const epoch = currentRoutingEpoch();
+      expect(await stack.cursors.get(`incoming-discovery:${epoch.toString()}`)).toBe("0x64");
+      expect(await stack.cursors.get(`incoming-discovery:${(epoch - 1n).toString()}`)).toBe("0x64");
+
+      // Duplicate run (e.g. WorkManager fires twice): no duplicate chat row,
+      // no duplicate notification (exit criterion 3).
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await stack.messages.listByState(["received"])).toHaveLength(1);
+      expect(stack.notifier.posted).toHaveLength(1);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("skips a cell another engine holds the outpoint lease for (task 9)", async () => {
+    const { json } = discoveryCellJson("leased cell");
+    const stack = await makeStack({ cells: [json] });
+    try {
+      const lease = await stack.leases.acquire(
+        `outpoint:${fillHex(0xd1, 32)}:0x0`,
+        "engine-rival",
+        60_000,
+      );
+      expect(lease).not.toBeNull();
+      await stack.engine.runWorker("incoming-discovery");
+      expect(await stack.messages.listByState(["received"])).toHaveLength(0);
+      expect(stack.notifier.posted).toHaveLength(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+});
+
+describe("pending-transactions worker (exit criterion 2)", () => {
+  it("completes a journaled tx across a 'reboot' (new engine, same database file)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cemp-sync-reboot-"));
+    tempDirs.push(dir);
+    const path = join(dir, "sync.sqlite");
+    const first = await makeStack({ db: new NodeSqliteAdapter({ path }) });
+    const conv = await first.conversations.getOrCreateForContact(
+      (await first.contacts.create({ displayName: "alice" })).id,
+    );
+    const message = await first.messages.insert({
+      conversationId: conv.id,
+      direction: "outgoing",
+      body: "in flight",
+      logicalMessageId: "lm-reboot",
+    });
+    for (const state of [
+      "queued",
+      "encrypting",
+      "building_transaction",
+      "awaiting_signature",
+      "submitting",
+      "pending",
+    ] as const) {
+      await first.messages.transitionState(message.id, state);
+    }
+    await first.outgoingTxs.record({
+      txHash: fillHex(0xee, 32),
+      purpose: "message:lm-reboot",
+      state: "submitted",
+    });
+    await first.db.close(); // "reboot"
+
+    const second = await makeStack({
+      db: new NodeSqliteAdapter({ path }),
+      engineId: "engine-after-reboot",
+    });
+    try {
+      expect(await second.engine.runWorker("pending-transactions")).toBe("success");
+      expect((await second.messages.getById(message.id))?.state).toBe("available_on_chain");
+      expect((await second.outgoingTxs.getByTxHash(fillHex(0xee, 32)))?.state).toBe("committed");
+    } finally {
+      await second.db.close();
+    }
+  });
+});
+
+describe("reclaim-batch worker (task 10)", () => {
+  it("does not run while another engine holds the reclaim lease", async () => {
+    const stack = await makeStack();
+    try {
+      await stack.leases.acquire("reclaim:batch", "engine-rival", 60_000);
+      expect(await stack.engine.runWorker("reclaim-batch")).toBe("success"); // lease skip = clean no-op
+      expect(await stack.outgoingTxs.listByState("submitted")).toHaveLength(0); // nothing built/journaled
+    } finally {
+      await stack.db.close();
+    }
+  });
+});
+
+describe("EndpointRotator (task 7)", () => {
+  it("rotates after the failure threshold and persists the choice", async () => {
+    const db = new NodeSqliteAdapter();
+    await migrate(db);
+    try {
+      const cursors = new SyncCursorRepository(db);
+      const endpoints = [
+        { rpc: "https://a.example", indexer: "https://a.example" },
+        { rpc: "https://b.example", indexer: "https://b.example" },
+      ];
+      const rotator = new EndpointRotator(endpoints, cursors, 3);
+      expect((await rotator.current()).rpc).toBe("https://a.example");
+      expect(await rotator.reportFailure()).toBe(false);
+      expect(await rotator.reportFailure()).toBe(false);
+      expect(await rotator.reportFailure()).toBe(true); // rotated
+      expect((await rotator.current()).rpc).toBe("https://b.example");
+
+      // A fresh rotator over the same DB keeps the rotated choice (persisted).
+      const reloaded = new EndpointRotator(endpoints, cursors, 3);
+      expect((await reloaded.current()).rpc).toBe("https://b.example");
+    } finally {
+      await db.close();
+    }
+  });
+});

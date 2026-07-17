@@ -1,7 +1,7 @@
 import { Script as CccScriptClass, bytesFrom } from "@ckb-ccc/core";
 import type { Script as CccScript } from "@ckb-ccc/core";
-import { CKB_TESTNET, codec, deriveConversationId, deriveRouteTag } from "@cemp/core";
-import { encryptEnvelope, randomBytes, randomPadding } from "@cemp/crypto";
+import { CKB_TESTNET, codec } from "@cemp/core";
+import { randomBytes } from "@cemp/crypto";
 import type { IdentityKeyBundle } from "@cemp/crypto";
 import {
   CempClient,
@@ -14,7 +14,7 @@ import type { BuiltTransaction, Cell, CempMessageTypeRef, Hash } from "@cemp/ckb
 import { IDENTITY_HANDLES, IDENTITY_NAMES, deriveIdentity } from "./identities.js";
 import type { IdentityName } from "./identities.js";
 import { StateStore, defaultIdentityState, defaultSharedState } from "./state.js";
-import type { DeploymentRecord, IdentityState, OutPointJson, SharedState } from "./state.js";
+import type { DeploymentRecord, IdentityState, SharedState } from "./state.js";
 import { journalEntryFromBuilt, writeJournal } from "./journal.js";
 import { cccTxToWire } from "./wire.js";
 
@@ -315,92 +315,12 @@ export function checkProfileFingerprint(
   }
 }
 
+/** Message assembly lives in @cemp/ckb (Phase 7) — re-exported for the steps. */
+export { assembleTextMessage, currentRoutingEpoch, ROUTING_EPOCH_SECONDS } from "@cemp/ckb";
+export type { AssembleTextMessageParams, AssembledMessage } from "@cemp/ckb";
+
 function strip0x(hex: string): string {
   return hex.startsWith("0x") ? hex.slice(2) : hex;
-}
-
-// ── message assembly ────────────────────────────────────────────────────────
-
-const ROUTING_EPOCH_SECONDS = 2_592_000; // 30 days (protocol spec §2)
-
-export function currentRoutingEpoch(): bigint {
-  return BigInt(Math.floor(Date.now() / 1000 / ROUTING_EPOCH_SECONDS));
-}
-
-export interface AssembleTextMessageParams {
-  text: string;
-  senderProfileId: Uint8Array;
-  recipientProfileId: Uint8Array;
-  recipientKemPublicKey: Uint8Array;
-  senderDeviceId: Uint8Array;
-  replyTo?: { messageId: Uint8Array; outPoint: OutPointJson };
-  receipts?: { messageId: Uint8Array; status: number }[];
-  receiptRequest: number;
-}
-
-export interface AssembledMessage {
-  messageId: Uint8Array;
-  conversationId: Uint8Array;
-  routeTag: Uint8Array;
-  conversationTag: Uint8Array;
-  messageNonce: Uint8Array;
-  envelopeBytes: Uint8Array;
-}
-
-/** Build + encrypt a v1 text message (spec §6–§8): payload → header → envelope. */
-export function assembleTextMessage(params: AssembleTextMessageParams): AssembledMessage {
-  const messageId = randomBytes(16);
-  const conversationId = deriveConversationId(params.senderProfileId, params.recipientProfileId);
-  const routeTag = deriveRouteTag(params.recipientProfileId, currentRoutingEpoch());
-  const conversationTag = conversationId.subarray(0, 16);
-  const messageNonce = randomBytes(16);
-  const now = BigInt(Math.floor(Date.now() / 1000));
-
-  const payload = codec.encodeCempPayloadV1({
-    message_id: messageId,
-    body_type: 0x01,
-    recipient_profile_id: params.recipientProfileId,
-    text: new TextEncoder().encode(params.text),
-    attachment_manifests: [],
-    reply_to_message_id: params.replyTo?.messageId,
-    reply_to_outpoint:
-      params.replyTo === undefined
-        ? undefined
-        : {
-            tx_hash: codec.hexToBytes(strip0x(params.replyTo.outPoint.txHash)),
-            index: Number(BigInt(params.replyTo.outPoint.index)),
-          },
-    receipts: (params.receipts ?? []).map((receipt) => ({
-      message_id: receipt.messageId,
-      status: receipt.status,
-    })),
-    receipt_request: params.receiptRequest,
-    client_timestamp: now,
-    sender_device_id: params.senderDeviceId,
-    padding: randomPadding(),
-  });
-  const payloadCheck = codec.validatePayload(payload);
-  if (!payloadCheck.ok) {
-    throw new StepFailure(`assembled payload failed validation: ${payloadCheck.reason}`);
-  }
-
-  const header: codec.CempEnvelopeHeaderV1Encodable = {
-    protocol_version: 1,
-    network: 0x01, // ckb_testnet
-    content_type: 0x01,
-    message_id: messageId,
-    conversation_id: conversationId,
-    sender_profile_id: params.senderProfileId,
-    created_at_client: now,
-    reply_to_message_id: params.replyTo?.messageId,
-    expiry_hint: 0n,
-  };
-  const { envelopeBytes } = encryptEnvelope({
-    payload,
-    recipientKemPublicKey: params.recipientKemPublicKey,
-    header,
-  });
-  return { messageId, conversationId, routeTag, conversationTag, messageNonce, envelopeBytes };
 }
 
 // ── journal → sign → broadcast → commit pipeline ────────────────────────────

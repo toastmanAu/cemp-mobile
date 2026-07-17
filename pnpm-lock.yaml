@@ -152,7 +152,11 @@ importers:
         specifier: 2.2.0
         version: 2.2.0
 
-  packages/cemp-database: {}
+  packages/cemp-database:
+    dependencies:
+      '@cemp/ckb':
+        specifier: workspace:*
+        version: link:../cemp-ckb
 
   packages/cemp-secure-vault:
     dependencies:

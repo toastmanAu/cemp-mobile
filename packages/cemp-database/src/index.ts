@@ -8,4 +8,6 @@ export * from "./repositories/conversations.js";
 export * from "./repositories/messages.js";
 export * from "./repositories/attachments.js";
 export * from "./repositories/profiles.js";
+export * from "./repositories/outgoing-transactions.js";
+export * from "./repositories/publication-store.js";
 export * from "./repositories/watched-outpoints.js";

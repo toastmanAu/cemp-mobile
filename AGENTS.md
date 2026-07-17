@@ -58,6 +58,9 @@ cargo test            # contracts/ workspace (Rust), when contracts exist
 ## Conventions
 
 - TypeScript strict mode everywhere; `tsconfig.base.json` is the shared base.
+- `packages/cemp-core`'s only heavy dependency is `@ckb-ccc/core` (pinned
+  1.12.5, ADR 0004), used solely for its declarative Molecule codec API in
+  `packages/cemp-core/src/codec/`.
 - Dependencies are pinned exactly (`--save-exact`); `pnpm-lock.yaml` is committed.
 - Unit tests live next to sources as `*.test.ts`; golden/cross-runtime vectors
   live in `packages/cemp-test-vectors`.

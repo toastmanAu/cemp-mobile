@@ -17,6 +17,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@ckb-ccc/core": "1.12.5",
     "@noble/hashes": "2.2.0"
+  },
+  "devDependencies": {
+    "fast-check": "4.9.0"
   }
 }

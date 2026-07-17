@@ -54,7 +54,12 @@ export const CKB_TESTNET: NetworkConfig = {
       codeHash: "0xd70653f7fd51e173ec506b76081f37bf4acebb8a15dc79e6d4ad43ca4d3b78a4",
       hashType: "type",
     },
-    // Not deployed yet — contracts/cemp-message-type lands in a later phase.
-    cempMessageType: null,
+    cempMessageType: {
+      txHash: "0x25727f7670790089659f968c58ed8b3bc0d539d837fbf88dc010178b14f17aa5",
+      index: 0,
+      depType: "code",
+      codeHash: "0xd172d3bfb46d2e2f8f0e1c24139d3851010776205d66cec235dca34ec52234b8",
+      hashType: "data1",
+    },
   },
 };

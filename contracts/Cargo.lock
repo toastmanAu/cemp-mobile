@@ -34,8 +34,6 @@ dependencies = [
 name = "cemp-message-type"
 version = "0.0.0"
 dependencies = [
- "ckb-gen-types",
- "ckb-hash",
  "ckb-std",
 ]
 

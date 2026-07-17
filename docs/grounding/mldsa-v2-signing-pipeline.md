@@ -64,12 +64,20 @@ documented invariant, enforced by round-trip tests in ckb-mldsa-lock).
 
 ```text
 digest    = blake2b-256(stream, personalisation "ckb-mldsa-msg")
-final_msg = M' = 0x00 || 0x0E || "CKB-MLDSA-LOCK" || digest             // pure mode, ctx = DOMAIN (14 B)
-sig       = ml_dsa65.sign(sk, final_msg, ctx=[])                        // ctx empty; context baked into M'
-            (Rust harness uses try_sign_with_seed(rnd = 0x00*32) — deterministic;
+sig       = ml_dsa65.sign(sk, digest, ctx="CKB-MLDSA-LOCK")            // FIPS-204 pure mode, single wrap
+            (the implementation frames M' = 0x00 || 0x0E || "CKB-MLDSA-LOCK" || digest
+             internally; Rust harness uses try_sign_with_seed(rnd = 0x00*32) — deterministic;
              noble signs hedged — different bytes, still verifies)
 witness lock = [0x7B, pubkey(1952), sig(3309)]                          // 5,262 B
 ```
+
+The digest is passed RAW with `ctx = DOMAIN`, matching the deployed
+`mldsa65-lock-v2-rust` contract, which verifies with
+`ml_dsa::VerifyingKey::verify_with_context(digest, DOMAIN, sig)`
+(contracts/mldsa-lock-v2-rust/src/entry.rs in ckb-mldsa-lock). The older
+fips204-backend sibling lock instead pre-wraps M' and verifies with an empty
+ctx (double wrap): `verify(0x00||0x0E||DOMAIN||digest, sig, ctx=[])`. The two
+framings produce different internal M' bytes and are NOT cross-compatible.
 
 ## Transaction-building flow (from mldsa65_spend_test.rs)
 
@@ -79,7 +87,7 @@ witness lock = [0x7B, pubkey(1952), sig(3309)]                          // 5,262
    placeholder's _length_ affects fee sizing, so reserve the full 5,262 B.
 2. Resolve every input (CellOutput + data) and compute the stream with the
    group-input indices (single-group spends: `[0..input_count)`).
-3. digest → final_msg → sign → set `WitnessArgs.lock = [0x7B, pk, sig]`.
+3. digest → sign(digest, ctx=DOMAIN) → set `WitnessArgs.lock = [0x7B, pk, sig]`.
 4. Reassemble witnesses and broadcast. Cell dep: deploy tx
    `0x1074b1ac…0cb1` index 3 (`dep_type: code`) for mldsa65-lock-v2-rust.
 
@@ -87,5 +95,5 @@ witness lock = [0x7B, pubkey(1952), sig(3309)]                          // 5,262
 
 fips204-backend and RustCrypto-backend v2 locks are NOT signature-cross-compatible
 (different M' framing) though pubkeys/lock_args match — CEMP standardises on the
-fips204 framing above, matching `mldsa65-lock-v2-rust` (the canonical deployment
-in `packages/cemp-core` network config).
+RustCrypto single-wrap framing above, matching `mldsa65-lock-v2-rust` (the canonical
+deployment in `packages/cemp-core` network config).

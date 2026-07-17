@@ -16,7 +16,6 @@ import { CKB_TESTNET } from "@cemp/core";
 import type { CellDepRef, NetworkConfig } from "@cemp/core";
 import {
   MLDSA_V2_SIZES,
-  buildFinalMessage,
   cighashV2Digest,
   mldsaV2LockArgs,
   mldsaV2Sign,
@@ -266,12 +265,15 @@ export class MlDsaV2TxSigner extends Signer {
       }
       resolvedInputs.push(resolved);
     }
-    // (d) Single script group [0..inputs.length): stream → digest → M' → sign.
+    // (d) Single script group [0..inputs.length): stream → digest → sign.
+    // The digest goes into mldsaV2Sign RAW: the deployed mldsa65-lock-v2-rust
+    // contract verifies with ctx = DOMAIN (single wrap), and mldsaV2Sign
+    // mirrors that call shape exactly.
     const groupInputIndices = tx.inputs.map((_, i) => i);
     const stream = buildCighashAllStream(tx, resolvedInputs, groupInputIndices);
-    const finalMessage = buildFinalMessage(cighashV2Digest(stream));
+    const digest = cighashV2Digest(stream);
     // Hedged signing: no random override (grounding §Digest and framing).
-    const signature = mldsaV2Sign(this.keyPair.secretKey, finalMessage);
+    const signature = mldsaV2Sign(this.keyPair.secretKey, digest);
     const witnessLock = mldsaV2WitnessLock(this.keyPair.publicKey, signature);
     // Splice into the FIRST group witness only (see the module header).
     const firstWitness = tx.getWitnessArgsAt(0);
@@ -314,8 +316,7 @@ export class MlDsaV2TxSigner extends Signer {
     }
     const groupInputIndices = tx.inputs.map((_, i) => i);
     const stream = buildCighashAllStream(tx, resolvedInputs, groupInputIndices);
-    const finalMessage = buildFinalMessage(cighashV2Digest(stream));
-    return mldsaV2Verify(publicKey, finalMessage, signature);
+    return mldsaV2Verify(publicKey, cighashV2Digest(stream), signature);
   }
 }
 

@@ -55,9 +55,18 @@ function personal16(personal: string): Uint8Array {
 
 const SCT_PERSONAL_BYTES = personal16(MLDSA_V2_SCT_PERSONAL);
 const MSG_PERSONAL_BYTES = personal16(MLDSA_V2_MSG_PERSONAL);
+/**
+ * FIPS-204 pure-mode context passed to sign/verify. The DEPLOYED canonical
+ * lock (`mldsa65-lock-v2-rust`, code hash 0xd70653f7…78a4) verifies with
+ * `ml_dsa::VerifyingKey::verify_with_context(digest, DOMAIN, sig)`, which
+ * applies the §5.4 M' framing ONCE internally (single wrap). The older
+ * fips204-backend sibling lock instead pre-wraps and verifies with an empty
+ * ctx (double wrap) — the two backends are NOT signature-cross-compatible
+ * (docs/grounding/reference-projects.md §3). CEMP targets the deployed
+ * RustCrypto backend, so the context travels as the ctx argument, never
+ * pre-wrapped into the message.
+ */
 const DOMAIN_BYTES = utf8ToBytes(MLDSA_V2_DOMAIN);
-/** Empty FIPS-204 context for sign/verify — the context is baked into M'. */
-const EMPTY_CONTEXT = new Uint8Array(0);
 
 /**
  * Lock-script flag byte: (param_id << 1) | has_signature.
@@ -128,47 +137,57 @@ export function mldsaV2KeygenFromSeed(seed: Uint8Array): {
 }
 
 /**
- * Sign a final message (M' built by buildFinalMessage) with an EMPTY ctx —
- * the context is already baked into M'. Pass 32 zero bytes as `random` to
- * reproduce the Rust harness's deterministic try_sign_with_seed(rnd = 0x00*32)
- * signatures; omit it for hedged signing (different bytes, still verifies).
+ * Sign the 32-byte CighashAll digest with ctx = "CKB-MLDSA-LOCK" — the exact
+ * call shape the deployed `mldsa65-lock-v2-rust` contract verifies
+ * (`verify_with_context(digest, DOMAIN, sig)`). The implementation applies
+ * the FIPS-204 §5.4 M' framing internally, so the signed M' equals
+ * {@link buildFinalMessage}(digest) byte-for-byte. Pass 32 zero bytes as
+ * `random` to reproduce the Rust harness's deterministic
+ * try_sign_with_seed(rnd = 0x00*32) signatures; omit it for hedged signing
+ * (different bytes, still verifies).
  * See docs/grounding/mldsa-v2-signing-pipeline.md §Digest and FIPS-204 message framing.
  */
 export function mldsaV2Sign(
   secretKey: Uint8Array,
-  finalMessage: Uint8Array,
+  digest: Uint8Array,
   random?: Uint8Array,
 ): Uint8Array {
   if (secretKey.length !== MLDSA_V2_SIZES.sk) {
     throw new Error(`mldsaV2Sign: secretKey length ${secretKey.length} != ${MLDSA_V2_SIZES.sk}`);
   }
+  if (digest.length !== 32) {
+    throw new Error(`mldsaV2Sign: digest length ${digest.length} != 32`);
+  }
   if (random !== undefined && random.length !== 32) {
     throw new Error(`mldsaV2Sign: random length ${random.length} != 32`);
   }
-  return ml_dsa65.sign(finalMessage, secretKey, {
-    context: EMPTY_CONTEXT,
+  return ml_dsa65.sign(digest, secretKey, {
+    context: DOMAIN_BYTES,
     ...(random !== undefined ? { extraEntropy: random } : {}),
   });
 }
 
 /**
- * Verify an ML-DSA-65 signature against a final message with EMPTY ctx
- * (mirrors the on-chain lock and verifying.rs). Returns false rather than
- * throwing for well-formed-but-invalid signatures.
+ * Verify an ML-DSA-65 signature against the 32-byte CighashAll digest with
+ * ctx = "CKB-MLDSA-LOCK" (mirrors the deployed on-chain lock). Returns false
+ * rather than throwing for well-formed-but-invalid signatures.
  * See docs/grounding/mldsa-v2-signing-pipeline.md §Digest and FIPS-204 message framing.
  */
 export function mldsaV2Verify(
   publicKey: Uint8Array,
-  finalMessage: Uint8Array,
+  digest: Uint8Array,
   signature: Uint8Array,
 ): boolean {
   if (publicKey.length !== MLDSA_V2_SIZES.pk) {
     throw new Error(`mldsaV2Verify: publicKey length ${publicKey.length} != ${MLDSA_V2_SIZES.pk}`);
   }
+  if (digest.length !== 32) {
+    throw new Error(`mldsaV2Verify: digest length ${digest.length} != 32`);
+  }
   if (signature.length !== MLDSA_V2_SIZES.sig) {
     throw new Error(`mldsaV2Verify: signature length ${signature.length} != ${MLDSA_V2_SIZES.sig}`);
   }
-  return ml_dsa65.verify(signature, finalMessage, publicKey, { context: EMPTY_CONTEXT });
+  return ml_dsa65.verify(signature, digest, publicKey, { context: DOMAIN_BYTES });
 }
 
 /**

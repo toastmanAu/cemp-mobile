@@ -57,10 +57,10 @@ describe("mldsa-v2 golden vectors (tools/signing-harness, fips204)", () => {
   describe("sign", () => {
     for (const sc of vectors.sign) {
       const secretKey = mldsaV2KeygenFromSeed(hexToBytes(sc.seed)).secretKey;
-      const finalMessage = hexToBytes(sc.finalMessage);
+      const digest = hexToBytes(sc.digest);
 
       it(`deterministic sign (rnd = 0x00*32) matches byte-for-byte (${sc.name})`, () => {
-        const signature = mldsaV2Sign(secretKey, finalMessage, new Uint8Array(32));
+        const signature = mldsaV2Sign(secretKey, digest, new Uint8Array(32));
         expect(signature).toHaveLength(MLDSA_V2_SIZES.sig);
         expect(bytesToHex(signature)).toBe(sc.signature);
       });
@@ -73,15 +73,13 @@ describe("mldsa-v2 golden vectors (tools/signing-harness, fips204)", () => {
       });
 
       it(`hedged sign (no random) verifies and differs from the deterministic sig (${sc.name})`, () => {
-        const hedged = mldsaV2Sign(secretKey, finalMessage);
-        expect(mldsaV2Verify(hexToBytes(sc.pubkey), finalMessage, hedged)).toBe(true);
+        const hedged = mldsaV2Sign(secretKey, digest);
+        expect(mldsaV2Verify(hexToBytes(sc.pubkey), digest, hedged)).toBe(true);
         expect(bytesToHex(hedged)).not.toBe(sc.signature);
       });
 
       it(`deterministic sig verifies under mldsaV2Verify (${sc.name})`, () => {
-        expect(mldsaV2Verify(hexToBytes(sc.pubkey), finalMessage, hexToBytes(sc.signature))).toBe(
-          true,
-        );
+        expect(mldsaV2Verify(hexToBytes(sc.pubkey), digest, hexToBytes(sc.signature))).toBe(true);
       });
     }
   });

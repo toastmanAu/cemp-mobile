@@ -15,6 +15,7 @@
 //! | 1    | type args length != 81 bytes                     |
 //! | 2    | unsupported protocol version byte (args[0] != 1) |
 //! | 3    | failed to load own script (on-chain entry only)  |
+//! | 4    | own script buffer is not a well-formed molecule `Script` (on-chain only) |
 #![no_std]
 
 #[cfg(test)]

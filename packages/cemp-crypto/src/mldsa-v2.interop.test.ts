@@ -62,13 +62,15 @@ describe("mldsa-v2 interop: noble signature verified by the Rust harness", () =>
       expect(bytesToHex(publicKey)).toBe(sc.pubkey);
 
       const stream = hexToBytes(sc.stream);
-      const finalMessage = buildFinalMessage(cighashV2Digest(stream));
-      expect(bytesToHex(finalMessage)).toBe(sc.finalMessage);
+      const digest = cighashV2Digest(stream);
+      // M' is informational (the FIPS-204 implementation frames it
+      // internally); assert the TS framing helper still matches the vectors.
+      expect(bytesToHex(buildFinalMessage(digest))).toBe(sc.finalMessage);
 
       // Hedged (randomised) signature — different bytes than the vector's
       // deterministic one, but the on-chain-equivalent Rust verifier must
       // still accept it.
-      const hedged = mldsaV2Sign(secretKey, finalMessage);
+      const hedged = mldsaV2Sign(secretKey, digest);
       const res = harnessVerify(sc.pubkey, bytesToHex(hedged), sc.stream);
       expect(res.stderr).toBe("");
       expect(res.status).toBe(0);
@@ -84,8 +86,7 @@ describe("mldsa-v2 interop: noble signature verified by the Rust harness", () =>
       const { secretKey } = mldsaV2KeygenFromSeed(hexToBytes(sc.seed));
 
       const stream = hexToBytes(sc.stream);
-      const finalMessage = buildFinalMessage(cighashV2Digest(stream));
-      const hedged = mldsaV2Sign(secretKey, finalMessage);
+      const hedged = mldsaV2Sign(secretKey, cighashV2Digest(stream));
 
       // Flip one byte of the stream AFTER signing — the harness recomputes
       // digest → final message from the corrupted stream, so verification

@@ -1,4 +1,4 @@
-import { Transaction, hashTypeId, hexFrom, numFrom } from "@ckb-ccc/core";
+import { CellDep, KnownScript, Transaction, hashTypeId, hexFrom, numFrom } from "@ckb-ccc/core";
 import type { Client as CccClient, NumLike, Script, ScriptLike } from "@ckb-ccc/core";
 import { codec } from "@cemp/core";
 import { CempCkbError } from "./client.js";
@@ -88,6 +88,54 @@ export interface BuiltTransaction {
   estimatedFee: bigint;
 }
 
+/**
+ * Out-point reference to a deployed script code cell (hex index, as used by
+ * CKB RPC). Any script that EXECUTES in a transaction — lock scripts of
+ * inputs, type scripts of inputs AND outputs — must be resolvable through
+ * the transaction's cell deps, so every builder that creates or spends a
+ * cell carrying a CEMP script takes the matching reference explicitly
+ * (deployed contract identifiers come from `@cemp/core` network
+ * configuration / deployment records, never hard-coded — AGENTS.md).
+ */
+export interface ScriptCellDepRef {
+  txHash: string;
+  /** Hex-encoded uint32 index, as used by CKB RPC. */
+  index: string;
+  depType: "code" | "depGroup";
+}
+
+/**
+ * The deployed CEMP message type script. `cellDep` is REQUIRED (not
+ * optional): the type script executes on every message send and on every
+ * reclaim, and without its code cell in the transaction's cell deps the
+ * transaction fails on-chain.
+ */
+export interface CempMessageTypeRef {
+  codeHash: string;
+  hashType: HashType;
+  cellDep: ScriptCellDepRef;
+}
+
+const U32_MAX = 0xff_ff_ff_ffn;
+
+function cellDepFrom(ref: ScriptCellDepRef, ctx: string): CellDep {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(ref.txHash)) {
+    throw new CempCkbError(ctx, `cell dep tx hash is not a 32-byte hash: ${ref.txHash}`);
+  }
+  let index: bigint;
+  try {
+    index = numFrom(ref.index);
+  } catch (err) {
+    throw new CempCkbError(ctx, `cell dep index ${JSON.stringify(ref.index)} is unparseable`, {
+      cause: err,
+    });
+  }
+  if (index > U32_MAX) {
+    throw new CempCkbError(ctx, `cell dep index ${ref.index} exceeds uint32`);
+  }
+  return CellDep.from({ outPoint: { txHash: ref.txHash, index }, depType: ref.depType });
+}
+
 async function describeInputs(
   tx: Transaction,
   client: CccClient,
@@ -126,6 +174,10 @@ export interface BuildCreateProfileTxOptions {
  * One output cell: lock = signer lock, type = Type ID script whose args are
  * `hashTypeId(firstInput, 0)` (the profile_id, spec §5.3), data = the
  * codec-encoded `CempProfileV1`. Change goes back to the signer lock.
+ *
+ * The Type ID script executes on creation, so its code cell is added to the
+ * transaction's cell deps (`KnownScript.TypeId`, resolved by the network's
+ * CCC client — the genesis system script, present on every CKB network).
  */
 export async function buildCreateProfileTx(
   options: BuildCreateProfileTxOptions,
@@ -152,6 +204,8 @@ export async function buildCreateProfileTx(
     ],
     outputsData: [hexFrom(data)],
   });
+  // The Type ID script runs for the new output: its code must be in cell deps.
+  await tx.addCellDepsOfKnownScripts(signer.client, KnownScript.TypeId);
   const profileOutput = tx.outputs[0];
   if (profileOutput === undefined) {
     throw new CempCkbError("buildCreateProfileTx", "internal: profile output missing");
@@ -190,12 +244,12 @@ export interface BuildSendMessageTxOptions {
   /** Sender (owner) of the message cell — the sender keeps reclaim authority (rule 9). */
   sender: MlDsaV2TxSigner;
   /**
-   * Deployed CEMP message type script (`{codeHash, hashType}` from
-   * `getCempMessageTypeScript`), or null when not deployed. Null is a hard
+   * Deployed CEMP message type script, including its code cell dep (see
+   * {@link CempMessageTypeRef} for why the dep is required). Null is a hard
    * error: discovery depends on the type script, so this builder never
    * silently sends without it.
    */
-  cempMessageType: { codeHash: string; hashType: HashType } | null;
+  cempMessageType: CempMessageTypeRef | null;
   feeRate?: NumLike;
 }
 
@@ -282,6 +336,8 @@ export async function buildSendMessageTx(
     ],
     outputsData: [hexFrom(options.envelopeBytes)],
   });
+  // The type script executes on the new output: code must be in cell deps.
+  tx.addCellDeps(cellDepFrom(options.cempMessageType.cellDep, "buildSendMessageTx"));
   const messageOutput = tx.outputs[0];
   if (messageOutput === undefined) {
     throw new CempCkbError("buildSendMessageTx", "internal: message output missing");
@@ -312,6 +368,12 @@ export interface BuildReclaimTxOptions {
   resolvedCells: Cell[];
   /** Signer (the sender); only cells locked by ITS lock may be reclaimed (rule 9). */
   signer: MlDsaV2TxSigner;
+  /**
+   * Code cell dep of the CEMP message type script. REQUIRED: the reclaimed
+   * cells carry that type script, which executes when they are spent, so its
+   * code must be resolvable through the transaction's cell deps.
+   */
+  messageTypeCellDep: ScriptCellDepRef;
   /** Consolidation target; defaults to the signer's own lock. */
   recipientLock?: ScriptLike;
   feeRate?: NumLike;
@@ -366,6 +428,8 @@ export async function buildReclaimTx(options: BuildReclaimTxOptions): Promise<Bu
   });
 
   const tx = Transaction.from({ inputs, outputs: [], outputsData: [] });
+  // The spent message cells' type script executes: code must be in cell deps.
+  tx.addCellDeps(cellDepFrom(options.messageTypeCellDep, "buildReclaimTx"));
   const recipientLock = options.recipientLock ?? ownerLock;
   // The consolidation output is the change cell created here; the sender may
   // top up with extra wallet inputs if the reclaimed capacity cannot cover
@@ -398,4 +462,43 @@ function sameIndex(a: string, b: string): boolean {
 
 function scriptEquals(a: { codeHash: string; hashType: string; args: string }, b: Script): boolean {
   return a.codeHash === b.codeHash && a.hashType === b.hashType && a.args === b.args;
+}
+
+// ── deploy data cell (contract deployment) ──────────────────────────────────
+
+export interface BuildDeployDataCellTxOptions {
+  /** The cell data — e.g. the compiled contract binary. */
+  data: Uint8Array;
+  /** Owner of the deployed code cell (its lock becomes the cell lock). */
+  signer: MlDsaV2TxSigner;
+  feeRate?: NumLike;
+}
+
+/**
+ * One output cell: lock = signer lock, NO type script, data = the given bytes
+ * (a `data1`-hashable code cell, per contracts/deployment/README.md). The
+ * data itself never executes in this transaction, so the only script dep is
+ * the signer's lock dep (added by `prepareTransaction` during fee
+ * completion). Capacity is the occupied size plus {@link CAPACITY_MARGIN} —
+ * the cell stays locked permanently, so the margin is a one-time cost.
+ */
+export async function buildDeployDataCellTx(
+  options: BuildDeployDataCellTxOptions,
+): Promise<BuiltTransaction> {
+  if (options.data.length === 0) {
+    throw new CempCkbError("buildDeployDataCellTx", "refusing to deploy an empty data cell");
+  }
+  const tx = Transaction.from({
+    outputs: [{ lock: options.signer.lockScript(), capacity: 0 }],
+    outputsData: [hexFrom(options.data)],
+  });
+  const output = tx.outputs[0];
+  if (output === undefined) {
+    throw new CempCkbError("buildDeployDataCellTx", "internal: deploy output missing");
+  }
+  output.capacity += CAPACITY_MARGIN;
+
+  await tx.completeInputsByCapacity(options.signer);
+  await tx.completeFeeBy(options.signer, options.feeRate ?? DEFAULT_FEE_RATE);
+  return finalize(tx, options.signer.client);
 }

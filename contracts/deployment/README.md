@@ -28,11 +28,14 @@ testnet identifiers (and why the v1 deployment is deprecated).
 - `hashType`: `data1` — immutable code reference, no TYPE ID upgrade path,
   mirroring the mainnet-readiness posture (the script is tiny and versioned;
   a fix ships as a new code hash, not an in-place upgrade).
-- `codeHash`: `0xb0d8497f78c22610d0c02a77235046ed62a006f6bce67b18fb18c5330aff0a0a`
+- `codeHash`: `0xd172d3bfb46d2e2f8f0e1c24139d3851010776205d66cec235dca34ec52234b8`
   — blake2b-256 (`ckb-default-hash` personalization) of the release binary
   `contracts/target/riscv64imac-unknown-none-elf/release/cemp-message-type`
-  (26672 bytes; rustc 1.92.0, ckb-std 1.1.0 — rebuild via
-  `contracts/cemp-message-type/build.sh`).
+  (3048 bytes; rustc 1.92.0, ckb-std 1.1.0 — rebuild via
+  `contracts/cemp-message-type/build.sh`). Supersedes the first build
+  (`0xb0d8497f…0a0a`, 26672 bytes), which was undeployable in practice: it
+  executed RISC-V A-extension atomics (via ckb-gen-types/bytes) that CKB-VM
+  rejects with `InvalidInstruction`; see `contracts/cemp-message-type/README.md`.
 - Deployment itself is a later task: it needs a funded testnet account and
   will fill in `deployTxHash` / `outPointIndex` in a record file here. The
   codeHash above is valid only for exactly this binary; the deploy task must

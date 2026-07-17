@@ -58,15 +58,23 @@ Output: `../target/riscv64imac-unknown-none-elf/release/cemp-message-type`.
 Current build (rustc 1.92.0, ckb-std 1.1.0, workspace release profile
 `lto = true, opt-level = "s"`):
 
-- size: 26672 bytes
-- codeHash (blake2b-256, `ckb-default-hash` personalization, computed with
-  the `ckb-hash` 1.1.0 crate; Python `hashlib.blake2b(person=...)` agrees):
-  `0xb0d8497f78c22610d0c02a77235046ed62a006f6bce67b18fb18c5330aff0a0a`
+- size: 3048 bytes
+- codeHash (blake2b-256, `ckb-default-hash` personalization; Python
+  `hashlib.blake2b(person=...)` agrees):
+  `0xd172d3bfb46d2e2f8f0e1c24139d3851010776205d66cec235dca34ec52234b8`
+
+⚠ The first build (26672 bytes, codeHash `0xb0d8497f…0a0a`) was deployed and
+then reclaimed the same day: its `ckb_std::high_level::load_script` /
+ckb-gen-types path cloned `bytes::Bytes` refcounts, which compile to RISC-V
+A-extension atomics (`lr.d`/`sc.d`/`amoadd.d`) that CKB-VM does not implement
+— the script died with `VM Internal Error: InvalidInstruction` on its first
+message-cell validation. `src/main.rs` now uses the raw `load_script` syscall
+and hand-parses the molecule `Script` table; the binary must stay free of
+`lr.*`/`sc.*`/`amo*` mnemonics (check with `riscv64-unknown-elf-objdump -d`).
 
 The codeHash is a function of the exact toolchain and dependency set; rebuilds
-with different versions may produce a different hash. Deployment (a later
-funded task) must record the hash of the binary it actually ships — see
-`contracts/deployment/README.md`.
+with different versions may produce a different hash. Deployment must record
+the hash of the binary it actually ships — see `contracts/deployment/README.md`.
 
 ## Test
 

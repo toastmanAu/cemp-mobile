@@ -2,7 +2,13 @@ import { ClientPublicTestnet } from "@ckb-ccc/core";
 import type { Client as CccClient } from "@ckb-ccc/core";
 import { CKB_TESTNET } from "@cemp/core";
 import type { NetworkConfig, NetworkEndpoints } from "@cemp/core";
-import type { CkbIndexerProvider, CellQuery, CellPage, TransactionPage } from "./providers.js";
+import type {
+  CkbIndexerProvider,
+  CkbRpcProvider,
+  CellQuery,
+  CellPage,
+  TransactionPage,
+} from "./providers.js";
 import type {
   Cell,
   Hash,
@@ -10,6 +16,7 @@ import type {
   LiveCellStatus,
   OutPoint,
   Script,
+  Transaction,
   TransactionStatus,
 } from "./types.js";
 
@@ -40,9 +47,16 @@ import type {
  * `script_search_mode` explicitly on every `get_cells` call — no
  * `clientSearchKeyRangeFrom` range-transform fallback is needed.
  *
- * There is deliberately NO `sendTransaction` here: this layer must not
- * broadcast. Broadcast lands with the live client run (next task), after the
- * pre-broadcast journal write (AGENTS.md rule 6).
+ * `sendTransaction` is the single broadcast entry point. It takes the
+ * JSON-shaped `Transaction` (see `types.ts`) — NOT a CCC object — so the
+ * caller must serialize before calling, which is exactly the moment the
+ * pre-broadcast journal entry must be written (AGENTS.md rule 6: journal the
+ * unsigned transaction BEFORE any `send_transaction` call). The wire body is
+ * re-validated field by field before it leaves the process (rule 4 cuts both
+ * ways: never emit malformed transactions either). It always sends with
+ * `outputs_validator: "passthrough"` by default: CEMP outputs carry the
+ * ML-DSA-65 v2 lock and the CEMP message type script, which are not in the
+ * node's well-known script list, so the default validator would reject them.
  */
 
 /** All shape/transport failures of this module are reported as this type. */
@@ -319,6 +333,106 @@ export function parseTransactionStatus(json: unknown, txHash: Hash): RawTransact
   }
 }
 
+// ── outgoing transaction serialization (send_transaction) ───────────────────
+
+/** `outputs_validator` values accepted by `send_transaction`. */
+export type OutputsValidator = "passthrough" | "well_known_scripts_only";
+
+function parseDepType(value: unknown, ctx: string): "code" | "depGroup" {
+  const depType = asString(value, ctx);
+  if (depType !== "code" && depType !== "depGroup") {
+    throw new CempCkbError(ctx, `unknown dep_type ${preview(depType)}`);
+  }
+  return depType;
+}
+
+function u32IndexHex(value: unknown, ctx: string): string {
+  const index = asU64Hex(value, ctx);
+  if (index.num > 0xff_ff_ff_ffn) {
+    throw new CempCkbError(ctx, `out-point index ${preview(value)} exceeds uint32`);
+  }
+  return index.hex;
+}
+
+/** Validate a camelCase {@link Script} (types.ts shape) before re-serializing. */
+function parseOutgoingScript(value: unknown, ctx: string): Script {
+  const rec = asRecord(value, ctx);
+  return {
+    codeHash: asHash(rec.codeHash, `${ctx}.codeHash`),
+    hashType: asHashType(rec.hashType, `${ctx}.hashType`),
+    args: asHex(rec.args, `${ctx}.args`),
+  };
+}
+
+/**
+ * Validate a JSON-shaped {@link Transaction} field by field and emit the exact
+ * `send_transaction` wire body (snake_case, 0x-quantities). Anything malformed
+ * throws {@link CempCkbError} BEFORE the request leaves the process — the
+ * caller signs what it journals, so a shape bug here would otherwise burn a
+ * signature on an unbroadcastable transaction.
+ */
+export function transactionToRpc(tx: Transaction): Record<string, unknown> {
+  const rec = asRecord(tx, "transaction");
+  const cellDeps = asArray(rec.cellDeps, "transaction.cell_deps").map((dep, i) => {
+    const depRec = asRecord(dep, `transaction.cell_deps[${i}]`);
+    const outPoint = asRecord(depRec.outPoint, `transaction.cell_deps[${i}].out_point`);
+    return {
+      out_point: {
+        tx_hash: asHash(outPoint.txHash, `transaction.cell_deps[${i}].out_point.tx_hash`),
+        index: u32IndexHex(outPoint.index, `transaction.cell_deps[${i}].out_point.index`),
+      },
+      dep_type: parseDepType(depRec.depType, `transaction.cell_deps[${i}].dep_type`),
+    };
+  });
+  const headerDeps = asArray(rec.headerDeps, "transaction.header_deps").map((hash, i) =>
+    asHash(hash, `transaction.header_deps[${i}]`),
+  );
+  const inputs = asArray(rec.inputs, "transaction.inputs").map((input, i) => {
+    const inputRec = asRecord(input, `transaction.inputs[${i}]`);
+    const previous = asRecord(inputRec.previousOutput, `transaction.inputs[${i}].previous_output`);
+    return {
+      previous_output: {
+        tx_hash: asHash(previous.txHash, `transaction.inputs[${i}].previous_output.tx_hash`),
+        index: u32IndexHex(previous.index, `transaction.inputs[${i}].previous_output.index`),
+      },
+      since: asU64Hex(inputRec.since, `transaction.inputs[${i}].since`).hex,
+    };
+  });
+  const outputs = asArray(rec.outputs, "transaction.outputs").map((output, i) => {
+    const outputRec = asRecord(output, `transaction.outputs[${i}]`);
+    const type = outputRec.type;
+    return {
+      capacity: asU64Hex(outputRec.capacity, `transaction.outputs[${i}].capacity`).hex,
+      lock: scriptToRpc(parseOutgoingScript(outputRec.lock, `transaction.outputs[${i}].lock`)),
+      type:
+        type === null || type === undefined
+          ? null
+          : scriptToRpc(parseOutgoingScript(type, `transaction.outputs[${i}].type`)),
+    };
+  });
+  const outputsData = asArray(rec.outputsData, "transaction.outputs_data").map((data, i) =>
+    asHex(data, `transaction.outputs_data[${i}]`),
+  );
+  if (outputsData.length !== outputs.length) {
+    throw new CempCkbError(
+      "transaction",
+      `outputs (${outputs.length}) and outputs_data (${outputsData.length}) length mismatch`,
+    );
+  }
+  const witnesses = asArray(rec.witnesses, "transaction.witnesses").map((witness, i) =>
+    asHex(witness, `transaction.witnesses[${i}]`),
+  );
+  return {
+    version: asQuantityHex(rec.version, "transaction.version"),
+    cell_deps: cellDeps,
+    header_deps: headerDeps,
+    inputs,
+    outputs,
+    outputs_data: outputsData,
+    witnesses,
+  };
+}
+
 // ── JSON-RPC transport ──────────────────────────────────────────────────────
 
 /** Minimal JSON-RPC transport seam (injectable for tests/offline). */
@@ -392,10 +506,12 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_FIND_LIMIT = 64;
 
 /**
- * Read-only CEMP chain client. See the module header for the two halves and
- * for why broadcasting is absent here.
+ * CEMP chain client. Reads are validated shape-by-shape (see the module
+ * header); {@link CempClient.sendTransaction} is the single broadcast entry
+ * point and is only ever called after a pre-broadcast journal write
+ * (AGENTS.md rule 6).
  */
-export class CempClient implements CkbIndexerProvider {
+export class CempClient implements CkbIndexerProvider, CkbRpcProvider {
   readonly network: NetworkConfig;
   readonly endpoints: NetworkEndpoints;
   /** CCC client for transaction building / coin selection (never for broadcast here). */
@@ -417,6 +533,28 @@ export class CempClient implements CkbIndexerProvider {
   async getTipHeader(): Promise<Header> {
     const result = await this.transport.call(this.endpoints.rpc, "get_tip_header", []);
     return parseTipHeader(result);
+  }
+
+  /**
+   * Broadcast a signed transaction via `send_transaction`; returns the
+   * accepted transaction hash (validated as a 32-byte hash). The caller MUST
+   * have written the pre-broadcast journal entry already (AGENTS.md rule 6)
+   * and SHOULD cross-check the returned hash against the locally computed
+   * `tx.hash()` of the signed transaction.
+   *
+   * `outputsValidator` defaults to `"passthrough"` because CEMP outputs use
+   * scripts outside the node's well-known list (see the module header).
+   */
+  async sendTransaction(
+    tx: Transaction,
+    outputsValidator: OutputsValidator = "passthrough",
+  ): Promise<Hash> {
+    const body = transactionToRpc(tx);
+    const result = await this.transport.call(this.endpoints.rpc, "send_transaction", [
+      body,
+      outputsValidator,
+    ]);
+    return asHash(result, "send_transaction result");
   }
 
   /** Basis of the watched-outpoint pattern (spec §7.4): live → spent detection. */

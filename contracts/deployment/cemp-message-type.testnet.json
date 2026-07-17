@@ -1,0 +1,12 @@
+{
+  "network": "ckb_testnet",
+  "contract": "cemp-message-type",
+  "version": "0.1.0",
+  "deployTxHash": "0x25727f7670790089659f968c58ed8b3bc0d539d837fbf88dc010178b14f17aa5",
+  "outPointIndex": 0,
+  "codeHash": "0xd172d3bfb46d2e2f8f0e1c24139d3851010776205d66cec235dca34ec52234b8",
+  "hashType": "data1",
+  "deployedAt": "2026-07-17",
+  "sourceCommit": "8ca3be5edcf792df8c52cac2aef71e2cab054628",
+  "notes": "Deployed by apps/reference-client (deploy-type step). hashType data1: immutable code reference, no TYPE ID upgrade path. Capacity locked permanently in the code cell."
+}

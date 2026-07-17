@@ -32,3 +32,6 @@ pnpm-debug.log*
 apps/android/android/.gradle/
 apps/android/android/app/build/
 apps/android/ios/Pods/
+
+# Reference-client local state (testnet throwaway identities, journals)
+apps/reference-client/.cemp-state/

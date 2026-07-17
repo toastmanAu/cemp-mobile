@@ -32,6 +32,7 @@ import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
 import {
   TYPE_ID_CODE_HASH,
   buildCreateProfileTx,
+  buildDeployDataCellTx,
   buildMessageTypeArgs,
   buildReclaimTx,
   buildSendMessageTx,
@@ -308,7 +309,12 @@ describe("buildSendMessageTx", () => {
   const routeTag = new Uint8Array(32).fill(0x72);
   const conversationTag = new Uint8Array(16).fill(0x63);
   const messageNonce = new Uint8Array(16).fill(0x6e);
-  const cempMessageType = { codeHash: fill(0x22, 32), hashType: "type" as const };
+  const messageTypeCellDep = { txHash: fill(0x44, 32), index: "0x0", depType: "code" as const };
+  const cempMessageType = {
+    codeHash: fill(0x22, 32),
+    hashType: "type" as const,
+    cellDep: messageTypeCellDep,
+  };
 
   it("builds a sender-owned message cell with the 81-byte type args layout", async () => {
     const funds = [fundingCell(3000, 0xf3)];
@@ -338,6 +344,14 @@ describe("buildSendMessageTx", () => {
     // Trailing reserved bytes are zero-filled (spec §6 discrepancy note in builders.ts).
     expect(args.subarray(65, 81).every((byte) => byte === 0)).toBe(true);
     expect(bytesToHex(bytesFrom(tx.outputsData[0]!))).toBe(bytesToHex(envelopeBytes));
+    // The message type script's code cell is in the deps (it executes on create).
+    expect(
+      tx.cellDeps.some(
+        (dep) =>
+          dep.outPoint.txHash === messageTypeCellDep.txHash &&
+          dep.depType === messageTypeCellDep.depType,
+      ),
+    ).toBe(true);
     expect(estimatedFee > 0n).toBe(true);
   });
 
@@ -414,6 +428,8 @@ describe("buildReclaimTx", () => {
     };
   }
 
+  const messageTypeCellDep = { txHash: fill(0x44, 32), index: "0x0", depType: "code" as const };
+
   it("consumes exactly the given outpoints and consolidates to the sender lock", async () => {
     const messages = [messageCell(500, 0xa1), messageCell(300, 0xa2)];
     // Fee completion resolves the reclaimed cells through the mock chain.
@@ -425,11 +441,15 @@ describe("buildReclaimTx", () => {
       outpoints,
       resolvedCells: wireCells,
       signer,
+      messageTypeCellDep,
     });
 
     expect(tx.inputs.length).toBe(2);
     expect(tx.inputs[0]!.previousOutput.txHash).toBe(outpoints[0]!.txHash);
     expect(tx.inputs[1]!.previousOutput.txHash).toBe(outpoints[1]!.txHash);
+
+    // The spent cells' type script executes: its code cell is in the deps.
+    expect(tx.cellDeps.some((dep) => dep.outPoint.txHash === messageTypeCellDep.txHash)).toBe(true);
 
     // One consolidation output back to the sender's own lock.
     expect(tx.outputs.length).toBe(1);
@@ -467,6 +487,7 @@ describe("buildReclaimTx", () => {
         outpoints: [{ txHash: foreign.outPoint.txHash, index: "0x1" }],
         resolvedCells: [toWireCell(foreign)],
         signer,
+        messageTypeCellDep,
       }),
     ).rejects.toThrow(/reclaim authority/);
   });
@@ -479,7 +500,48 @@ describe("buildReclaimTx", () => {
         outpoints: [{ txHash: fill(0xd9, 32), index: "0x1" }],
         resolvedCells: [wire],
         signer,
+        messageTypeCellDep,
       }),
     ).rejects.toThrow(/does not match/);
+  });
+});
+
+describe("buildDeployDataCellTx", () => {
+  it("builds a typeless data cell sized to occupied + margin", async () => {
+    const funds = [fundingCell(5000, 0xe1)];
+    const { signer } = makeSigner(...funds);
+    const data = new Uint8Array(100).fill(0xab);
+
+    const { tx, estimatedFee, resolvedInputsDescription } = await buildDeployDataCellTx({
+      data,
+      signer,
+    });
+
+    const output = tx.outputs[0]!;
+    expect(scriptEquals(output.lock, signer.lockScript())).toBe(true);
+    expect(output.type).toBeUndefined();
+    expect(bytesToHex(bytesFrom(tx.outputsData[0]!))).toBe(bytesToHex(data));
+    // Occupied minimum for 8 (capacity) + lock + 100 data bytes, plus margin.
+    const occupied = fixedPointFrom(8 + signer.lockScript().occupiedSize + data.length);
+    expect(output.capacity).toBe(occupied + 100_000_000n);
+    expect(estimatedFee > 0n).toBe(true);
+    expect(resolvedInputsDescription.length).toBe(tx.inputs.length);
+
+    const resolver = staticCellResolver(
+      funds.map((cell) => ({
+        outPoint: cell.outPoint,
+        cellOutput: cell.cellOutput,
+        data: bytesFrom(cell.outputData),
+      })),
+    );
+    const signed = await signer.signTransaction(tx, resolver);
+    expect(signer.verifyOwnSignature(signed, resolveInOrder(tx, funds))).toBe(true);
+  });
+
+  it("refuses empty data", async () => {
+    const { signer } = makeSigner(fundingCell(500, 0xe2));
+    await expect(buildDeployDataCellTx({ data: new Uint8Array(0), signer })).rejects.toThrow(
+      /empty data cell/,
+    );
   });
 });

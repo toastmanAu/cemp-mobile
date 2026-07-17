@@ -11,11 +11,22 @@
 //!       verify the ML-DSA-65 signature against it. Prints OK / FAIL, exit 0/1.
 //!
 //! The algorithm code lives in the vendored library modules (src/lib.rs,
-//! src/message.rs, src/ckb_tx_message_all_host.rs). The fips204 call patterns
-//! below mirror ~/code/key-vault-wasm crates/ckb-fips204-utils/src/signing.rs
-//! and verifying.rs: keygen_from_seed → PrivateKey::try_from_bytes →
-//! try_sign_with_seed(rnd = 0x00*32, final_msg, ctx = []) and the
-//! PublicKey::try_from_bytes → pk.verify(final_msg, sig, []) path.
+//! src/message.rs, src/ckb_tx_message_all_host.rs). Keygen and the
+//! CighashAll stream mirror ~/code/key-vault-wasm
+//! crates/ckb-fips204-utils/src/signing.rs (keygen_from_seed →
+//! PrivateKey::try_from_bytes → try_sign_with_seed(rnd = 0x00*32, …)).
+//!
+//! FRAMING WARNING — sign/verify here deliberately do NOT mirror
+//! key-vault-wasm's ctx handling. key-vault-wasm pre-wraps the digest into
+//! final_msg = 0x00||0x0E||DOMAIN||digest and then calls fips204 with
+//! ctx = [], which wraps AGAIN internally (double wrap). That matches the
+//! sibling `mldsa65-lock-v2` (fips204 backend, type_id da3e5dc1…) but is
+//! rejected by the DEPLOYED `mldsa65-lock-v2-rust` (ml-dsa crate backend,
+//! type_id d70653f7…, cell dep 0x1074b1ac…0cb1 index 3), which calls
+//! ml_dsa::VerifyingKey::verify_with_context(digest, DOMAIN, sig) — standard
+//! FIPS-204 pure mode, single wrap. This harness signs/verifies the way the
+//! deployed contract does: pass the RAW digest as msg and DOMAIN as ctx and
+//! let the crate apply the M' framing once. Do not "fix" this back.
 
 use std::process::ExitCode;
 
@@ -101,6 +112,11 @@ struct SignCase {
     name: String,
     seed: String,
     stream: String,
+    /// blake2b-256 personal "ckb-mldsa-msg" over the stream — the `msg`
+    /// argument passed to sign/verify with ctx = DOMAIN.
+    digest: String,
+    /// 0x00 || 0x0E || "CKB-MLDSA-LOCK" || digest — the M' the FIPS-204
+    /// implementation computes internally; informational, not signed directly.
     final_message: String,
     pubkey: String,
     signature: String,
@@ -269,6 +285,11 @@ fn run_pipeline(scenario: &Scenario) -> Result<(Vec<u8>, [u8; 32], Vec<u8>), Str
 
 /// digest = blake2b-256 personal "ckb-mldsa-msg" over stream;
 /// final = 0x00 || 0x0E || "CKB-MLDSA-LOCK" || digest.
+///
+/// `final_message` is emitted into the vectors for documentation only — it
+/// equals the M' that a FIPS-204 implementation computes internally when
+/// called as sign/verify(digest, ctx = DOMAIN). It is NOT passed to
+/// sign/verify directly (that would double-wrap — see the file header).
 fn final_message_from_stream(stream: &[u8]) -> Result<([u8; 32], Vec<u8>), String> {
     let mut h = Hasher::message_hasher();
     h.update(stream);
@@ -286,18 +307,19 @@ fn keygen_from_seed(seed: &[u8; 32]) -> ([u8; PK_LEN], [u8; SK_LEN]) {
     (pk.into_bytes(), sk.into_bytes())
 }
 
-/// Mirrors signing.rs: parse sk bytes, sign with rnd = 0x00*32 (deterministic),
-/// empty ctx — context is already baked into final_msg.
-fn sign_deterministic(sk_bytes: &[u8; SK_LEN], final_msg: &[u8]) -> Result<[u8; SIG_LEN], String> {
+/// Deterministic ML-DSA-65 sign of the raw 32-byte digest with ctx = DOMAIN —
+/// standard FIPS-204 pure mode (single M' wrap applied by the crate), matching
+/// the deployed `mldsa65-lock-v2-rust` on-chain verifier. rnd = 0x00*32.
+fn sign_deterministic(sk_bytes: &[u8; SK_LEN], digest: &[u8; 32]) -> Result<[u8; SIG_LEN], String> {
     let sk =
         ml::PrivateKey::try_from_bytes(*sk_bytes).map_err(|e| format!("sk parse: {:?}", e))?;
-    sk.try_sign_with_seed(&[0u8; 32], final_msg, &[])
+    sk.try_sign_with_seed(&[0u8; 32], digest, DOMAIN)
         .map_err(|e| format!("sign: {:?}", e))
 }
 
-/// Mirrors verifying.rs (Mldsa65 arm): length-checked pk/sig →
-/// PublicKey::try_from_bytes → pk.verify(final_msg, sig, ctx = []).
-fn verify_mldsa65(pubkey: &[u8], signature: &[u8], final_msg: &[u8]) -> Result<bool, String> {
+/// Verify the way the deployed `mldsa65-lock-v2-rust` does: raw digest as the
+/// message, DOMAIN as the FIPS-204 context (single M' wrap).
+fn verify_mldsa65(pubkey: &[u8], signature: &[u8], digest: &[u8; 32]) -> Result<bool, String> {
     if pubkey.len() != PK_LEN {
         return Err(format!("pubkey length {} != {}", pubkey.len(), PK_LEN));
     }
@@ -309,7 +331,7 @@ fn verify_mldsa65(pubkey: &[u8], signature: &[u8], final_msg: &[u8]) -> Result<b
     let pk = ml::PublicKey::try_from_bytes(pk_buf).map_err(|e| format!("pk parse: {:?}", e))?;
     let mut sig_buf = [0u8; SIG_LEN];
     sig_buf.copy_from_slice(signature);
-    Ok(pk.verify(final_msg, &sig_buf, &[]))
+    Ok(pk.verify(digest, &sig_buf, DOMAIN))
 }
 
 // ── vectors subcommand ────────────────────────────────────────────────────────
@@ -360,17 +382,17 @@ fn build_vectors() -> Result<VectorFile, String> {
             digest: hex::encode(digest),
             final_message: hex::encode(&final_message),
         });
-        scenario_streams.push((stream, final_message));
+        scenario_streams.push((stream, digest, final_message));
     }
 
     // sign: seed 0x07*32 over scenario (a)'s stream.
     let seed = [0x07u8; 32];
     let (pk_bytes, sk_bytes) = keygen_from_seed(&seed);
-    let (stream, final_message) = &scenario_streams[0];
-    let sig_bytes = sign_deterministic(&sk_bytes, final_message)?;
+    let (stream, digest, final_message) = &scenario_streams[0];
+    let sig_bytes = sign_deterministic(&sk_bytes, digest)?;
 
     // Self-verify before emitting — mirrors signing.rs's sanity check.
-    if !verify_mldsa65(&pk_bytes, &sig_bytes, final_message)? {
+    if !verify_mldsa65(&pk_bytes, &sig_bytes, digest)? {
         return Err("self-verify failed on generated sign vector".to_string());
     }
 
@@ -390,6 +412,7 @@ fn build_vectors() -> Result<VectorFile, String> {
         name: "seed-0x07-single-input-empty-witness-fields".to_string(),
         seed: hex::encode(seed),
         stream: hex::encode(stream),
+        digest: hex::encode(digest),
         final_message: hex::encode(final_message),
         pubkey: hex::encode(pk_bytes),
         signature: hex::encode(sig_bytes),
@@ -399,7 +422,7 @@ fn build_vectors() -> Result<VectorFile, String> {
     Ok(VectorFile {
         vector_format_version: 1,
         suite: "mldsa-v2-signing",
-        source: "tools/signing-harness (vendored key-vault-wasm ckb-fips204-utils @ 5cc0c1e, ML-DSA-65)",
+        source: "tools/signing-harness (vendored key-vault-wasm ckb-fips204-utils @ 5cc0c1e, ML-DSA-65; FIPS-204 pure-mode framing ctx = DOMAIN, single wrap, matching deployed mldsa65-lock-v2-rust)",
         keygen,
         cighash,
         sign,
@@ -427,9 +450,10 @@ fn cmd_verify(args: &[String]) -> Result<bool, String> {
     let signature = decode_hex(&sig_hex).map_err(|e| format!("--signature: {}", e))?;
     let stream = decode_hex(&stream_hex).map_err(|e| format!("--stream: {}", e))?;
 
-    // Recompute digest → final message from the stream, then verify.
-    let (_digest, final_message) = final_message_from_stream(&stream)?;
-    verify_mldsa65(&pubkey, &signature, &final_message)
+    // Recompute the digest from the stream, then verify with ctx = DOMAIN —
+    // the exact framing the deployed mldsa65-lock-v2-rust applies on-chain.
+    let (digest, _final_message) = final_message_from_stream(&stream)?;
+    verify_mldsa65(&pubkey, &signature, &digest)
 }
 
 // ── tiny CLI plumbing ─────────────────────────────────────────────────────────

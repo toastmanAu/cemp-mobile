@@ -2,5 +2,36 @@
   "name": "@cemp/android-app",
   "version": "0.0.0",
   "private": true,
-  "description": "CEMP Mobile Android app (React Native). Bootstrapped during app implementation — see ckd.txt Phase 0 exit criteria and Phase 6."
+  "description": "CEMP Mobile Android app (React Native). Testnet-only (AGENTS.md rule 11).",
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "android:release": "react-native run-android --mode=release",
+    "bundle:release": "react-native bundle --platform android --dev false --entry-file index.js --bundle-output android/app/build/generated/assets/react/release/index.android.bundle --assets-dest android/app/build/generated/res/react/release",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@cemp/ckb": "workspace:*",
+    "@cemp/core": "workspace:*",
+    "@cemp/crypto": "workspace:*",
+    "@cemp/database": "workspace:*",
+    "@cemp/secure-vault": "workspace:*",
+    "@cemp/ui": "workspace:*",
+    "@op-engineering/op-sqlite": "17.1.2",
+    "@react-native-async-storage/async-storage": "3.1.1",
+    "@react-navigation/bottom-tabs": "7.18.8",
+    "@react-navigation/native": "7.3.8",
+    "@react-navigation/native-stack": "7.17.10",
+    "react": "19.2.7",
+    "react-native": "0.83.10",
+    "react-native-keychain": "10.0.0",
+    "react-native-safe-area-context": "5.8.0",
+    "react-native-screens": "4.25.0"
+  },
+  "devDependencies": {
+    "@react-native/babel-preset": "0.83.10",
+    "@react-native/metro-config": "0.83.10",
+    "@types/react": "19.2.17"
+  }
 }

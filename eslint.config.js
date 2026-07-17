@@ -22,4 +22,20 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // React Native bundler configs are CommonJS with Node globals.
+    files: ["apps/android/*.config.js"],
+    languageOptions: {
+      sourceType: "commonjs",
+      globals: {
+        module: "writable",
+        require: "readonly",
+        __dirname: "readonly",
+        process: "readonly",
+      },
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
 );

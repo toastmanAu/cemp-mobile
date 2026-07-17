@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-native"
+  },
+  "include": ["src", "index.js", "App.tsx"]
+}

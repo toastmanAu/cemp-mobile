@@ -8,6 +8,12 @@
 export const KDF_DOMAIN = {
   IdentityMlDsa: "CEMP/CKB/ML-DSA/identity/v1",
   MessagingMlKem: "CEMP/CKB/ML-KEM/messaging/v1",
+  /**
+   * Expansion of the 32-byte messaging sub-seed to the FIPS-203 64-byte
+   * ML-KEM keygen seed (spec §4). NOT a standalone sub-seed domain: it is
+   * applied on top of `MessagingMlKem`'s output, never on the BIP39 seed.
+   */
+  MlKemKeygen: "CEMP/CKB/ML-KEM/messaging/v1/keygen",
   LocalDatabase: "CEMP/LOCAL/database/v1",
   ContactExchange: "CEMP/CONTACT/exchange/v1",
   BackupEncryption: "CEMP/BACKUP/encryption/v1",

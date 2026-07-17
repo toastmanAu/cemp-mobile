@@ -47,9 +47,10 @@ verified against the reference codebases and CKB knowledge graphs live in
 
 ```bash
 pnpm install          # install workspace dependencies
-pnpm build            # compile all TypeScript packages (strict mode)
-pnpm test             # run unit tests (vitest, from repo root)
-pnpm typecheck        # no-emit type check across packages
+pnpm build            # compile all TypeScript packages (strict mode, topological order)
+pnpm test             # build all packages, then run unit tests (vitest, from repo root)
+pnpm typecheck        # alias for pnpm build (compilation is the type check; cross-package
+                      # imports resolve against dist, so a build must precede vitest)
 pnpm lint             # eslint (flat config, typescript-eslint)
 pnpm format           # prettier
 cargo test            # contracts/ workspace (Rust), when contracts exist

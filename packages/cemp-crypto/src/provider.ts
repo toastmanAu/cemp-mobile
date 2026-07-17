@@ -2,58 +2,62 @@
  * CryptoProvider — the platform-neutral cryptography boundary (spec §4.2).
  *
  * Implementations:
- * - Early testnet prototype: WASM/TypeScript signer behind this interface.
+ * - Phase 2 testnet implementation: the pure-TypeScript functions in this
+ *   package (`identity.ts`, `envelope.ts`) wired behind this interface.
  * - Production: audited Rust or native code (packages/cemp-secure-vault),
- *   signing without exporting secret keys to ordinary JavaScript.
+ *   decapsulating and signing without exporting secret keys to ordinary
+ *   JavaScript.
  *
- * The envelope/context shapes below mirror packages/cemp-core protocol types.
- * They are re-declared structurally so this package stays independently
- * compilable during Phase 0; Phase 1 unifies them against the wire spec.
+ * Wire shapes are the Phase 1 Molecule codec types from @cemp/core
+ * (`codec.CempEnvelopeHeaderV1` & co.): the Phase 0 structural re-declarations
+ * were removed when @cemp/crypto gained its sanctioned dependency on
+ * @cemp/core (Phase 2). iOS/native implementations only need to reproduce
+ * this interface (AGENTS.md rule 14).
  */
+
+import type {
+  DecryptEnvelopeResult,
+  EncryptEnvelopeParams,
+  EncryptEnvelopeResult,
+} from "./envelope.js";
+import type { IdentityKeyBundle } from "./identity.js";
 
 /** Opaque handle to secret key material held inside a vault — never raw bytes. */
 export interface KeyReference {
   readonly id: string;
 }
 
-export interface IdentityKeys {
-  readonly mlDsaPublicKey: Uint8Array;
-  readonly mlKemPublicKey: Uint8Array;
-  readonly mlDsaSecretKeyRef: KeyReference;
-  readonly mlKemSecretKeyRef: KeyReference;
-}
-
-/** Fields bound as AEAD additional data (spec §6.2). */
-export interface EncryptionContext {
-  readonly protocolVersion: number;
-  readonly network: string;
-  readonly senderProfileId: Uint8Array;
-  readonly recipientProfileId: Uint8Array;
-  readonly messageId: Uint8Array;
-  readonly conversationId: Uint8Array;
-  readonly payloadType: number;
-  /** CKB output identity where available (spec §6.2). */
-  readonly ckbOutputIdentity: Uint8Array | null;
-}
-
-export interface EncryptedEnvelope {
-  readonly kemCiphertext: Uint8Array;
-  readonly nonce: Uint8Array;
-  readonly authenticatedHeader: Uint8Array;
-  readonly encryptedPayload: Uint8Array;
+/**
+ * decryptEnvelope through a vault boundary: the ML-KEM secret key never
+ * leaves the vault and is addressed by reference instead of raw bytes.
+ */
+export interface VaultDecryptEnvelopeParams {
+  readonly envelopeBytes: Uint8Array;
+  readonly recipientKemSecretKeyRef: KeyReference;
+  readonly ownProfileId: Uint8Array;
 }
 
 export interface CryptoProvider {
-  generateIdentity(seed: Uint8Array): Promise<IdentityKeys>;
-  encryptForRecipient(
-    plaintext: Uint8Array,
-    recipientKemPublicKey: Uint8Array,
-    context: EncryptionContext,
-  ): Promise<EncryptedEnvelope>;
-  decryptEnvelope(
-    envelope: EncryptedEnvelope,
-    recipientKemSecretKeyRef: KeyReference,
-  ): Promise<Uint8Array>;
+  /**
+   * Derive the full identity key bundle from a 64-byte BIP39 seed (spec §4,
+   * §5.1). Deterministic per seed. Vault implementations copy the secret
+   * material into protected storage and wipe the JS-side bundle
+   * (`wipeIdentityKeyBundle`).
+   */
+  deriveIdentityKeys(bip39Seed: Uint8Array): Promise<IdentityKeyBundle>;
+  /**
+   * Encrypt an encoded `CempPayloadV1` into a serialized `CempEnvelopeV1`
+   * (spec §7). Nonce and encapsulation randomness come from the OS CSPRNG;
+   * the test-only overrides of `encryptEnvelope` are deliberately not part of
+   * this interface.
+   */
+  encryptEnvelope(params: EncryptEnvelopeParams): Promise<EncryptEnvelopeResult>;
+  /**
+   * Validate (spec §12: shape, version, §11 limits BEFORE decapsulation) and
+   * decrypt an envelope (spec §7.2). Implementations MUST surface every
+   * failure as `CempCryptoError` and never return partial plaintext.
+   */
+  decryptEnvelope(params: VaultDecryptEnvelopeParams): Promise<DecryptEnvelopeResult>;
   /**
    * Sign a CKB transaction with ML-DSA-65. Generic over the transaction type
    * until cemp-ckb pins the concrete builder type in Phase 4.

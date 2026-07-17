@@ -17,7 +17,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@cemp/core": "workspace:*",
+    "@noble/ciphers": "2.2.0",
     "@noble/hashes": "2.2.0",
-    "@noble/post-quantum": "0.6.1"
+    "@noble/post-quantum": "0.6.1",
+    "@scure/bip39": "2.2.0"
   }
 }

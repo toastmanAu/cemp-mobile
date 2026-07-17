@@ -1,0 +1,134 @@
+// CEMP Protocol v1 — Molecule schema (normative; docs/protocol/CEMP-PROTOCOL-V1.md)
+//
+// Serialization changes require updating this schema, the protocol spec, the
+// golden vectors, and the serialization version together (AGENTS.md rule 1).
+
+// ── primitives ──────────────────────────────────────────────────────────────
+
+array Uint32 [byte; 4];
+array Uint64 [byte; 8];
+
+vector Bytes <byte>;
+option BytesOpt (Bytes);
+
+array Byte12 [byte; 12];
+array Byte16 [byte; 16];
+array Byte32 [byte; 32];
+
+option Byte16Opt (Byte16);
+option Byte32Opt (Byte32);
+
+// ── algorithm identifiers (spec §3) ─────────────────────────────────────────
+
+struct AlgorithmIdV1 {
+  family: byte,     // 0x01 ML-DSA, 0x02 ML-KEM, 0x03 AEAD, 0x04 KDF
+  parameter: byte,  // ML-DSA-65 = 61, ML-KEM-768 = 3, AES-256-GCM = 1, HKDF-SHA-256 = 1
+}
+
+// ── profile (spec §5) ───────────────────────────────────────────────────────
+
+array MlDsa65PublicKey [byte; 1952];
+array MlKem768PublicKey [byte; 1184];
+
+vector ProtocolVersions <byte>;
+
+table CempProfileV1 {
+  protocol_version: byte,
+  sig_algorithm: AlgorithmIdV1,
+  kem_algorithm: AlgorithmIdV1,
+  ml_dsa_public_key: MlDsa65PublicKey,
+  ml_kem_public_key: MlKem768PublicKey,
+  lock_script_hash: Byte32,
+  supported_protocol_versions: ProtocolVersions,
+  supported_attachments: byte,
+  handle: BytesOpt,
+  icon_hash: Byte32Opt,
+  key_created_at: Uint64,
+  rotation_sequence: Uint32,
+  previous_profile_id: Byte32Opt,
+  revoked: byte,
+}
+
+// ── envelope (spec §7) ──────────────────────────────────────────────────────
+
+array MlKem768Ciphertext [byte; 1088];
+array AesGcmNonce [byte; 12];
+
+table CempEnvelopeHeaderV1 {
+  protocol_version: byte,
+  network: byte,
+  content_type: byte,
+  message_id: Byte16,
+  conversation_id: Byte32,
+  sender_profile_id: Byte32,
+  created_at_client: Uint64,
+  reply_to_message_id: Byte16Opt,
+  expiry_hint: Uint64,
+}
+
+table CempEnvelopeV1 {
+  header: CempEnvelopeHeaderV1,
+  kem_ciphertext: MlKem768Ciphertext,
+  nonce: AesGcmNonce,
+  encrypted_payload: Bytes, // AES-256-GCM ciphertext || 16-byte tag
+}
+
+// ── payload (spec §8) ───────────────────────────────────────────────────────
+
+table OutPointV1 {
+  tx_hash: Byte32,
+  index: Uint32,
+}
+
+option OutPointOpt (OutPointV1);
+vector OutPointVec <OutPointV1>;
+
+table ReceiptEntryV1 {
+  message_id: Byte16,
+  status: byte,
+}
+
+vector ReceiptVec <ReceiptEntryV1>;
+
+table AttachmentManifestV1 {
+  attachment_id: Byte16,
+  ckbfs_root: OutPointV1,
+  chunk_outpoints: OutPointVec,
+  encrypted_size: Uint64,
+  plaintext_size: Uint64,
+  mime_type: Bytes,
+  width: Uint32,
+  height: Uint32,
+  thumbnail: BytesOpt,
+  content_hash: Byte32,
+  cipher_hash: Byte32,
+  encryption_nonce: AesGcmNonce,
+  encryption_algorithm: AlgorithmIdV1,
+  reclaim_group_id: Byte16,
+}
+
+vector AttachmentManifestVec <AttachmentManifestV1>;
+
+table CempPayloadV1 {
+  message_id: Byte16,
+  body_type: byte,
+  recipient_profile_id: Byte32,
+  text: BytesOpt,
+  attachment_manifests: AttachmentManifestVec,
+  reply_to_message_id: Byte16Opt,
+  reply_to_outpoint: OutPointOpt,
+  receipts: ReceiptVec,
+  receipt_request: byte,
+  client_timestamp: Uint64,
+  sender_device_id: Byte16,
+  padding: Bytes,
+}
+
+// ── reclaim journal (spec §10, local only) ──────────────────────────────────
+
+table ReclaimGroupV1 {
+  reclaim_group_id: Byte16,
+  reason: byte,
+  created_at: Uint64,
+  outpoints: OutPointVec,
+}

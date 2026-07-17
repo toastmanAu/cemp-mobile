@@ -106,7 +106,17 @@ importers:
 
   packages/cemp-test-vectors: {}
 
-  packages/cemp-ui: {}
+  packages/cemp-ui:
+    dependencies:
+      '@cemp/core':
+        specifier: workspace:*
+        version: link:../cemp-core
+      '@cemp/crypto':
+        specifier: workspace:*
+        version: link:../cemp-crypto
+      '@cemp/database':
+        specifier: workspace:*
+        version: link:../cemp-database
 
 packages:
 

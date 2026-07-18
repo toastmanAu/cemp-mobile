@@ -63,9 +63,17 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
 
   async function send(): Promise<void> {
     composer.setText(draft);
-    const sent = await composer.send();
-    if (sent !== undefined) {
-      setDraft("");
+    try {
+      const sent = await composer.send();
+      if (sent !== undefined) {
+        setDraft("");
+      } else if (composer.error === null) {
+        // Early-return without an error message — surface it so silent
+        // no-ops are impossible (device verification 2026-07-18).
+        console.error("ChatScreen.send: composer.send() returned undefined without an error");
+      }
+    } catch (e) {
+      console.error("ChatScreen.send threw:", e);
     }
     await reload();
   }

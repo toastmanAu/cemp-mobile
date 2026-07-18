@@ -70,9 +70,14 @@ export function ContactsScreen(): React.JSX.Element {
               onPress={() => {
                 // Message-first: opening a contact goes to the conversation
                 // (created on demand, idempotent — Phase 6 repository).
-                void container.repositories.conversations.getOrCreateForContact(item.id).then((conversation) => {
-                  navigation.navigate("Chat", { conversationId: conversation.id, title: item.displayName });
-                });
+                void container.repositories.conversations
+                  .getOrCreateForContact(item.id)
+                  .then((conversation) => {
+                    navigation.navigate("Chat", {
+                      conversationId: conversation.id,
+                      title: item.displayName,
+                    });
+                  });
               }}
             >
               <Text style={styles.name}>{item.displayName}</Text>

@@ -335,6 +335,75 @@ export function parseTransactionStatus(json: unknown, txHash: Hash): RawTransact
 
 // ── outgoing transaction serialization (send_transaction) ───────────────────
 
+/**
+ * Validate a `get_transaction` result's `transaction` field into the wire
+ * {@link Transaction} shape (snake_case RPC → camelCase). Inverse of
+ * {@link transactionToRpc}; same strictness (rule 4).
+ */
+export function parseTransactionBody(json: unknown, ctx: string): Transaction {
+  const rec = asRecord(json, ctx);
+  const outputs = asArray(rec.outputs, `${ctx}.outputs`).map((output, i) => {
+    const outputRec = asRecord(output, `${ctx}.outputs[${i}]`);
+    const type = outputRec.type;
+    return {
+      capacity: asU64Hex(outputRec.capacity, `${ctx}.outputs[${i}].capacity`).hex,
+      lock: parseScript(outputRec.lock, `${ctx}.outputs[${i}].lock`),
+      type:
+        type === null || type === undefined ? null : parseScript(type, `${ctx}.outputs[${i}].type`),
+    };
+  });
+  const outputsData = asArray(rec.outputs_data, `${ctx}.outputs_data`).map((data, i) =>
+    asHex(data, `${ctx}.outputs_data[${i}]`),
+  );
+  if (outputs.length !== outputsData.length) {
+    throw new CempCkbError(
+      ctx,
+      `outputs/outputs_data length mismatch (${outputs.length} != ${outputsData.length})`,
+    );
+  }
+  return {
+    version: asU64Hex(rec.version, `${ctx}.version`).hex,
+    cellDeps: asArray(rec.cell_deps, `${ctx}.cell_deps`).map((dep, i) => {
+      const depRec = asRecord(dep, `${ctx}.cell_deps[${i}]`);
+      const outPoint = asRecord(depRec.out_point, `${ctx}.cell_deps[${i}].out_point`);
+      const index = asU64Hex(outPoint.index, `${ctx}.cell_deps[${i}].out_point.index`);
+      if (index.num > 0xff_ff_ff_ffn) {
+        throw new CempCkbError(ctx, `cell dep index exceeds uint32`);
+      }
+      return {
+        outPoint: {
+          txHash: asHash(outPoint.tx_hash, `${ctx}.cell_deps[${i}].out_point.tx_hash`),
+          index: index.hex,
+        },
+        depType: parseDepType(depRec.dep_type, `${ctx}.cell_deps[${i}].dep_type`),
+      };
+    }),
+    headerDeps: asArray(rec.header_deps, `${ctx}.header_deps`).map((hash, i) =>
+      asHash(hash, `${ctx}.header_deps[${i}]`),
+    ),
+    inputs: asArray(rec.inputs, `${ctx}.inputs`).map((input, i) => {
+      const inputRec = asRecord(input, `${ctx}.inputs[${i}]`);
+      const previous = asRecord(inputRec.previous_output, `${ctx}.inputs[${i}].previous_output`);
+      const index = asU64Hex(previous.index, `${ctx}.inputs[${i}].previous_output.index`);
+      if (index.num > 0xff_ff_ff_ffn) {
+        throw new CempCkbError(ctx, `input out-point index exceeds uint32`);
+      }
+      return {
+        previousOutput: {
+          txHash: asHash(previous.tx_hash, `${ctx}.inputs[${i}].previous_output.tx_hash`),
+          index: index.hex,
+        },
+        since: asU64Hex(inputRec.since, `${ctx}.inputs[${i}].since`).hex,
+      };
+    }),
+    outputs,
+    outputsData,
+    witnesses: asArray(rec.witnesses, `${ctx}.witnesses`).map((witness, i) =>
+      asHex(witness, `${ctx}.witnesses[${i}]`),
+    ),
+  };
+}
+
 /** `outputs_validator` values accepted by `send_transaction`. */
 export type OutputsValidator = "passthrough" | "well_known_scripts_only";
 
@@ -579,6 +648,19 @@ export class CempClient implements CkbIndexerProvider, CkbRpcProvider {
       return { ...status, blockNumber: parsed.number };
     }
     return status;
+  }
+
+  /**
+   * The full transaction body (transfer history, Phase 4 task 6), or null
+   * when the node does not know the hash. Shape-validated (rule 4).
+   */
+  async getTransactionBody(hash: Hash): Promise<Transaction | null> {
+    const result = await this.transport.call(this.endpoints.rpc, "get_transaction", [hash]);
+    if (result === null) {
+      return null;
+    }
+    const rec = asRecord(result, "get_transaction result");
+    return parseTransactionBody(rec.transaction, "get_transaction result.transaction");
   }
 
   async findCells(query: CellQuery): Promise<CellPage> {

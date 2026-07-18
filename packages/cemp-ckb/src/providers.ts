@@ -20,6 +20,8 @@ export interface CkbRpcProvider {
   getTipHeader(): Promise<Header>;
   sendTransaction(tx: Transaction): Promise<Hash>;
   getTransaction(hash: Hash): Promise<TransactionStatus>;
+  /** Full transaction body (transfer history, Phase 4 task 6); null when unknown. */
+  getTransactionBody(hash: Hash): Promise<Transaction | null>;
   /** Basis of the watched-outpoint pattern (spec §7.4): live → spent detection. */
   getLiveCell(outPoint: OutPoint): Promise<LiveCellStatus>;
 }

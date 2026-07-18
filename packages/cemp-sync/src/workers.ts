@@ -16,6 +16,7 @@
 
 import {
   ResponseLifecycle,
+  balanceCategories,
   currentRoutingEpoch,
   findMessageCells,
   incomingLogicalMessageId,
@@ -26,6 +27,7 @@ import {
 } from "@cemp/ckb";
 import { deriveRouteTag } from "@cemp/core";
 import type {
+  BalanceRepository,
   ContactRepository,
   ConversationRepository,
   MessageRepository,
@@ -76,6 +78,15 @@ export interface SyncWorkerDeps {
   readonly outgoingTxs: OutgoingTransactionRepository;
   readonly cursors: SyncCursorRepository;
   readonly leases: WorkerLeaseRepository;
+  readonly balances: BalanceRepository;
+  /** Wallet whose balance row the balance-refresh worker updates. */
+  readonly walletId: number;
+  /** The wallet lock the balance-refresh worker reports on. */
+  readonly walletLock: {
+    codeHash: string;
+    hashType: "type" | "data" | "data1" | "data2";
+    args: string;
+  };
   readonly notifier: Notifier;
   readonly engineId: string;
   readonly ownProfileId: Uint8Array;
@@ -94,11 +105,7 @@ export function buildWorkerSpecs(deps: SyncWorkerDeps): WorkerSpec[] {
     spec("pending-transactions", true, () => runPendingTransactions(deps)),
     spec("watched-outpoints", true, () => deps.lifecycle.pollWatchesOnce().then(() => undefined)),
     spec("reclaim-batch", true, () => runReclaimBatch(deps)),
-    spec("balance-refresh", true, () => {
-      // The indexer-driven balance feed is the Phase 4 wallet-foundation
-      // remainder; the worker slot exists so its cadence is fixed.
-      return Promise.resolve();
-    }),
+    spec("balance-refresh", true, () => runBalanceRefresh(deps)),
     spec("profile-refresh", true, () => Promise.resolve()),
     spec("database-maintenance", false, async () => {
       await deps.leases.pruneExpired();
@@ -288,6 +295,27 @@ async function runPendingTransactions(deps: SyncWorkerDeps): Promise<void> {
       await deps.outgoingTxs.markState(tx.txHash, "rejected");
     }
   }
+}
+
+/* ── balance refresh (§12 worker 8; Phase 4 task 7) ──────────────────────── */
+
+/**
+ * Chain-derived balance categories (spec §5.5): total + available come from
+ * the indexer (available = total minus CEMP protocol cells). The DB's
+ * reserved/reclaimable rows are the pipeline's finer-grained view and are
+ * NOT overwritten here — the refresh feeds the wallet screen's total and
+ * available numbers.
+ */
+async function runBalanceRefresh(deps: SyncWorkerDeps): Promise<void> {
+  const categories = await balanceCategories(deps.client, deps.walletLock, {
+    codeHash: deps.messageType.codeHash,
+    hashType: deps.messageType.hashType,
+  });
+  await deps.balances.setChainBalances(
+    deps.walletId,
+    categories.totalShannon,
+    categories.availableShannon,
+  );
 }
 
 /* ── reclaim batch (§12 worker 7; task 10 lease) ─────────────────────────── */

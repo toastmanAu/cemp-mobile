@@ -208,6 +208,7 @@ async function makeStack(
   });
   const notifier = new RecordingNotifier();
   const engineId = opts.engineId ?? "engine-test";
+  const walletLockScript = signer.lockScript();
   const deps: SyncWorkerDeps = {
     client,
     messageType: MESSAGE_TYPE_REF,
@@ -219,6 +220,13 @@ async function makeStack(
     outgoingTxs,
     cursors,
     leases,
+    balances,
+    walletId,
+    walletLock: {
+      codeHash: walletLockScript.codeHash,
+      hashType: walletLockScript.hashType,
+      args: walletLockScript.args,
+    },
     notifier,
     engineId,
     ownProfileId: BOB_PROFILE_ID,

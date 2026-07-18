@@ -1,5 +1,14 @@
-import { CellDep, KnownScript, Transaction, hashTypeId, hexFrom, numFrom } from "@ckb-ccc/core";
-import type { Client as CccClient, NumLike, Script, ScriptLike } from "@ckb-ccc/core";
+import {
+  CellDep,
+  KnownScript,
+  Script,
+  Transaction,
+  fixedPointFrom,
+  hashTypeId,
+  hexFrom,
+  numFrom,
+} from "@ckb-ccc/core";
+import type { Client as CccClient, NumLike, ScriptLike } from "@ckb-ccc/core";
 import { codec } from "@cemp/core";
 import { CempCkbError } from "./client.js";
 import type { MlDsaV2TxSigner } from "./signing.js";
@@ -591,6 +600,108 @@ function sameIndex(a: string, b: string): boolean {
 
 function scriptEquals(a: { codeHash: string; hashType: string; args: string }, b: Script): boolean {
   return a.codeHash === b.codeHash && a.hashType === b.hashType && a.args === b.args;
+}
+
+// ── wallet: plain transfer + consolidation (spec Phase 4 tasks 5, 9) ───────
+
+export interface BuildTransferTxOptions {
+  /** Recipient lock (resolve addresses first — wallet.ts address helpers). */
+  readonly recipientLock: ScriptLike;
+  /** Amount to send, in shannons (must cover the recipient cell's occupied minimum). */
+  readonly amountShannon: NumLike;
+  readonly signer: MlDsaV2TxSigner;
+  readonly feeRate?: NumLike;
+}
+
+/**
+ * Plain CKB transfer (Phase 4 task 5): one output of exactly `amountShannon`
+ * to the recipient lock; change returns to the sender. Amounts below the
+ * recipient cell's occupied-size minimum are rejected up front — a cell that
+ * cannot exist on-chain must never be built.
+ */
+export async function buildTransferTx(options: BuildTransferTxOptions): Promise<BuiltTransaction> {
+  const amount = numFrom(options.amountShannon);
+  if (amount <= 0n) {
+    throw new CempCkbError("buildTransferTx", "transfer amount must be positive");
+  }
+  const recipientLock = Script.from(options.recipientLock);
+  const occupiedMinimum = fixedPointFrom(8 + recipientLock.occupiedSize);
+  if (amount < occupiedMinimum) {
+    throw new CempCkbError(
+      "buildTransferTx",
+      `amount ${amount} is below the recipient cell's occupied minimum ${occupiedMinimum}`,
+    );
+  }
+  const tx = Transaction.from({
+    outputs: [{ lock: options.recipientLock, capacity: amount }],
+    outputsData: ["0x"],
+  });
+  await tx.completeInputsByCapacity(options.signer);
+  await tx.completeFeeBy(options.signer, options.feeRate ?? DEFAULT_FEE_RATE);
+  return finalize(tx, options.signer.client);
+}
+
+export interface BuildConsolidateTxOptions {
+  /** Live cells to merge (all must be locked by the signer's lock). */
+  readonly cells: Cell[];
+  readonly signer: MlDsaV2TxSigner;
+  /** Consolidation target; defaults to the signer's own lock. */
+  readonly recipientLock?: ScriptLike;
+  readonly feeRate?: NumLike;
+}
+
+/**
+ * Cell consolidation (Phase 4 task 9): merge many small cells into a single
+ * output. Typeless cells only — cells carrying scripts belong to the
+ * protocol flows (message/profile cells are NOT consolidation material).
+ * The single output is the change cell created by fee completion.
+ */
+export async function buildConsolidateTx(
+  options: BuildConsolidateTxOptions,
+): Promise<BuiltTransaction> {
+  const { cells, signer } = options;
+  if (cells.length === 0) {
+    throw new CempCkbError("buildConsolidateTx", "no cells given");
+  }
+  const ownerLock = signer.lockScript();
+  const inputs = cells.map((cell, i) => {
+    if (!scriptEquals(cell.output.lock, ownerLock)) {
+      throw new CempCkbError("buildConsolidateTx", `cell ${i} is not locked by the signer's lock`);
+    }
+    if (cell.output.type !== null && cell.output.type !== undefined) {
+      throw new CempCkbError(
+        "buildConsolidateTx",
+        `cell ${i} carries a type script — protocol cells are not consolidation material`,
+      );
+    }
+    let index: bigint;
+    try {
+      index = numFrom(cell.outPoint.index);
+    } catch (err) {
+      throw new CempCkbError(
+        "buildConsolidateTx",
+        `cell ${i} has an unparseable index ${JSON.stringify(cell.outPoint.index)}`,
+        { cause: err },
+      );
+    }
+    return { previousOutput: { txHash: cell.outPoint.txHash, index }, since: 0 };
+  });
+  const tx = Transaction.from({ inputs, outputs: [], outputsData: [] });
+  const recipientLock = options.recipientLock ?? ownerLock;
+  await tx.completeFeeChangeToLock(signer, recipientLock, options.feeRate ?? DEFAULT_FEE_RATE);
+  const resolvedInputsDescription = cells.map((cell) => ({
+    txHash: cell.outPoint.txHash,
+    index: cell.outPoint.index,
+    capacity: numFrom(cell.output.capacity).toString(),
+  }));
+  const estimatedFee = await tx.getFee(signer.client);
+  if (estimatedFee <= 0n) {
+    throw new CempCkbError(
+      "buildConsolidateTx",
+      `fee completion left a non-positive fee (${estimatedFee})`,
+    );
+  }
+  return { tx, resolvedInputsDescription, estimatedFee };
 }
 
 // ── deploy data cell (contract deployment) ──────────────────────────────────

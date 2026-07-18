@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CempCkbError, CempClient, transactionToRpc } from "./client.js";
+import { CempCkbError, CempClient, parseTransactionBody, transactionToRpc } from "./client.js";
 import type { JsonRpcTransport } from "./client.js";
 import type { Transaction } from "./types.js";
 
@@ -116,5 +116,20 @@ describe("CempClient.sendTransaction", () => {
   it("validates the response hash (rule 4)", async () => {
     const client = new CempClient({ transport: mockTransport({}, "0x1234") });
     await expect(client.sendTransaction(sampleTx())).rejects.toThrow(/32-byte hash/);
+  });
+});
+
+describe("parseTransactionBody (get_transaction)", () => {
+  it("round-trips transactionToRpc (strict inverse, rule 4)", () => {
+    const tx = sampleTx();
+    expect(parseTransactionBody(transactionToRpc(tx), "test")).toEqual(tx);
+  });
+
+  it("rejects malformed bodies", () => {
+    expect(() => parseTransactionBody({ version: "0x0" }, "test")).toThrow(CempCkbError);
+    const bad = transactionToRpc(sampleTx());
+    (bad.inputs as { previous_output: { tx_hash: string } }[])[0]!.previous_output.tx_hash =
+      "0x1234";
+    expect(() => parseTransactionBody(bad, "test")).toThrow(/32-byte hash/);
   });
 });

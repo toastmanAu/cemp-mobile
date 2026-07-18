@@ -257,6 +257,21 @@ importers:
         specifier: workspace:*
         version: link:../cemp-database
 
+  tools/protocol-inspector:
+    dependencies:
+      '@cemp/ckb':
+        specifier: workspace:*
+        version: link:../../packages/cemp-ckb
+      '@cemp/core':
+        specifier: workspace:*
+        version: link:../../packages/cemp-core
+      '@cemp/crypto':
+        specifier: workspace:*
+        version: link:../../packages/cemp-crypto
+      '@cemp/secure-vault':
+        specifier: workspace:*
+        version: link:../../packages/cemp-secure-vault
+
 packages:
 
   '@adraffy/ens-normalize@1.11.1':

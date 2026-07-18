@@ -63,6 +63,13 @@ export interface EncryptEnvelopeResult {
   readonly kemCiphertext: Uint8Array;
   /** Envelope nonce actually used (12 bytes; random unless overridden). */
   readonly nonce: Uint8Array;
+  /**
+   * The 32-byte attachment key for this envelope (spec §9.2): derived from
+   * the same KEM shared secret under the `CEMP-ATTACHMENT-KEY-V1` domain, so
+   * attachments are encrypted WITHOUT transporting any key — the recipient
+   * re-derives it on decrypt. SECRET: caller owns and wipes it.
+   */
+  readonly attachmentKey: Uint8Array;
 }
 
 export interface DecryptEnvelopeParams {
@@ -83,6 +90,13 @@ export interface DecryptEnvelopeResult {
    * `validatePayload`, `validateSemanticConsistency`) before using it.
    */
   readonly payloadBytes: Uint8Array;
+  /**
+   * The 32-byte attachment key (spec §9.2), re-derived from the decapsulated
+   * shared secret under `CEMP-ATTACHMENT-KEY-V1`. SECRET: caller owns and
+   * wipes it. Present for parity with {@link EncryptEnvelopeResult} — the two
+   * sides derive byte-identical keys.
+   */
+  readonly attachmentKey: Uint8Array;
 }
 
 function requireLength(label: string, value: Uint8Array, expected: number): void {
@@ -150,9 +164,19 @@ export function encryptEnvelope(
     decodedPayload.recipient_profile_id,
   );
   let encryptedPayload: Uint8Array;
+  let attachmentKey: Uint8Array;
   try {
     const aad = codec.encodeCempEnvelopeHeaderV1(header);
     encryptedPayload = aes256GcmEncrypt(messageKey, nonce, payload, aad);
+    // The attachment key uses the SAME shared secret under its own domain
+    // (spec §9.2) — no key material is ever transported.
+    attachmentKey = deriveMessageKey(
+      sharedSecret,
+      nonce,
+      header.sender_profile_id,
+      decodedPayload.recipient_profile_id,
+      "CEMP-ATTACHMENT-KEY-V1",
+    );
   } finally {
     // Best-effort wipe of per-envelope secrets (see identity.ts for the
     // JavaScript zeroisation limits).
@@ -172,7 +196,7 @@ export function encryptEnvelope(
   if (!check.ok) {
     throw new CempCryptoError(`encryptEnvelope produced an invalid envelope: ${check.reason}`);
   }
-  return { envelopeBytes, kemCiphertext: cipherText, nonce };
+  return { envelopeBytes, kemCiphertext: cipherText, nonce, attachmentKey };
 }
 
 /**
@@ -212,6 +236,7 @@ export function decryptEnvelope(params: DecryptEnvelopeParams): DecryptEnvelopeR
     envelope.header.sender_profile_id,
     ownProfileId,
   );
+  let attachmentKey: Uint8Array;
   try {
     const aad = codec.encodeCempEnvelopeHeaderV1(envelope.header);
     const payloadBytes = aes256GcmDecrypt(
@@ -220,7 +245,16 @@ export function decryptEnvelope(params: DecryptEnvelopeParams): DecryptEnvelopeR
       envelope.encrypted_payload,
       aad,
     );
-    return { header: envelope.header, payloadBytes };
+    // Same secret, attachment domain (spec §9.2) — byte-identical to the
+    // sender's attachment key; derived only after the AEAD check passed.
+    attachmentKey = deriveMessageKey(
+      sharedSecret,
+      envelope.nonce,
+      envelope.header.sender_profile_id,
+      ownProfileId,
+      "CEMP-ATTACHMENT-KEY-V1",
+    );
+    return { header: envelope.header, payloadBytes, attachmentKey };
   } finally {
     messageKey.fill(0);
     sharedSecret.fill(0);

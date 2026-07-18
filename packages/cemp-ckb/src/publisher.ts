@@ -158,6 +158,10 @@ export interface PublishTextInput {
   };
   readonly receipts?: readonly { readonly messageId: Uint8Array; readonly status: number }[];
   readonly receiptRequest?: number;
+  /** Payload content type (default 0x01 text; 0x03 = attachment manifest). */
+  readonly contentType?: 0x01 | 0x03;
+  /** Attachment manifests for a 0x03 message (Phase 10; ≤ 4 per payload). */
+  readonly attachmentManifests?: readonly codec.AttachmentManifestV1Encodable[];
   /** Commit deadline (default 180 s). */
   readonly timeoutMs?: number;
 }
@@ -215,6 +219,10 @@ export class MessagePublisher {
         ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
         ...(input.receipts === undefined ? {} : { receipts: input.receipts }),
         receiptRequest: input.receiptRequest ?? 1,
+        ...(input.contentType === undefined ? {} : { contentType: input.contentType }),
+        ...(input.attachmentManifests === undefined
+          ? {}
+          : { attachmentManifests: input.attachmentManifests }),
       });
 
       await store.transitionMessage(input.messageRowId, "building_transaction");

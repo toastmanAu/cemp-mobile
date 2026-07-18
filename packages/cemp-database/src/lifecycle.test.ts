@@ -215,6 +215,9 @@ describe("ResponseLifecycle.processAcknowledgements (tasks 4–5)", () => {
       await stack.messages.setEnvelopeMessageId(message.id, "1234567890abcdef1234567890abcdef");
 
       const reply: IncomingTextMessage = {
+        contentType: 0x01,
+        attachmentManifests: [],
+        attachmentKey: new Uint8Array(32),
         messageId: hexToBytes("ffffffffffffffffffffffffffffffff"),
         conversationId: hexToBytes("99".repeat(32)),
         senderProfileId: hexToBytes("88".repeat(32)),

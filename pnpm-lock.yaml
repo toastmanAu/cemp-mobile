@@ -168,6 +168,22 @@ importers:
         specifier: 1.12.5
         version: 1.12.5(typescript@5.9.3)
 
+  packages/cemp-images:
+    dependencies:
+      '@cemp/ckb':
+        specifier: workspace:*
+        version: link:../cemp-ckb
+      '@cemp/core':
+        specifier: workspace:*
+        version: link:../cemp-core
+      '@cemp/crypto':
+        specifier: workspace:*
+        version: link:../cemp-crypto
+    devDependencies:
+      '@ckb-ccc/core':
+        specifier: 1.12.5
+        version: 1.12.5(typescript@5.9.3)
+
   packages/cemp-secure-vault:
     dependencies:
       '@cemp/crypto':

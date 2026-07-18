@@ -56,17 +56,26 @@ export function parseMessageTypeArgs(args: Uint8Array): MessageTypeArgs {
   };
 }
 
-/** A decrypted, fully validated incoming text message. */
+/** A decrypted, fully validated incoming message (text and/or attachments). */
 export interface IncomingTextMessage {
+  readonly contentType: number;
   readonly messageId: Uint8Array;
   readonly conversationId: Uint8Array;
   readonly senderProfileId: Uint8Array;
+  /** Text body (empty for pure attachment messages, content_type 0x03). */
   readonly text: string;
+  /** Attachment manifests carried by this message (Phase 10). */
+  readonly attachmentManifests: readonly codec.AttachmentManifestV1[];
   readonly replyToMessageId: Uint8Array | null;
   readonly replyToOutpoint: { txHash: string; index: number } | null;
   readonly receipts: readonly { messageId: Uint8Array; status: number }[];
   readonly clientTimestamp: bigint;
   readonly senderDeviceId: Uint8Array;
+  /**
+   * The envelope-derived attachment key (Phase 10; SECRET — caller wipes
+   * after downloading attachments). Byte-identical to the sender's.
+   */
+  readonly attachmentKey: Uint8Array;
 }
 
 export interface ProcessIncomingTextInput {
@@ -84,7 +93,7 @@ export interface ProcessIncomingTextInput {
  * `invalid` (§11) and moves on; one bad cell must never stall discovery.
  */
 export function processIncomingText(input: ProcessIncomingTextInput): IncomingTextMessage {
-  const { header, payloadBytes } = decryptEnvelope({
+  const { header, payloadBytes, attachmentKey } = decryptEnvelope({
     envelopeBytes: input.cellData,
     recipientKemSecretKey: input.ownKemSecretKey,
     ownProfileId: input.ownProfileId,
@@ -101,14 +110,21 @@ export function processIncomingText(input: ProcessIncomingTextInput): IncomingTe
   if (!consistency.ok) {
     throw new CempCkbError("processIncomingText", `header/payload mismatch: ${consistency.reason}`);
   }
-  if (payload.body_type !== 0x01 || payload.text === undefined) {
-    throw new CempCkbError("processIncomingText", "payload is not a text message");
+  // Text (0x01) and attachment-manifest (0x03) payloads are processed here;
+  // receipt (0x02) and unknown types are not (spec §8).
+  if (payload.body_type !== 0x01 && payload.body_type !== 0x03) {
+    throw new CempCkbError(
+      "processIncomingText",
+      `unsupported payload body_type ${String(payload.body_type)}`,
+    );
   }
   return {
+    contentType: payload.body_type,
     messageId: payload.message_id,
     conversationId: header.conversation_id,
     senderProfileId: header.sender_profile_id,
-    text: new TextDecoder().decode(payload.text),
+    text: payload.text === undefined ? "" : new TextDecoder().decode(payload.text),
+    attachmentManifests: payload.attachment_manifests,
     replyToMessageId: payload.reply_to_message_id ?? null,
     replyToOutpoint:
       payload.reply_to_outpoint === null || payload.reply_to_outpoint === undefined
@@ -123,6 +139,7 @@ export function processIncomingText(input: ProcessIncomingTextInput): IncomingTe
     })),
     clientTimestamp: payload.client_timestamp,
     senderDeviceId: payload.sender_device_id,
+    attachmentKey,
   };
 }
 

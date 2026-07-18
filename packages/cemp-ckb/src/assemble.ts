@@ -29,6 +29,13 @@ export interface AssembleTextMessageParams {
   };
   readonly receipts?: readonly { readonly messageId: Uint8Array; readonly status: number }[];
   readonly receiptRequest?: number;
+  /** Attachment manifests for this message (Phase 10; ≤ 4 per payload). */
+  readonly attachmentManifests?: readonly codec.AttachmentManifestV1Encodable[];
+  /**
+   * Payload content type (default 0x01 text). 0x03 = attachment_manifest
+   * (Phase 10): `text` becomes an optional caption.
+   */
+  readonly contentType?: 0x01 | 0x03;
   /** Deterministic message id (tests / idempotent re-assembly); random otherwise. */
   readonly messageId?: Uint8Array;
   readonly nowMs?: number;
@@ -41,6 +48,8 @@ export interface AssembledMessage {
   readonly conversationTag: Uint8Array;
   readonly messageNonce: Uint8Array;
   readonly envelopeBytes: Uint8Array;
+  /** The envelope-derived attachment key (Phase 10; SECRET — caller wipes). */
+  readonly attachmentKey: Uint8Array;
 }
 
 function strip0x(hex: string): string {
@@ -55,13 +64,18 @@ export function assembleTextMessage(params: AssembleTextMessageParams): Assemble
   const conversationTag = conversationId.subarray(0, 16);
   const messageNonce = randomBytes(16);
   const now = BigInt(Math.floor((params.nowMs ?? Date.now()) / 1000));
+  const contentType = params.contentType ?? 0x01;
 
   const payload = codec.encodeCempPayloadV1({
     message_id: messageId,
-    body_type: 0x01,
+    body_type: contentType,
     recipient_profile_id: params.recipientProfileId,
-    text: new TextEncoder().encode(params.text),
-    attachment_manifests: [],
+    // Text is required for 0x01, an optional caption for 0x03 (spec §7/§8).
+    text:
+      contentType === 0x03 && params.text.length === 0
+        ? undefined
+        : new TextEncoder().encode(params.text),
+    attachment_manifests: [...(params.attachmentManifests ?? [])],
     reply_to_message_id: params.replyTo?.messageId,
     reply_to_outpoint:
       params.replyTo === undefined
@@ -90,7 +104,7 @@ export function assembleTextMessage(params: AssembleTextMessageParams): Assemble
   const header: codec.CempEnvelopeHeaderV1Encodable = {
     protocol_version: 1,
     network: 0x01, // ckb_testnet
-    content_type: 0x01,
+    content_type: contentType,
     message_id: messageId,
     conversation_id: conversationId,
     sender_profile_id: params.senderProfileId,
@@ -98,10 +112,18 @@ export function assembleTextMessage(params: AssembleTextMessageParams): Assemble
     reply_to_message_id: params.replyTo?.messageId,
     expiry_hint: 0n,
   };
-  const { envelopeBytes } = encryptEnvelope({
+  const { envelopeBytes, attachmentKey } = encryptEnvelope({
     payload,
     recipientKemPublicKey: params.recipientKemPublicKey,
     header,
   });
-  return { messageId, conversationId, routeTag, conversationTag, messageNonce, envelopeBytes };
+  return {
+    messageId,
+    conversationId,
+    routeTag,
+    conversationTag,
+    messageNonce,
+    envelopeBytes,
+    attachmentKey,
+  };
 }

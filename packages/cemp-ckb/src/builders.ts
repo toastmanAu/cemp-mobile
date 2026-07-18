@@ -742,3 +742,41 @@ export async function buildDeployDataCellTx(
   await tx.completeFeeBy(options.signer, options.feeRate ?? DEFAULT_FEE_RATE);
   return finalize(tx, options.signer.client);
 }
+
+// ── batched data cells (attachment chunks, Phase 10) ────────────────────────
+
+export interface BuildDataCellsTxOptions {
+  /** The cell payloads in positional order (chunk 0 first). */
+  readonly datasets: readonly Uint8Array[];
+  /** Owner of every data cell (its lock becomes each cell's lock). */
+  readonly signer: MlDsaV2TxSigner;
+  readonly feeRate?: NumLike;
+}
+
+/**
+ * One transaction creating N typeless data cells — the attachment chunk
+ * carrier (Phase 10): batching chunks into a single tx keeps the outpoint
+ * set contiguous (chunk i = output i of one tx hash) and pays one fee for
+ * the group. Capacity of each cell is its occupied size plus margin.
+ */
+export async function buildDataCellsTx(
+  options: BuildDataCellsTxOptions,
+): Promise<BuiltTransaction> {
+  const { datasets, signer } = options;
+  if (datasets.length === 0) {
+    throw new CempCkbError("buildDataCellsTx", "no datasets given");
+  }
+  if (datasets.some((data) => data.length === 0)) {
+    throw new CempCkbError("buildDataCellsTx", "refusing an empty data cell payload");
+  }
+  const tx = Transaction.from({
+    outputs: datasets.map(() => ({ lock: signer.lockScript(), capacity: 0 })),
+    outputsData: datasets.map((data) => hexFrom(data)),
+  });
+  for (const output of tx.outputs) {
+    output.capacity += CAPACITY_MARGIN;
+  }
+  await tx.completeInputsByCapacity(signer);
+  await tx.completeFeeBy(signer, options.feeRate ?? DEFAULT_FEE_RATE);
+  return finalize(tx, signer.client);
+}

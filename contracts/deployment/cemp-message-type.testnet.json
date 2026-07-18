@@ -8,5 +8,10 @@
   "hashType": "data1",
   "deployedAt": "2026-07-17",
   "sourceCommit": "8ca3be5edcf792df8c52cac2aef71e2cab054628",
-  "notes": "Deployed by apps/reference-client (deploy-type step). hashType data1: immutable code reference, no TYPE ID upgrade path. Capacity locked permanently in the code cell."
+  "notes": "Deployed by apps/reference-client (deploy-type step). hashType data1: immutable code reference, no TYPE ID upgrade path. Capacity locked permanently in the code cell.",
+  "buildToolchain": {
+    "rustc": "1.92.0 (ded5c06cf 2025-12-08)",
+    "crossGcc": "riscv64-unknown-elf-gcc 10.2.0 (Ubuntu 10.2.0-0ubuntu1)",
+    "note": "byte parity with the deployed binary requires this full toolchain set (reproducible builds are per-environment, not cross-version \u2014 see verify-reproducible.sh header)"
+  }
 }

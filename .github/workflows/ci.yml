@@ -51,6 +51,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
+          # Must match contracts/rust-toolchain.toml — the deployment codeHash
+          # is only reproducible under the toolchain it was built with.
+          toolchain: "1.92.0"
           targets: riscv64imac-unknown-none-elf
 
       - name: Contract tests

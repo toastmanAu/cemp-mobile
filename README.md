@@ -39,15 +39,16 @@ mainnet readiness (Phase 11 gate).
 
 ## Documentation
 
-| Document                                   | Purpose                                                             |
-| ------------------------------------------ | ------------------------------------------------------------------- |
-| [`ckd.txt`](ckd.txt)                       | Full product and engineering specification (source of truth)        |
-| [`docs/grounding/`](docs/grounding/)       | Verified facts from the reference projects and CKB knowledge graphs |
-| [`docs/protocol/`](docs/protocol/)         | Wire-level protocol specification (Phase 1)                         |
-| [`docs/architecture/`](docs/architecture/) | System design, service boundaries, network config                   |
-| [`docs/threat-model/`](docs/threat-model/) | Trust boundaries and privacy limitations                            |
-| [`docs/adr/`](docs/adr/)                   | Architecture decision records                                       |
-| [`AGENTS.md`](AGENTS.md)                   | Permanent operating rules for coding agents                         |
+| Document                                                         | Purpose                                                             |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------- |
+| [`ckd.txt`](ckd.txt)                                             | Full product and engineering specification (source of truth)        |
+| [`docs/grounding/`](docs/grounding/)                             | Verified facts from the reference projects and CKB knowledge graphs |
+| [`docs/protocol/`](docs/protocol/)                               | Wire-level protocol specification (Phase 1)                         |
+| [`docs/architecture/`](docs/architecture/)                       | System design, service boundaries, network config                   |
+| [`docs/architecture/ios-prep.md`](docs/architecture/ios-prep.md) | Phase 12 iOS preparation: seam map, background-fetch, conformance   |
+| [`docs/threat-model/`](docs/threat-model/)                       | Trust boundaries and privacy limitations                            |
+| [`docs/adr/`](docs/adr/)                                         | Architecture decision records                                       |
+| [`AGENTS.md`](AGENTS.md)                                         | Permanent operating rules for coding agents                         |
 
 ## Repository layout
 

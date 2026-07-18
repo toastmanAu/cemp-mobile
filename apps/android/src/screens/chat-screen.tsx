@@ -16,7 +16,7 @@ import {
   View,
 } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import type { Message } from "@cemp/database";
+import type { Contact, Message } from "@cemp/database";
 import { ChatComposerViewModel, messageBubbleState, type BubbleStatus } from "@cemp/ui";
 import { useAppContainer, type RootStackParamList } from "../navigation";
 
@@ -44,6 +44,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
     () => new ChatComposerViewModel(container.repositories.messages, conversationId),
   );
   const [draft, setDraft] = useState("");
+  const [contact, setContact] = useState<Contact | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
 
   async function reload(): Promise<void> {
     setMessages(
@@ -61,16 +63,48 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
     };
   }, [conversationId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const conversation = await container.repositories.conversations.getById(conversationId);
+      if (conversation === undefined) return;
+      const c = await container.repositories.contacts.getById(conversation.contactId);
+      if (!cancelled && c !== undefined) setContact(c);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId]);
+
   async function send(): Promise<void> {
     composer.setText(draft);
+    setPublishError(null);
     try {
       const sent = await composer.send();
-      if (sent !== undefined) {
-        setDraft("");
-      } else if (composer.error === null) {
-        // Early-return without an error message — surface it so silent
-        // no-ops are impossible (device verification 2026-07-18).
-        console.error("ChatScreen.send: composer.send() returned undefined without an error");
+      if (sent === undefined) {
+        if (composer.error === null) {
+          console.error("ChatScreen.send: composer.send() returned undefined without an error");
+        }
+        return;
+      }
+      setDraft("");
+      // P2P: publish to the contact's on-chain profile when we can (the row
+      // stays queued locally and the workers retry otherwise).
+      if (container.hasMessaging && contact?.profileIdHex != null) {
+        try {
+          await container.messaging.publishMessage({
+            messageRowId: sent.id,
+            logicalMessageId: sent.logicalMessageId,
+            text: sent.body ?? "",
+            recipientProfileIdHex: contact.profileIdHex,
+          });
+        } catch (e) {
+          setPublishError(
+            e instanceof Error && "userMessage" in e
+              ? String((e as { userMessage: unknown }).userMessage)
+              : "Couldn't publish right now — the message is saved and will retry.",
+          );
+        }
       }
     } catch (e) {
       console.error("ChatScreen.send threw:", e);
@@ -116,6 +150,7 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
         <Button title="Send" disabled={draft.trim().length === 0} onPress={() => void send()} />
       </View>
       {composer.error !== null ? <Text style={styles.errorText}>{composer.error}</Text> : null}
+      {publishError !== null ? <Text style={styles.errorText}>{publishError}</Text> : null}
       <Text style={styles.byteCount}>
         {composer.byteLength}/{composer.maxBytes} bytes
       </Text>

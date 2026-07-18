@@ -21,6 +21,9 @@ function describeError(error: ContactEditError): string {
   if (error.field === "notes") {
     return "The notes are too long.";
   }
+  if (error.field === "profileId") {
+    return "The profile id must be 64 hexadecimal characters.";
+  }
   return "The avatar image is too large.";
 }
 
@@ -31,6 +34,8 @@ export function ContactEditScreen({ route, navigation }: Props): React.JSX.Eleme
   const [notes, setNotes] = useState("");
   const [errors, setErrors] = useState<readonly ContactEditError[]>([]);
   const [profileId, setProfileId] = useState<string | null>(null);
+  const [profileIdInput, setProfileIdInput] = useState("");
+  const isNew = route.params.contactId === undefined;
 
   useEffect(() => {
     const contactId = route.params.contactId;
@@ -56,6 +61,9 @@ export function ContactEditScreen({ route, navigation }: Props): React.JSX.Eleme
     }
     model.displayName = displayName;
     model.notes = notes;
+    if (isNew) {
+      model.profileIdHex = profileIdInput.trim().length > 0 ? profileIdInput.trim() : null;
+    }
     try {
       await model.save();
       navigation.goBack();
@@ -80,6 +88,22 @@ export function ContactEditScreen({ route, navigation }: Props): React.JSX.Eleme
         onChangeText={setNotes}
         multiline
       />
+      {isNew ? (
+        <>
+          <Text style={styles.label}>
+            Profile ID (hex) — links this contact to their on-chain profile
+          </Text>
+          <TextInput
+            style={styles.input}
+            value={profileIdInput}
+            onChangeText={setProfileIdInput}
+            placeholder="64 hex characters, from their Settings screen"
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="off"
+          />
+        </>
+      ) : null}
       {profileId !== null ? <Text style={styles.profile}>Linked profile: {profileId}</Text> : null}
       {errors.map((error) => (
         <Text key={error.field} style={styles.error}>

@@ -23,6 +23,7 @@ import {
 import { SecureVaultImpl } from "@cemp/secure-vault";
 import { NoopNotifier, type Notifier } from "@cemp/ui";
 import { AndroidKeychainKeyStore } from "./platform/android-keystore";
+import { MessagingService } from "./messaging";
 import { NativeKdfEngine } from "./platform/native-kdf";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
 import { AsyncStorageVaultStorage } from "./platform/vault-storage";
@@ -47,6 +48,7 @@ export class AppContainer {
 
   #db: OpSqlCipherAdapter | null = null;
   #repositories: AppRepositories | null = null;
+  #messaging: MessagingService | null = null;
   #state: AppContainerState = "loading";
   #listeners = new Set<() => void>();
   #poll: ReturnType<typeof setInterval> | null = null;
@@ -79,6 +81,18 @@ export class AppContainer {
     return this.#repositories;
   }
 
+  /** The P2P messaging service (publication + sync), ready-state only. */
+  get messaging(): MessagingService {
+    if (this.#messaging === null) {
+      throw new Error("AppContainer: messaging is only available in the ready state");
+    }
+    return this.#messaging;
+  }
+
+  get hasMessaging(): boolean {
+    return this.#messaging !== null;
+  }
+
   subscribe(listener: () => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
@@ -100,6 +114,15 @@ export class AppContainer {
       return;
     }
     await this.#openDatabase();
+    // Build the P2P messaging service (identity from the vault, pipelines over
+    // the encrypted DB). Failures here leave the app usable for local data.
+    if (this.#messaging === null && this.#db !== null) {
+      this.#messaging = await MessagingService.init({
+        vault: this.vault,
+        db: this.#db,
+        notifier: this.notifier,
+      });
+    }
     this.#setState("ready");
     this.#startPoll();
   }
@@ -167,6 +190,9 @@ export class AppContainer {
   }
 
   async #closeDatabase(): Promise<void> {
+    // Wipe in-memory key material before tearing down state (rule 2).
+    this.#messaging?.dispose();
+    this.#messaging = null;
     this.#repositories = null;
     if (this.#db !== null) {
       await this.#db.close();

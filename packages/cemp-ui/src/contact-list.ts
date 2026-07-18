@@ -61,7 +61,8 @@ export class ContactListViewModel {
 export type ContactEditError =
   | { readonly field: "displayName"; readonly reason: "required" | "too-long" }
   | { readonly field: "notes"; readonly reason: "too-long" }
-  | { readonly field: "avatar"; readonly reason: "too-large" };
+  | { readonly field: "avatar"; readonly reason: "too-large" }
+  | { readonly field: "profileId"; readonly reason: "invalid" };
 
 /** The edit screen's form model: create new or edit an existing contact. */
 export class ContactEditModel {
@@ -71,6 +72,8 @@ export class ContactEditModel {
   displayName = "";
   notes = "";
   avatar: Uint8Array | null = null;
+  /** 64-char hex profile id (new contacts only; the link is fixed afterwards). */
+  profileIdHex: string | null = null;
 
   constructor(contacts: ContactRepository, existing?: Contact & { avatar?: Uint8Array | null }) {
     this.#contacts = contacts;
@@ -97,6 +100,10 @@ export class ContactEditModel {
     if (this.avatar !== null && this.avatar.length > CONTACT_EDIT_LIMITS.maxAvatarBytes) {
       errors.push({ field: "avatar", reason: "too-large" });
     }
+    const profileId = this.profileIdHex?.trim() ?? "";
+    if (profileId.length > 0 && !/^[0-9A-Fa-f]{64}$/.test(profileId)) {
+      errors.push({ field: "profileId", reason: "invalid" });
+    }
     return errors;
   }
 
@@ -108,7 +115,12 @@ export class ContactEditModel {
     }
     const displayName = this.displayName.trim();
     if (this.#contactId === null) {
-      const created = await this.#contacts.create({ displayName, notes: this.notes });
+      const profileId = this.profileIdHex?.trim() ?? "";
+      const created = await this.#contacts.create({
+        displayName,
+        notes: this.notes,
+        ...(profileId.length > 0 ? { profileIdHex: profileId.toLowerCase() } : {}),
+      });
       if (this.avatar !== null) {
         await this.#contacts.setAvatar(created.id, this.avatar);
       }

@@ -15,6 +15,11 @@ export function SettingsScreen(): React.JSX.Element {
   const [revealPassword, setRevealPassword] = useState("");
   const [revealedWords, setRevealedWords] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [profileId, setProfileId] = useState<string | null>(null);
+  const [fingerprint, setFingerprint] = useState<string | null>(null);
+  const [handle, setHandle] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  const [publishMessage, setPublishMessage] = useState<string | null>(null);
 
   useEffect(() => {
     void container.vault.getMetadata().then((meta) => {
@@ -22,6 +27,35 @@ export function SettingsScreen(): React.JSX.Element {
       setAutoLockSeconds(meta.autoLockSeconds);
     });
   }, []);
+
+  useEffect(() => {
+    if (!container.hasMessaging) return;
+    void container.messaging.myProfileId().then(setProfileId);
+    void container.messaging.myFingerprint().then(setFingerprint);
+  }, [container.hasMessaging]);
+
+  async function publishProfile(): Promise<void> {
+    if (!container.hasMessaging) return;
+    setPublishing(true);
+    setPublishMessage(null);
+    setError(null);
+    try {
+      const result = await container.messaging.publishMyProfile(
+        handle.trim().length > 0 ? handle.trim() : "me",
+      );
+      setProfileId(result.profileId);
+      setFingerprint(await container.messaging.myFingerprint());
+      setPublishMessage("Profile published. Share the profile id with your contacts.");
+    } catch (e) {
+      setPublishMessage(
+        e instanceof Error
+          ? `Couldn't publish: ${e.message}. The wallet needs testnet CKB first (see the Wallet tab).`
+          : "Couldn't publish right now.",
+      );
+    } finally {
+      setPublishing(false);
+    }
+  }
 
   async function toggleBiometrics(): Promise<void> {
     setError(null);
@@ -108,6 +142,41 @@ export function SettingsScreen(): React.JSX.Element {
         </View>
       ) : null}
 
+      <Text style={styles.section}>Messaging profile</Text>
+      {profileId !== null ? (
+        <View style={styles.profileBox}>
+          <Text style={styles.mono} selectable>
+            Profile id: {profileId}
+          </Text>
+          {fingerprint !== null ? (
+            <Text style={styles.mono} selectable>
+              Fingerprint: {fingerprint}
+            </Text>
+          ) : null}
+        </View>
+      ) : (
+        <>
+          <Text style={styles.muted}>
+            Publishing your profile puts your public keys on-chain so contacts can find and message
+            you. It needs a funded wallet (see the Wallet tab).
+          </Text>
+          <TextInput
+            style={styles.input}
+            value={handle}
+            onChangeText={setHandle}
+            placeholder="handle (public, e.g. phill)"
+            autoCapitalize="none"
+            autoComplete="off"
+          />
+          <Button
+            title={publishing ? "Publishing…" : "Publish my profile"}
+            disabled={publishing || !container.hasMessaging}
+            onPress={() => void publishProfile()}
+          />
+        </>
+      )}
+      {publishMessage !== null ? <Text style={styles.muted}>{publishMessage}</Text> : null}
+
       <Text style={styles.section}>Network</Text>
       <Text style={styles.muted}>CKB testnet (this build never touches mainnet).</Text>
 
@@ -126,5 +195,7 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, borderColor: "#999", borderRadius: 8, padding: 10 },
   phraseBox: { borderWidth: 1, borderColor: "#333", borderRadius: 8, padding: 14, gap: 8 },
   phrase: { fontSize: 15, lineHeight: 22 },
+  profileBox: { borderWidth: 1, borderColor: "#999", borderRadius: 8, padding: 12, gap: 6 },
+  mono: { fontFamily: "monospace", fontSize: 12 },
   error: { color: "#b00020" },
 });

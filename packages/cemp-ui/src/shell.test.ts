@@ -102,6 +102,17 @@ describe("ContactListViewModel + ContactEditModel", () => {
       edit.displayName = "carol w";
       await edit.save();
       expect((await contacts.getById(id))?.displayName).toBe("carol w");
+
+      // Profile id: validated (64 hex chars) and persisted on create.
+      const badProfile = new ContactEditModel(contacts);
+      badProfile.displayName = "dave";
+      badProfile.profileIdHex = "not-hex";
+      expect(badProfile.validate()).toEqual([{ field: "profileId", reason: "invalid" }]);
+      const withProfile = new ContactEditModel(contacts);
+      withProfile.displayName = "erin";
+      withProfile.profileIdHex = "A".repeat(64);
+      const erinId = await withProfile.save();
+      expect((await contacts.getById(erinId))?.profileIdHex).toBe("a".repeat(64));
     } finally {
       await db.close();
     }

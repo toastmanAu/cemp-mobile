@@ -53,9 +53,15 @@ importers:
       '@cemp/secure-vault':
         specifier: workspace:*
         version: link:../../packages/cemp-secure-vault
+      '@cemp/sync':
+        specifier: workspace:*
+        version: link:../../packages/cemp-sync
       '@cemp/ui':
         specifier: workspace:*
         version: link:../../packages/cemp-ui
+      '@ckb-ccc/core':
+        specifier: 1.12.5
+        version: 1.12.5(typescript@5.9.3)
       '@op-engineering/op-sqlite':
         specifier: 17.1.2
         version: 17.1.2(react-native@0.83.10(@babel/core@7.29.7)(@react-native-community/cli@20.0.0(typescript@5.9.3))(@react-native/metro-config@0.83.10(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.7))(react@19.2.7)

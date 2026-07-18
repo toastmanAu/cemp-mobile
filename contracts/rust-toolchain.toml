@@ -1,0 +1,7 @@
+# The toolchain the testnet deployment binary was built with (2026-07-17).
+# contracts/cemp-message-type/verify-reproducible.sh asserts byte-parity with
+# the deployed codeHash — that only holds under THIS toolchain (reproducible
+# builds are per-toolchain, not cross-version).
+[toolchain]
+channel = "1.92.0"
+targets = ["riscv64imac-unknown-none-elf"]

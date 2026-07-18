@@ -24,6 +24,7 @@ import {
   type CempClient,
   type CempMessageTypeRef,
   type MessagePublisher,
+  type RateLimiter,
 } from "@cemp/ckb";
 import { deriveRouteTag } from "@cemp/core";
 import type {
@@ -79,6 +80,8 @@ export interface SyncWorkerDeps {
   readonly cursors: SyncCursorRepository;
   readonly leases: WorkerLeaseRepository;
   readonly balances: BalanceRepository;
+  /** Incoming/outgoing rate limits (Phase 11 task 9). */
+  readonly rateLimiter: RateLimiter;
   /** Wallet whose balance row the balance-refresh worker updates. */
   readonly walletId: number;
   /** The wallet lock the balance-refresh worker reports on. */
@@ -166,6 +169,16 @@ async function processDiscoveredCell(
     ownProfileId: deps.ownProfileId,
   });
   const senderProfileIdHex = bytesToHex(incoming.senderProfileId);
+  // Phase 11 task 10: a blocked sender is dropped at ingestion — history is
+  // untouched, nothing new is stored (rule 8 applies to history, not spam).
+  if (await deps.contacts.isBlockedByProfileId(senderProfileIdHex)) {
+    return;
+  }
+  // Phase 11 task 9: per-contact + global incoming rate limit. Over-limit
+  // cells are skipped (the cursor still advances — spam cannot stall sync).
+  if (!(await deps.rateLimiter.consume("incoming", senderProfileIdHex))) {
+    return;
+  }
   let contact = await deps.contacts.getByProfileId(senderProfileIdHex);
   if (contact === undefined) {
     // Unknown sender: stub contact (QR/profile flows replace it with a

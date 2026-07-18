@@ -209,6 +209,18 @@ export const MIGRATIONS: readonly Migration[] = [
        )`,
     ],
   },
+  {
+    version: 5,
+    description: "hardening: rate-limit buckets + contact block flag (Phase 11 tasks 9–10)",
+    statements: [
+      "ALTER TABLE contacts ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0",
+      `CREATE TABLE rate_limits (
+         bucket TEXT PRIMARY KEY,
+         tokens REAL NOT NULL,
+         updated_at_ms INTEGER NOT NULL
+       )`,
+    ],
+  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

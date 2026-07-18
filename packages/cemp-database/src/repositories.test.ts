@@ -353,3 +353,36 @@ describe("repositories", () => {
     }
   });
 });
+
+describe("block/report controls (Phase 11 task 10)", () => {
+  it("block flag round-trips, unknown profiles are unblocked, report records a security event", async () => {
+    const db = new NodeSqliteAdapter();
+    await migrate(db);
+    try {
+      const contacts = new ContactRepository(db);
+      const alice = await contacts.create({ displayName: "alice", profileIdHex: "0xalice" });
+      expect(await contacts.isBlocked(alice.id)).toBe(false);
+      expect(await contacts.isBlockedByProfileId("0xalice")).toBe(false);
+      expect(await contacts.isBlockedByProfileId("0xunknown")).toBe(false);
+
+      await contacts.setBlocked(alice.id, true);
+      expect(await contacts.isBlocked(alice.id)).toBe(true);
+      expect(await contacts.isBlockedByProfileId("0xalice")).toBe(true);
+      // History is untouched by blocking (rule 8).
+      expect((await contacts.getById(alice.id))?.displayName).toBe("alice");
+
+      await contacts.report(alice.id, "spam flood from this profile");
+      const events = await db.all("SELECT * FROM security_events WHERE kind = ?", [
+        "contact_reported",
+      ]);
+      expect(events).toHaveLength(1);
+      expect(String(events[0]!.detail)).toBe("spam flood from this profile");
+
+      await contacts.setBlocked(alice.id, false);
+      expect(await contacts.isBlocked(alice.id)).toBe(false);
+      await expect(contacts.setBlocked(999_999, true)).rejects.toMatchObject({ code: "not-found" });
+    } finally {
+      await db.close();
+    }
+  });
+});

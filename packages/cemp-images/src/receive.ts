@@ -11,7 +11,7 @@
 import type { CempClient } from "@cemp/ckb";
 import { codec } from "@cemp/core";
 import { sniffImageFormat } from "./codec.js";
-import { blake2b256, decryptAttachment, joinChunks } from "./encrypt.js";
+import { ATTACHMENT_CHUNK_BYTES, blake2b256, decryptAttachment, joinChunks } from "./encrypt.js";
 import { checkManifest } from "./manifest.js";
 
 export interface DownloadedAttachment {
@@ -59,7 +59,15 @@ export async function downloadAttachment(
     if (status.status !== "live") {
       throw new Error(`attachment chunk ${String(i)} is not live (reclaimed or pruned)`);
     }
-    chunks.push(hexToBytes(status.cell.data));
+    const chunkData = hexToBytes(status.cell.data);
+    // A hostile chunk cell can declare arbitrary data — cap each chunk to
+    // the protocol chunk size BEFORE it joins memory (task 11 / bomb guard).
+    if (chunkData.length > ATTACHMENT_CHUNK_BYTES) {
+      throw new Error(
+        `attachment chunk ${String(i)} carries ${chunkData.length} bytes, above the ${String(ATTACHMENT_CHUNK_BYTES)}-byte chunk limit`,
+      );
+    }
+    chunks.push(chunkData);
   }
   const ciphertext = joinChunks(chunks);
   if (BigInt(ciphertext.length) !== manifest.encrypted_size) {

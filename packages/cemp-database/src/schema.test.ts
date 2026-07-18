@@ -7,8 +7,8 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v4: background operation (Phase 9 worker leases).
-    expect(SCHEMA_VERSION).toBe(4);
+    // v5: hardening (Phase 11 rate limits + contact block).
+    expect(SCHEMA_VERSION).toBe(5);
   });
 
   it("covers the spec §11 core tables", () => {

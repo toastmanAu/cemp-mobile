@@ -626,6 +626,26 @@ export class CempClient implements CkbIndexerProvider, CkbRpcProvider {
     return asHash(result, "send_transaction result");
   }
 
+  /**
+   * Pre-broadcast simulation (spec Phase 11 task 11): `dry_run_transaction`
+   * executes the transaction in the node's VM without broadcasting. Returns
+   * the cycle count as a hex quantity; verification failures surface as RPC
+   * errors (the caller maps them like send failures). The wire body is
+   * validated by the same strict path as broadcast.
+   */
+  async dryRunTransaction(
+    tx: Transaction,
+    outputsValidator: OutputsValidator = "passthrough",
+  ): Promise<{ cycles: string }> {
+    const body = transactionToRpc(tx);
+    const result = await this.transport.call(this.endpoints.rpc, "dry_run_transaction", [
+      body,
+      outputsValidator,
+    ]);
+    const rec = asRecord(result, "dry_run_transaction result");
+    return { cycles: asU64Hex(rec.cycles, "dry_run_transaction result.cycles").hex };
+  }
+
   /** Basis of the watched-outpoint pattern (spec §7.4): live → spent detection. */
   async getLiveCell(outPoint: OutPoint): Promise<LiveCellStatus> {
     const result = await this.transport.call(this.endpoints.rpc, "get_live_cell", [

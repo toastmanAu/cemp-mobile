@@ -519,3 +519,46 @@ describe("reclaimAttachmentGroup (task 14)", () => {
     expect(journaled.state).toBe("committed");
   });
 });
+
+describe("hostile chunk cells (Phase 11 tasks 4–6)", () => {
+  it("rejects a chunk cell carrying more than the chunk limit BEFORE joining", async () => {
+    const attachmentKey = new Uint8Array(32).fill(11);
+    const { signer } = makeChain();
+    const { client, sentBodies } = makeChain();
+    const journal = new FakeJournal();
+    const chunks = await prepareAttachmentChunks(
+      new FakeCodec(),
+      fakeSourceImage(800, 600, 10_000),
+      attachmentKey,
+    );
+    const published = await publishAttachmentChunks(
+      { client, signer, journal, messageType: MESSAGE_TYPE_REF },
+      chunks,
+    );
+    const manifestEncodable = buildManifestForCommittedChunks({
+      chunks,
+      chunksTxHash: published.chunksTxHash,
+      reclaimGroupId: new Uint8Array(16).fill(6),
+    });
+    const manifest = codec.decodeAttachmentManifestV1(
+      codec.encodeAttachmentManifestV1(manifestEncodable),
+    );
+
+    // Poison the FIRST chunk cell with an oversized payload.
+    const liveCells = chunkCellsFromBody(sentBodies[0]!, signer);
+    const firstKey = [...liveCells.keys()][0]!;
+    const firstCell = liveCells.get(firstKey)!;
+    liveCells.set(
+      firstKey,
+      Cell.from({
+        outPoint: firstCell.outPoint,
+        cellOutput: toOutputLike(firstCell.cellOutput),
+        outputData: hexFrom(new Uint8Array(ATTACHMENT_CHUNK_BYTES + 1).fill(0xaa)),
+      }),
+    );
+    const { client: hostileClient } = makeChain(liveCells);
+    await expect(downloadAttachment(hostileClient, manifest, attachmentKey)).rejects.toThrow(
+      /chunk limit/,
+    );
+  });
+});

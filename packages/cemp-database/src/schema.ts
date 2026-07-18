@@ -16,9 +16,11 @@
  * - 4: background operation (Phase 9) — worker_leases (concurrency control
  *   for workers and reclaim jobs, tasks 9–10). Sync cursors reuse the v1
  *   sync_cursors table.
+ * - 5: hardening (Phase 11) — contacts.blocked (block controls);
+ *   rate_limits (token buckets for per-contact + global rate limits).
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [

@@ -8,3 +8,4 @@ export * from "./aead.js";
 export * from "./envelope.js";
 export * from "./mldsa-v2.js";
 export * from "./provider.js";
+export * from "./redact.js";

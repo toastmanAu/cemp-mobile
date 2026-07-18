@@ -18,11 +18,13 @@ import {
   DatabasePublicationStore,
   MessageRepository,
   OutgoingTransactionRepository,
+  RateLimitRepository,
   SyncCursorRepository,
   WatchedOutpointRepository,
   WorkerLeaseRepository,
   migrate,
 } from "@cemp/database";
+import { RateLimiter, DEFAULT_RATE_LIMITS } from "@cemp/ckb";
 import { NodeSqliteAdapter } from "@cemp/database/node";
 import type { NotificationContent, Notifier } from "@cemp/ui";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -184,6 +186,7 @@ async function makeStack(
   const balances = new BalanceRepository(db);
   const cursors = new SyncCursorRepository(db);
   const leases = new WorkerLeaseRepository(db);
+  const rateLimiter = new RateLimiter(new RateLimitRepository(db), { ...DEFAULT_RATE_LIMITS });
   const walletId = await balances.ensureWallet("main");
   const store = new DatabasePublicationStore(messages, outgoingTxs, {
     watchedOutpoints,
@@ -221,6 +224,7 @@ async function makeStack(
     cursors,
     leases,
     balances,
+    rateLimiter,
     walletId,
     walletLock: {
       codeHash: walletLockScript.codeHash,
@@ -389,6 +393,121 @@ describe("EndpointRotator (task 7)", () => {
       expect((await reloaded.current()).rpc).toBe("https://b.example");
     } finally {
       await db.close();
+    }
+  });
+});
+
+describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 7–10)", () => {
+  it("route-tag spam: invalid cells are skipped, valid ones processed, cursor advances", async () => {
+    const valid = discoveryCellJson("real message in spam flood");
+    const spamCells = [
+      {
+        out_point: { tx_hash: fillHex(0xe1, 32), index: "0x0" },
+        output: {
+          capacity: "0x100",
+          lock: { code_hash: fillHex(0x77, 32), hash_type: "type", args: "0x" },
+          type: (valid.json as { output: { type: unknown } }).output.type,
+        },
+        output_data: "0xdeadbeef",
+        block_number: "0x1",
+      },
+      {
+        out_point: { tx_hash: fillHex(0xe2, 32), index: "0x0" },
+        output: {
+          capacity: "0x100",
+          lock: { code_hash: fillHex(0x77, 32), hash_type: "type", args: "0x" },
+          type: (valid.json as { output: { type: unknown } }).output.type,
+        },
+        output_data: "0x",
+        block_number: "0x1",
+      },
+      {
+        out_point: { tx_hash: fillHex(0xe3, 32), index: "0x0" },
+        output: {
+          capacity: "0x100",
+          lock: { code_hash: fillHex(0x77, 32), hash_type: "type", args: "0x" },
+          type: (valid.json as { output: { type: unknown } }).output.type,
+        },
+        output_data: "0x" + "ff".repeat(1000),
+        block_number: "0x1",
+      },
+    ];
+    const stack = await makeStack({ cells: [...spamCells, valid.json] });
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      // Only the valid message landed; spam dropped without stalling.
+      const stored = await stack.messages.listByState(["received"]);
+      expect(stored).toHaveLength(1);
+      expect(stored[0]!.body).toBe("real message in spam flood");
+      expect(stack.notifier.posted).toHaveLength(1);
+      const epoch = currentRoutingEpoch();
+      expect(await stack.cursors.get(`incoming-discovery:${epoch.toString()}`)).toBe("0x64");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("replayed message (same envelope, NEW outpoint) dedups to one chat row", async () => {
+    const first = discoveryCellJson("replay me", new Uint8Array(16).fill(0x42));
+    // The same envelope replayed from a different outpoint (re-broadcast or a
+    // duplicate indexer view) — the envelope message id collapses it.
+    const replay = structuredClone(first) as { json: { out_point: { tx_hash: string } } };
+    replay.json.out_point.tx_hash = fillHex(0xd9, 32);
+    const stack = await makeStack({ cells: [first.json, replay.json] });
+    try {
+      await stack.engine.runWorker("incoming-discovery");
+      expect(await stack.messages.listByState(["received"])).toHaveLength(1);
+      expect(stack.notifier.posted).toHaveLength(1);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a blocked sender's cells are dropped at ingestion (history preserved)", async () => {
+    const stack = await makeStack();
+    const sender = await stack.contacts.create({
+      displayName: "spammer",
+      profileIdHex: "aa".repeat(32),
+    });
+    await stack.contacts.setBlocked(sender.id, true);
+    await stack.db.close();
+    const withCell = await makeStack({ cells: [discoveryCellJson("blocked spam").json] });
+    try {
+      // Re-create the block in the SAME db as the discovery run.
+      const blocked = await withCell.contacts.create({
+        displayName: "spammer",
+        profileIdHex: "aa".repeat(32),
+      });
+      await withCell.contacts.setBlocked(blocked.id, true);
+      await withCell.engine.runWorker("incoming-discovery");
+      expect(await withCell.messages.listByState(["received"])).toHaveLength(0);
+      expect(withCell.notifier.posted).toHaveLength(0);
+      // History: the contact row itself is untouched.
+      expect((await withCell.contacts.getById(blocked.id))?.displayName).toBe("spammer");
+    } finally {
+      await withCell.db.close();
+    }
+  });
+
+  it("incoming rate limit drops over-limit messages (cursor still advances)", async () => {
+    const stack = await makeStack();
+    try {
+      // Drain the per-contact bucket for alice (60/hour default).
+      for (let i = 0; i < 60; i++) {
+        await stack.deps.rateLimiter.consume("incoming", "aa".repeat(32));
+      }
+      await stack.db.close();
+      const withCell = await makeStack({ cells: [discoveryCellJson("over the limit").json] });
+      for (let i = 0; i < 60; i++) {
+        await withCell.deps.rateLimiter.consume("incoming", "aa".repeat(32));
+      }
+      await withCell.engine.runWorker("incoming-discovery");
+      expect(await withCell.messages.listByState(["received"])).toHaveLength(0);
+      expect(withCell.notifier.posted).toHaveLength(0);
+      const epoch = currentRoutingEpoch();
+      expect(await withCell.cursors.get(`incoming-discovery:${epoch.toString()}`)).toBe("0x64");
+    } finally {
+      await stack.db.close();
     }
   });
 });

@@ -179,6 +179,55 @@ export class ContactRepository {
     }
   }
 
+  /* --------------------------------------------- block controls (v5) -- */
+
+  /**
+   * Block or unblock a contact (spec Phase 11 task 10). Blocked senders are
+   * dropped at ingestion by the discovery worker; the app refuses to send to
+   * a blocked contact. History is preserved either way (rule 8 — blocking is
+   * a processing gate, not a deletion).
+   */
+  async setBlocked(id: number, blocked: boolean): Promise<void> {
+    const result = await this.#db.run(
+      "UPDATE contacts SET blocked = ?, updated_at_ms = ? WHERE id = ?",
+      [blocked ? 1 : 0, Date.now(), id],
+    );
+    if (result.changes === 0) {
+      throw new DatabaseError("not-found", `contact ${String(id)} does not exist`);
+    }
+  }
+
+  async isBlocked(id: number): Promise<boolean> {
+    const row = await this.#db.get("SELECT blocked FROM contacts WHERE id = ?", [id]);
+    if (row === undefined) {
+      throw new DatabaseError("not-found", `contact ${String(id)} does not exist`);
+    }
+    return Number(row.blocked) === 1;
+  }
+
+  /** Whether the contact linked to this profile id is blocked (false when unknown). */
+  async isBlockedByProfileId(profileIdHex: string): Promise<boolean> {
+    const row = await this.#db.get("SELECT blocked FROM contacts WHERE profile_id_hex = ?", [
+      profileIdHex,
+    ]);
+    return row !== undefined && Number(row.blocked) === 1;
+  }
+
+  /**
+   * Report a contact (task 10): records the event in `security_events`. The
+   * report is a local trust annotation — it never leaves the device.
+   */
+  async report(id: number, reason: string): Promise<void> {
+    const exists = await this.getById(id);
+    if (exists === undefined) {
+      throw new DatabaseError("not-found", `contact ${String(id)} does not exist`);
+    }
+    await this.#db.run(
+      "INSERT INTO security_events (kind, detail, created_at_ms) VALUES (?, ?, ?)",
+      ["contact_reported", reason.slice(0, 256), Date.now()],
+    );
+  }
+
   /* --------------------------------------- profile trust material (v2) -- */
 
   /**

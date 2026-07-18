@@ -6,7 +6,10 @@
  * → awaiting_signature → submitting → pending → committed → available_on_chain
  * → downloaded_by_recipient → acknowledged → reclaim_queued → reclaim_pending
  * → reclaimed. `failed` is reachable from every in-flight state; `expired`
- * from pre-commit states (TTL).
+ * from pre-commit states (TTL). RETRY EDGE (review E1): reclaim_pending →
+ * reclaim_queued is the requeue path for a reclaim tx that was journaled but
+ * never seen by the network (abandoned — a fresh batch rebuilds with live
+ * inputs; it is NOT a state regression, the cell was never consumed).
  *
  * Incoming (recipient side): discovered → downloading → decrypting → received
  * → displayed → response_queued → response_sent → awaiting_remote_reclaim →
@@ -85,7 +88,7 @@ const OUTGOING_TRANSITIONS: Readonly<
   downloaded_by_recipient: ["acknowledged", "failed"],
   acknowledged: ["reclaim_queued", "failed"],
   reclaim_queued: ["reclaim_pending", "failed"],
-  reclaim_pending: ["reclaimed", "failed"],
+  reclaim_pending: ["reclaimed", "reclaim_queued", "failed"],
   reclaimed: [],
   expired: [],
   failed: [],

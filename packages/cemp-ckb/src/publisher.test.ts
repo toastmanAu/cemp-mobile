@@ -73,6 +73,11 @@ class FakeStore implements PublicationStore {
     return Promise.resolve();
   }
 
+  reserveCapacity(amount: string): Promise<void> {
+    this.events.push({ kind: "txstate", detail: `reserve:${amount}` });
+    return Promise.resolve();
+  }
+
   markOutgoingTxState(txHash: string, state: string): Promise<void> {
     const tx = this.txs.get(txHash);
     if (tx !== undefined) {
@@ -82,9 +87,18 @@ class FakeStore implements PublicationStore {
     return Promise.resolve();
   }
 
-  findOutgoingTxByPurpose(purpose: string): Promise<{ txHash: string; state: string } | undefined> {
+  findOutgoingTxByPurpose(
+    purpose: string,
+  ): Promise<
+    | { txHash: string; state: string; txHex: string | null; capacityShannon: string | null }
+    | undefined
+  > {
     const found = [...this.txs.values()].filter((t) => t.purpose === purpose).at(-1);
-    return Promise.resolve(found);
+    return Promise.resolve(
+      found === undefined
+        ? undefined
+        : { txHash: found.txHash, state: found.state, txHex: null, capacityShannon: null },
+    );
   }
 }
 

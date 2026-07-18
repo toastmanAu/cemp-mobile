@@ -18,9 +18,11 @@
  *   sync_cursors table.
  * - 5: hardening (Phase 11) — contacts.blocked (block controls);
  *   rate_limits (token buckets for per-contact + global rate limits).
+ * - 6: crash-safe journals (review E1) — outgoing_transactions.tx_hex holds
+ *   the signed wire transaction so a resume can rebroadcast, never wedge.
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [

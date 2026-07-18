@@ -23,7 +23,11 @@
 import { buildReclaimTx, type CempMessageTypeRef } from "./builders.js";
 import { CempCkbError, type CempClient } from "./client.js";
 import type { IncomingTextMessage } from "./incoming.js";
-import { waitForTransactionCommit } from "./monitor.js";
+import {
+  JournaledAbandonedError,
+  resumeJournaledBroadcast,
+  waitForTransactionCommit,
+} from "./monitor.js";
 import type { MlDsaV2TxSigner } from "./signing.js";
 import type { Cell, OutPoint } from "./types.js";
 import { cccTransactionToWire } from "./wire.js";
@@ -57,14 +61,42 @@ export interface LifecycleStore {
     feeShannon?: string | undefined;
     submittedAtMs?: number | undefined;
     capacityShannon?: string | undefined;
+    /** The signed wire transaction as JSON (schema v6; stored BEFORE broadcast). */
+    txHex?: string | undefined;
   }): Promise<void>;
   markOutgoingTxState(txHash: string, state: string, committedAtMs?: number): Promise<void>;
+  /**
+   * Compare-and-swap (review E5): returns rows changed — exactly one
+   * concurrent caller wins the transition, so double-commit accounting is
+   * impossible even without a lease.
+   */
+  markOutgoingTxStateIf(
+    txHash: string,
+    expectedFromState: string,
+    state: string,
+    committedAtMs?: number,
+  ): Promise<number>;
   /** Latest journaled tx whose purpose starts with `prefix` (batch resume). */
-  findLatestOutgoingTxByPurposePrefix(
-    prefix: string,
-  ): Promise<
-    { txHash: string; state: string; purpose: string; capacityShannon: string | null } | undefined
+  findLatestOutgoingTxByPurposePrefix(prefix: string): Promise<
+    | {
+        txHash: string;
+        state: string;
+        purpose: string;
+        capacityShannon: string | null;
+        feeShannon: string | null;
+        txHex: string | null;
+      }
+    | undefined
   >;
+
+  /** Reserve message-cell capacity at commit time (Phase 8 accounting). */
+  reserveCapacity(amountShannon: string): Promise<void>;
+  /** Move capacity to reclaimable when a message is acked (review E3). */
+  markCapacityReclaimable(amountShannon: string): Promise<void>;
+  /** Journal info for a message row (review E3 accounting + resume). */
+  getMessageJournalInfo(
+    rowId: number,
+  ): Promise<{ logicalMessageId: string; capacityShannon: string | null } | undefined>;
 
   registerWatch(input: { txHash: string; outpointIndex: number; purpose: string }): Promise<void>;
   listActiveWatches(): Promise<LifecycleWatch[]>;
@@ -73,6 +105,8 @@ export interface LifecycleStore {
 
   /** Return reclaimed capacity to the available balance (task 8). */
   releaseReclaimedCapacity(amountShannon: string): Promise<void>;
+  /** Write off reclaimable capacity burned as the reclaim tx's fee (review E7). */
+  recordFeeBurn(amountShannon: string): Promise<void>;
 }
 
 /* ── service ─────────────────────────────────────────────────────────────── */
@@ -89,6 +123,8 @@ export interface ReclaimBatchResult {
   readonly reclaimedRowIds: number[];
   readonly releasedShannon: string;
   readonly resumed: boolean;
+  /** The journaled tx was never seen and its batch was requeued (review E1). */
+  readonly abandoned?: boolean;
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -132,6 +168,12 @@ export class ResponseLifecycle {
         await this.#deps.store.transitionMessage(found.rowId, "acknowledged");
       }
       await this.#deps.store.transitionMessage(found.rowId, "reclaim_queued");
+      // Review E3: fund the reclaimable bucket from the journal's recorded
+      // cell capacity, so the later release has something to release.
+      const journal = await this.#deps.store.getMessageJournalInfo(found.rowId);
+      if (journal?.capacityShannon != null) {
+        await this.#deps.store.markCapacityReclaimable(journal.capacityShannon);
+      }
       acked.push(found.rowId);
     }
     return acked;
@@ -150,19 +192,66 @@ export class ResponseLifecycle {
     const { store } = this.#deps;
 
     // Resume: a journaled reclaim tx whose batch is still uncommitted.
+    // Review E1: rebroadcast from the journaled signed bytes when the network
+    // never saw the tx; abandon + requeue (retry edge) instead of wedging.
     const journaled = await store.findLatestOutgoingTxByPurposePrefix("reclaim:");
     if (journaled !== undefined && journaled.state === "submitted") {
       const ids = parseReclaimPurpose(journaled.purpose);
-      await waitForTransactionCommit(this.#deps.client, journaled.txHash, {
-        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      });
-      await store.markOutgoingTxState(journaled.txHash, "committed", Date.now());
-      const released = journaled.capacityShannon ?? "0";
+      try {
+        await resumeJournaledBroadcast(
+          this.#deps.client,
+          { txHash: journaled.txHash, txHex: journaled.txHex },
+          { ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) },
+        );
+      } catch (e) {
+        if (!(e instanceof JournaledAbandonedError)) {
+          throw e;
+        }
+        // Abandoned: the tx never landed (or its inputs were spent elsewhere).
+        // Mark the journal abandoned and requeue the batch — a future run
+        // rebuilds with live inputs (retry edge, review E1/E2).
+        await store.markOutgoingTxState(journaled.txHash, "abandoned");
+        for (const rowId of ids) {
+          await store.transitionMessage(rowId, "reclaim_queued");
+        }
+        return {
+          txHash: journaled.txHash,
+          reclaimedRowIds: [],
+          releasedShannon: "0",
+          resumed: false,
+          abandoned: true,
+        };
+      }
+      // Review E5: exactly one concurrent caller wins submitted→committed;
+      // capacity is released only by the winner (no double-credit).
+      const won = await store.markOutgoingTxStateIf(
+        journaled.txHash,
+        "submitted",
+        "committed",
+        Date.now(),
+      );
+      if (won === 0) {
+        return {
+          txHash: journaled.txHash,
+          reclaimedRowIds: ids,
+          releasedShannon: "0",
+          resumed: true,
+        };
+      }
+      // Review E7: the released amount is net of the journaled fee.
+      const journaledFee = journaled.feeShannon === null ? 0n : BigInt(journaled.feeShannon);
+      const journaledCapacity =
+        journaled.capacityShannon === null ? 0n : BigInt(journaled.capacityShannon);
+      const released =
+        journaledCapacity > journaledFee ? (journaledCapacity - journaledFee).toString() : "0";
       for (const rowId of ids) {
         await store.transitionMessage(rowId, "reclaimed");
       }
       if (released !== "0") {
         await store.releaseReclaimedCapacity(released);
+      }
+      if (journaledFee > 0n) {
+        await store.recordFeeBurn(journaledFee.toString());
       }
       return {
         txHash: journaled.txHash,
@@ -183,6 +272,9 @@ export class ResponseLifecycle {
 
     // Resolve the live cells; a cell already gone can only have been spent by
     // an earlier reclaim of ours (sender lock) — mark it reclaimed and skip.
+    // Review E4: only an explicit `dead` status counts as spent; `unknown`
+    // means the node has no information — leave queued, retry next round
+    // (never mark irreversible state from one unverified answer).
     const outpoints: { txHash: string; index: string }[] = [];
     const resolvedCells: Cell[] = [];
     const covered: LifecycleMessage[] = [];
@@ -199,10 +291,14 @@ export class ResponseLifecycle {
         resolvedCells.push(status.cell);
         covered.push(message);
         releasedTotal += BigInt(status.cell.output.capacity);
-      } else {
+      } else if (status.status === "dead") {
         // Already spent by us (prior reclaim committed while we were offline).
+        // Review E2: walk the legal path (reclaim_queued → reclaim_pending →
+        // reclaimed — the direct edge does not exist).
+        await store.transitionMessage(message.rowId, "reclaim_pending");
         await store.transitionMessage(message.rowId, "reclaimed");
       }
+      // `unknown`: no information this round — leave queued, retry later.
     }
     if (covered.length === 0) {
       return null;
@@ -221,18 +317,21 @@ export class ResponseLifecycle {
     const signed = await this.#deps.signer.signTransaction(built.tx);
     const txHash = signed.hash();
 
-    // Journal BEFORE broadcast (rule 6): the purpose embeds the covered set.
+    // Journal BEFORE broadcast (rule 6): the purpose embeds the covered set,
+    // and the signed wire bytes are stored for rebroadcast resume (review E1).
     const ids = covered.map((m) => m.rowId);
+    const wire = cccTransactionToWire(signed);
     await store.recordOutgoingTx({
       txHash,
       purpose: `reclaim:${ids.join(",")}`,
       state: "submitted",
       feeShannon: built.estimatedFee.toString(),
       capacityShannon: releasedTotal.toString(),
+      txHex: JSON.stringify(wire),
       submittedAtMs: Date.now(),
     });
 
-    const accepted = await this.#deps.client.sendTransaction(cccTransactionToWire(signed));
+    const accepted = await this.#deps.client.sendTransaction(wire);
     if (accepted !== txHash) {
       throw new CempCkbError(
         "lifecycle",
@@ -242,7 +341,22 @@ export class ResponseLifecycle {
     await waitForTransactionCommit(this.#deps.client, txHash, {
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     });
-    await store.markOutgoingTxState(txHash, "committed", Date.now());
+    // Review E5: exactly one caller wins the commit transition; only the
+    // winner releases capacity.
+    const wonCommit = await store.markOutgoingTxStateIf(
+      txHash,
+      "submitted",
+      "committed",
+      Date.now(),
+    );
+    if (wonCommit === 0) {
+      return {
+        txHash,
+        reclaimedRowIds: ids,
+        releasedShannon: "0",
+        resumed: false,
+      };
+    }
     for (const message of covered) {
       await store.transitionMessage(message.rowId, "reclaimed");
       // Any sender-side ack-watch on the reclaimed cell is now moot (task 11).
@@ -254,12 +368,19 @@ export class ResponseLifecycle {
         await store.markWatchSpent(ref.txHash, ref.outpointIndex, txHash);
       }
     }
-    await store.releaseReclaimedCapacity(releasedTotal.toString());
+    // Review E7: released capacity is net of the fee actually burned.
+    const releasedNet = releasedTotal - built.estimatedFee;
+    if (releasedNet > 0n) {
+      await store.releaseReclaimedCapacity(releasedNet.toString());
+    }
+    if (built.estimatedFee > 0n) {
+      await store.recordFeeBurn(built.estimatedFee.toString());
+    }
     await store.pruneSpentWatches();
     return {
       txHash,
       reclaimedRowIds: ids,
-      releasedShannon: releasedTotal.toString(),
+      releasedShannon: releasedNet > 0n ? releasedNet.toString() : "0",
       resumed: false,
     };
   }
@@ -301,7 +422,13 @@ export class ResponseLifecycle {
       if (status.status === "live") {
         continue;
       }
-      // dead or unknown: the cell is gone. The spender is not resolvable
+      if (status.status === "unknown") {
+        // Review E4: `unknown` means the NODE has no information — not that
+        // the cell is gone. Leave the watch active and retry next poll; never
+        // flip irreversible state from one unverified answer.
+        continue;
+      }
+      // Explicitly dead: the cell is gone. The spender is not resolvable
       // through get_live_cell — recorded as a sentinel; the watch is pruned
       // immediately after, so the sentinel never collides with a real hash.
       await store.markWatchSpent(watch.txHash, watch.outpointIndex, "unknown-spender");

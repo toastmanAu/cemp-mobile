@@ -221,6 +221,11 @@ export const MIGRATIONS: readonly Migration[] = [
        )`,
     ],
   },
+  {
+    version: 6,
+    description: "crash-safe journals: signed tx bytes for rebroadcast resume (review E1)",
+    statements: ["ALTER TABLE outgoing_transactions ADD COLUMN tx_hex TEXT"],
+  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

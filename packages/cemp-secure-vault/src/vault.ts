@@ -122,6 +122,20 @@ export interface CreateVaultOptions {
 /** Default inactivity timeout (spec Phase 3 task 8). */
 export const DEFAULT_AUTO_LOCK_SECONDS = 300;
 
+/**
+ * Hard app-side ceiling for the auto-lock timer (review V1): `autoLockSeconds`
+ * lives in the vault file's UNAUTHENTICATED meta block, so an evil-maid edit
+ * could otherwise stretch the unlock window arbitrarily. The file value is
+ * honoured only up to this ceiling (1 hour); the encrypted payload is the
+ * authoritative home for a future format v2.
+ */
+export const MAX_AUTO_LOCK_SECONDS = 3600;
+
+/** Clamp a file-provided auto-lock value to the app-side ceiling (review V1). */
+export function clampAutoLockSeconds(seconds: number): number {
+  return Math.min(seconds, MAX_AUTO_LOCK_SECONDS);
+}
+
 /** AAD context for the password slot's VEK wrap. */
 const PASSWORD_WRAP_AAD = "CEMP/VAULT/wrap/password/v1";
 const textEncoder = new TextEncoder();
@@ -399,8 +413,14 @@ export class SecureVaultImpl implements SecureVault {
     } finally {
       kek.fill(0);
     }
-    const payload = this.#decryptPayload(file, vek, "wrong-password");
-    this.#setUnlocked(vek, payload.seed, file.meta.autoLockSeconds);
+    let payload: { entropy: Uint8Array; seed: Uint8Array };
+    try {
+      payload = this.#decryptPayload(file, vek, "wrong-password");
+    } catch (e) {
+      vek.fill(0); // V3: never keep an unusable VEK alive (review V3).
+      throw e;
+    }
+    this.#setUnlocked(vek, payload.seed, clampAutoLockSeconds(file.meta.autoLockSeconds));
     payload.entropy.fill(0);
   }
 
@@ -423,8 +443,14 @@ export class SecureVaultImpl implements SecureVault {
     }
     // The VEK authenticated itself by decrypting the payload; a failure here
     // means the file was tampered with, not a denied biometric.
-    const payload = this.#decryptPayload(file, vek, "corrupt-vault");
-    this.#setUnlocked(vek, payload.seed, file.meta.autoLockSeconds);
+    let payload: { entropy: Uint8Array; seed: Uint8Array };
+    try {
+      payload = this.#decryptPayload(file, vek, "corrupt-vault");
+    } catch (e) {
+      vek.fill(0); // V3
+      throw e;
+    }
+    this.#setUnlocked(vek, payload.seed, clampAutoLockSeconds(file.meta.autoLockSeconds));
     payload.entropy.fill(0);
   }
 
@@ -688,7 +714,7 @@ export class SecureVaultImpl implements SecureVault {
       createdAt: file.meta.createdAt,
       kdfAlgorithm: file.kdf.alg,
       biometricEnabled: file.biometricSlot !== null,
-      autoLockSeconds: file.meta.autoLockSeconds,
+      autoLockSeconds: clampAutoLockSeconds(file.meta.autoLockSeconds),
       wordCount: file.meta.wordCount,
       hasPassphrase: file.meta.hasPassphrase,
     };

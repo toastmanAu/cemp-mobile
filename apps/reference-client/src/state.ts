@@ -134,6 +134,8 @@ export interface RotationRecord {
   oldProfileId: string;
   oldMlDsaPublicKey: string;
   oldKemPublicKey: string;
+  /** The retired profile cell's outpoint (spent by the rotation tx). Optional for legacy records. */
+  oldOutPoint?: OutPointJson;
   newProfileId: string;
   txHash: string;
 }

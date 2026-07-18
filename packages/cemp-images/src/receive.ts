@@ -27,7 +27,11 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 function hexToBytes(hex: string): Uint8Array {
+  // Review C2: strict — never truncate/coerce hostile or malformed input.
   const bare = hex.startsWith("0x") ? hex.slice(2) : hex;
+  if (bare.length % 2 !== 0 || !/^[0-9a-f]*$/.test(bare)) {
+    throw new Error("hexToBytes: expected even-length lowercase hex");
+  }
   const out = new Uint8Array(bare.length / 2);
   for (let i = 0; i < out.length; i++) {
     out[i] = Number.parseInt(bare.slice(2 * i, 2 * i + 2), 16);

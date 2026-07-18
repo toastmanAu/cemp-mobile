@@ -4,11 +4,15 @@
  *
  * Two pieces:
  *
- * - {@link validateRotationChain} — structural validation of a profile
+ * - {@link validateRotationChain} — STRUCTURAL validation of a profile
  *   key-rotation chain (protocol §5): sequence starts at 0, increments by
  *   exactly 1, and each link's `previous_profile_id` names the predecessor's
- *   profile id. (The cryptographic half — the old lock signed the rotation
- *   transaction spending its cell — is enforced on-chain by the lock script.)
+ *   profile id. WARNING (review Finding A): structural checks alone are
+ *   FORGEABLE — a self-declared cell-data field proves nothing. Production
+ *   callers must bind each link to the transaction graph (the successor's
+ *   creating tx consumed the predecessor's outpoint — see
+ *   `@cemp/ckb` `verifyRotationLinkOnChain`, which is what the spec's
+ *   "signature continuity" means in practice).
  *
  * - {@link evaluateContactProfile} — the verdict a contact screen blocks on:
  *   `first-use` (never seen — TOFU), `trusted` (keys unchanged),

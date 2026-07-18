@@ -195,16 +195,14 @@ async function processDiscoveredCell(
     body: incoming.text,
     logicalMessageId: incomingLogicalMessageId(incoming.messageId),
   });
-  // Idempotent insert collapses duplicates: an already-received row is done.
+  // Idempotent insert collapses duplicates: an already-received row needs no
+  // transition, but its receipts are processed EVERY time (review E8 — a
+  // swallowed ack must not strand the sender's capacity).
   if (inserted.state === "discovered") {
     await deps.messages.setEnvelopeMessageId(inserted.id, bytesToHex(incoming.messageId));
     await deps.messages.transitionState(inserted.id, "downloading");
     await deps.messages.transitionState(inserted.id, "decrypting");
     await deps.messages.transitionState(inserted.id, "received");
-    // Receipts inside this reply advance OUR outgoing messages (Phase 8).
-    if (incoming.receipts.length > 0) {
-      await deps.lifecycle.processAcknowledgements(incoming);
-    }
     // Notification (task 8): messages channel, contact name + preview.
     await deps.notifier.post({
       id: `message:${String(inserted.id)}`,
@@ -212,6 +210,11 @@ async function processDiscoveredCell(
       title: contact.displayName,
       body: incoming.text.length > 60 ? `${incoming.text.slice(0, 57)}…` : incoming.text,
     });
+  }
+  // Receipts inside this reply advance OUR outgoing messages (Phase 8),
+  // on every processing pass — processAcknowledgements is idempotent.
+  if (incoming.receipts.length > 0) {
+    await deps.lifecycle.processAcknowledgements(incoming);
   }
   void txHash;
   void outpointIndex;
@@ -289,6 +292,12 @@ async function runPendingTransactions(deps: SyncWorkerDeps): Promise<void> {
   for (const tx of submitted) {
     const status = await deps.client.getTransaction(tx.txHash);
     if (status.status === "committed") {
+      if (tx.purpose.startsWith("reclaim:")) {
+        // Review E6: do NOT pre-mark reclaim txs — the lifecycle resume path
+        // requires `submitted` and owns finalization (CAS + fee-net release).
+        await deps.lifecycle.executeReclaimBatch();
+        continue;
+      }
       await deps.outgoingTxs.markState(tx.txHash, "committed", {
         committedAtMs: Date.now(),
         blockHash: status.blockHash,
@@ -300,9 +309,6 @@ async function runPendingTransactions(deps: SyncWorkerDeps): Promise<void> {
           await deps.messages.transitionState(message.id, "committed");
           await deps.messages.transitionState(message.id, "available_on_chain");
         }
-      } else if (tx.purpose.startsWith("reclaim:")) {
-        // The lifecycle resume path owns reclaim finalization incl. capacity.
-        await deps.lifecycle.executeReclaimBatch();
       }
     } else if (status.status === "rejected") {
       await deps.outgoingTxs.markState(tx.txHash, "rejected");

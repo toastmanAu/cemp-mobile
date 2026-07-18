@@ -36,7 +36,10 @@ class CempKdfModule(reactContext: ReactApplicationContext) :
   ) {
     Thread {
       val startedAt = SystemClock.elapsedRealtime()
+      var passwordBytes: ByteArray? = null
+      var out: ByteArray? = null
       try {
+        passwordBytes = hexToBytes(passwordHex)
         val params =
           Argon2Parameters.Builder(Argon2Parameters.ARGON2_id)
             .withVersion(Argon2Parameters.ARGON2_VERSION_13)
@@ -47,8 +50,8 @@ class CempKdfModule(reactContext: ReactApplicationContext) :
             .build()
         val generator = Argon2BytesGenerator()
         generator.init(params)
-        val out = ByteArray(outBytes)
-        generator.generateBytes(hexToBytes(passwordHex), out)
+        out = ByteArray(outBytes)
+        generator.generateBytes(passwordBytes, out)
         // Timing only — never any input or output bytes (AGENTS.md rule 2).
         android.util.Log.i(
           "CempKdf",
@@ -60,6 +63,10 @@ class CempKdfModule(reactContext: ReactApplicationContext) :
         // JS promise never settles.
         android.util.Log.e("CempKdf", "argon2id failed after ${SystemClock.elapsedRealtime() - startedAt}ms: ${e.javaClass.simpleName}")
         promise.reject("kdf-error", "argon2id derivation failed", if (e is Exception) e else null)
+      } finally {
+        // Review V2: zero the native-side copies of password + derived key.
+        passwordBytes?.fill(0)
+        out?.fill(0)
       }
     }.start()
   }
@@ -75,12 +82,19 @@ class CempKdfModule(reactContext: ReactApplicationContext) :
     promise: Promise,
   ) {
     Thread {
+      var passwordBytes: ByteArray? = null
+      var out: ByteArray? = null
       try {
+        passwordBytes = hexToBytes(passwordHex)
         val n = 1 shl logN
-        val out = SCrypt.generate(hexToBytes(passwordHex), hexToBytes(saltHex), n, r, p, outBytes)
+        out = SCrypt.generate(passwordBytes, hexToBytes(saltHex), n, r, p, outBytes)
         promise.resolve(bytesToHex(out))
-      } catch (e: Exception) {
-        promise.reject("kdf-error", "scrypt derivation failed", e)
+      } catch (e: Throwable) {
+        promise.reject("kdf-error", "scrypt derivation failed", if (e is Exception) e else null)
+      } finally {
+        // Review V2: zero the native-side copies of password + derived key.
+        passwordBytes?.fill(0)
+        out?.fill(0)
       }
     }.start()
   }

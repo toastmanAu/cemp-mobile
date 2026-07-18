@@ -98,6 +98,21 @@ export class BalanceRepository {
     await this.#move(walletId, "reclaimable_shannon", "available_shannon", amountShannon);
   }
 
+  /**
+   * Write off reclaimable capacity burned as a reclaim transaction's fee
+   * (review E7): the fee left the wallet, so the bucket is debited with no
+   * credit anywhere. Floored at zero — partial funding can never go negative.
+   */
+  async recordFeeBurn(walletId: number, amountShannon: bigint): Promise<void> {
+    if (amountShannon <= 0n) {
+      return;
+    }
+    await this.#db.run(
+      "UPDATE wallet_balances SET reclaimable_shannon = MAX(0, CAST(reclaimable_shannon AS INTEGER) - CAST(? AS INTEGER)), updated_at_ms = ? WHERE wallet_id = ?",
+      [amountShannon.toString(), Date.now(), walletId],
+    );
+  }
+
   /** Atomic move between two categories; refuses to drive either negative. */
   async #move(walletId: number, from: string, to: string, amount: bigint): Promise<void> {
     if (amount <= 0n) {

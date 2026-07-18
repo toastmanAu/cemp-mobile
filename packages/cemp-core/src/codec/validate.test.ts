@@ -281,3 +281,33 @@ describe("validateSemanticConsistency (spec §12.5)", () => {
     expectFail(validateSemanticConsistency(header, payload, new Uint8Array(3)), /expected 32/);
   });
 });
+
+describe("discriminant range checks (review C1)", () => {
+  it("rejects an unknown body_type", () => {
+    const data = encodeCempPayloadV1({ ...buildPayloadText(), body_type: 0x55 });
+    expectFail(validatePayload(data), /unknown body_type/);
+  });
+
+  it("rejects receipt_request outside the 0x01|0x02 bitmask", () => {
+    const data = encodeCempPayloadV1({ ...buildPayloadText(), receipt_request: 0xff });
+    expectFail(validatePayload(data), /receipt_request/);
+  });
+
+  it("rejects an unknown receipt status", () => {
+    const data = encodeCempPayloadV1({
+      ...buildPayloadText(),
+      receipts: [{ message_id: new Uint8Array(16), status: 0xff }],
+    });
+    expectFail(validatePayload(data), /unknown receipt status/);
+  });
+
+  it("rejects a revoked value that is not 0x00|0x01", () => {
+    const data = encodeCempProfileV1({ ...buildProfileMinimal(), revoked: 0xff });
+    expectFail(validateProfile(data), /unknown revoked/);
+  });
+
+  it("rejects supported_attachments outside the 2-bit mask", () => {
+    const data = encodeCempProfileV1({ ...buildProfileMinimal(), supported_attachments: 0xff });
+    expectFail(validateProfile(data), /supported_attachments/);
+  });
+});

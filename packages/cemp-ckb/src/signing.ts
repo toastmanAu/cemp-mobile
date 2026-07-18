@@ -270,6 +270,10 @@ export class MlDsaV2TxSigner extends Signer {
     // contract verifies with ctx = DOMAIN (single wrap), and mldsaV2Sign
     // mirrors that call shape exactly.
     const groupInputIndices = tx.inputs.map((_, i) => i);
+    // Review S1: the all-inputs-are-mine assumption is EXPLICIT, not implicit —
+    // a future mixed-lock composition fails loudly here instead of signing a
+    // mis-grouped stream.
+    assertAllInputsLockedBy(resolvedInputs, this.lock);
     const stream = buildCighashAllStream(tx, resolvedInputs, groupInputIndices);
     const digest = cighashV2Digest(stream);
     // Hedged signing: no random override (grounding §Digest and framing).
@@ -374,5 +378,24 @@ export function ensurePlaceholderWitnesses(tx: Transaction): void {
         outputType: existing?.outputType ?? null,
       }),
     );
+  }
+}
+
+/**
+ * Defense-in-depth (review S1): the CighashAll stream groups every input into
+ * one script group — valid only when every input carries the signer's lock.
+ * Builders guarantee this today (coin selection is scoped to the signer's
+ * lock, reclaim/consolidate assert it explicitly); if a future feature
+ * composes mixed-lock inputs, fail loudly here instead of signing a
+ * mis-grouped transaction.
+ */
+function assertAllInputsLockedBy(resolvedInputs: readonly ResolvedInput[], lock: Script): void {
+  for (const [index, input] of resolvedInputs.entries()) {
+    if (!input.cellOutput.lock.eq(lock)) {
+      throw new CempCkbError(
+        "signTransaction",
+        `input ${index} is not locked by the signer's lock — this signer supports single-script-group transactions only`,
+      );
+    }
   }
 }

@@ -1,4 +1,5 @@
 import { StepFailure, loadCtx } from "./chain.js";
+import { redactSecrets } from "@cemp/crypto";
 import { ORDERED_STEPS, stepRun } from "./steps/run.js";
 
 /**
@@ -70,7 +71,11 @@ async function main(): Promise<void> {
     throw new StepFailure(`unknown step ${JSON.stringify(args.step)}`);
   }
   const log = (message: string): void => {
-    console.log(`[${new Date().toISOString()}] ${message}`);
+    // Log redaction (review B): every line passes through the redactor before
+    // it can reach the terminal (rule 2). Limitation, by design: 32-byte
+    // secrets are byte-indistinguishable from public ids and only
+    // long-hex/BIP39 shapes are masked.
+    console.log(`[${new Date().toISOString()}] ${redactSecrets(message)}`);
   };
   log(`step=${step.name} state-dir=${args.stateDir} network=ckb_testnet`);
   const ctx = await loadCtx(args.stateDir);

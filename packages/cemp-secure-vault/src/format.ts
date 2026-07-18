@@ -45,6 +45,14 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 export const VAULT_FORMAT_VERSION = 1;
+/**
+ * Hard cap on the vault FILE size (review V4): the document is fully
+ * `JSON.parse`d, so an unbounded file is an unbounded allocation from a
+ * hostile local file. 64 KiB is ~40x a real v1 file.
+ */
+export const VAULT_FILE_MAX_BYTES = 65_536;
+/** Hard cap on the biometric slot's opaque blob length (review V4). */
+export const BIOMETRIC_BLOB_MAX_BYTES = 512;
 /** Vault encryption key size (random, generated at creation). */
 export const VEK_BYTES = 32;
 /** AES-GCM wrap of the VEK: 32-byte key + 16-byte tag. */
@@ -312,7 +320,7 @@ function parseBiometricSlot(value: unknown): BiometricWrapSlot | null {
   }
   const obj = expectObject(value, "biometricSlot");
   const wrappedVek = expectHexField(obj, "wrappedVek", "biometricSlot");
-  if (wrappedVek.length < 16) {
+  if (wrappedVek.length < 16 || wrappedVek.length > BIOMETRIC_BLOB_MAX_BYTES) {
     fail("biometricSlot.wrappedVek has an invalid length");
   }
   if ("nonce" in obj) {
@@ -332,6 +340,11 @@ function parseBiometricSlot(value: unknown): BiometricWrapSlot | null {
  * key derivation runs.
  */
 export function parseVaultFile(bytes: Uint8Array): VaultFileV1 {
+  if (bytes.length > VAULT_FILE_MAX_BYTES) {
+    fail(
+      `file is ${String(bytes.length)} bytes, above the ${String(VAULT_FILE_MAX_BYTES)}-byte cap`,
+    );
+  }
   let raw: unknown;
   try {
     raw = JSON.parse(textDecoder.decode(bytes));

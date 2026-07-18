@@ -17,7 +17,7 @@
  */
 
 import { buildDataCellsTx, type CempMessageTypeRef } from "@cemp/ckb";
-import { waitForTransactionCommit } from "@cemp/ckb";
+import { resumeJournaledBroadcast, waitForTransactionCommit } from "@cemp/ckb";
 import { cccTransactionToWire, type CempClient } from "@cemp/ckb";
 import type { MlDsaV2TxSigner } from "@cemp/ckb";
 import { codec } from "@cemp/core";
@@ -62,11 +62,12 @@ export interface AttachmentChunkJournal {
     feeShannon?: string | undefined;
     submittedAtMs?: number | undefined;
     capacityShannon?: string | undefined;
+    txHex?: string | undefined;
   }): Promise<void>;
   markOutgoingTxState(txHash: string, state: string, committedAtMs?: number): Promise<void>;
   findLatestOutgoingTxByPurposePrefix(
     prefix: string,
-  ): Promise<{ txHash: string; state: string; purpose: string } | undefined>;
+  ): Promise<{ txHash: string; state: string; purpose: string; txHex?: string | null } | undefined>;
 }
 
 export interface PublishChunksResult {
@@ -95,9 +96,15 @@ export async function publishAttachmentChunks(
 
   const journaled = await journal.findLatestOutgoingTxByPurposePrefix(purpose);
   if (journaled !== undefined && journaled.state === "submitted") {
-    await waitForTransactionCommit(client, journaled.txHash, {
-      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-    });
+    // Review E1: rebroadcast from the journaled signed bytes if the network
+    // never saw the chunk tx (never wedge, never double-upload).
+    await resumeJournaledBroadcast(
+      client,
+      { txHash: journaled.txHash, txHex: journaled.txHex ?? null },
+      {
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      },
+    );
     await journal.markOutgoingTxState(journaled.txHash, "committed", Date.now());
     return { chunksTxHash: journaled.txHash, chunkCount: chunks.chunks.length, resumed: true };
   }
@@ -106,16 +113,18 @@ export async function publishAttachmentChunks(
   const signed = await signer.signTransaction(built.tx);
   const txHash = signed.hash();
   const totalCapacity = built.tx.outputs.reduce((sum, output) => sum + output.capacity, 0n);
-  // Rule 6: journal BEFORE broadcast.
+  // Rule 6: journal BEFORE broadcast, signed bytes included (review E1).
+  const wire = cccTransactionToWire(signed);
   await journal.recordOutgoingTx({
     txHash,
     purpose,
     state: "submitted",
     feeShannon: built.estimatedFee.toString(),
     capacityShannon: totalCapacity.toString(),
+    txHex: JSON.stringify(wire),
     submittedAtMs: Date.now(),
   });
-  const accepted = await client.sendTransaction(cccTransactionToWire(signed));
+  const accepted = await client.sendTransaction(wire);
   if (accepted !== txHash) {
     throw new Error("publishAttachmentChunks: node returned a different tx hash");
   }

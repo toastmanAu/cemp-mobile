@@ -22,6 +22,8 @@ export interface OutgoingTransaction {
   readonly blockHash: string | null;
   /** Capacity moved by this tx (schema v3; null for non-reclaim txs). */
   readonly capacityShannon: string | null;
+  /** The SIGNED wire transaction as JSON (schema v6) — rebroadcast material (review E1). */
+  readonly txHex: string | null;
 }
 
 function rowToTx(row: SqlRow): OutgoingTransaction {
@@ -37,6 +39,7 @@ function rowToTx(row: SqlRow): OutgoingTransaction {
     committedAtMs: num(row.committed_at_ms),
     blockHash: text(row.block_hash),
     capacityShannon: text(row.capacity_shannon),
+    txHex: text(row.tx_hex),
   };
 }
 
@@ -56,10 +59,12 @@ export class OutgoingTransactionRepository {
     submittedAtMs?: number | undefined;
     /** Capacity moved by this tx (schema v3: reclaim accounting, decimal shannon). */
     capacityShannon?: string | undefined;
+    /** The signed wire transaction as JSON (schema v6) — stored BEFORE broadcast (rule 6). */
+    txHex?: string | undefined;
   }): Promise<OutgoingTransaction> {
     await this.#db.run(
-      `INSERT INTO outgoing_transactions (tx_hash, purpose, state, fee_shannon, submitted_at_ms, capacity_shannon)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO outgoing_transactions (tx_hash, purpose, state, fee_shannon, submitted_at_ms, capacity_shannon, tx_hex)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (tx_hash) DO NOTHING`,
       [
         input.txHash,
@@ -68,6 +73,7 @@ export class OutgoingTransactionRepository {
         input.feeShannon ?? null,
         input.submittedAtMs ?? null,
         input.capacityShannon ?? null,
+        input.txHex ?? null,
       ],
     );
     const row = await this.#db.get("SELECT * FROM outgoing_transactions WHERE tx_hash = ?", [
@@ -123,6 +129,28 @@ export class OutgoingTransactionRepository {
     if (result.changes === 0) {
       throw new DatabaseError("not-found", `outgoing transaction ${txHash} is not recorded`);
     }
+  }
+
+  /**
+   * Compare-and-swap state transition (review E5): returns the number of
+   * rows changed — exactly one concurrent caller can win a
+   * `submitted → committed` transition, so double-commit accounting is
+   * impossible even without a lease.
+   */
+  async markStateIf(
+    txHash: string,
+    expectedFromState: string,
+    state: string,
+    patch: { committedAtMs?: number | undefined; blockHash?: string | undefined } = {},
+  ): Promise<number> {
+    const result = await this.#db.run(
+      `UPDATE outgoing_transactions SET state = ?,
+         committed_at_ms = COALESCE(?, committed_at_ms),
+         block_hash = COALESCE(?, block_hash)
+       WHERE tx_hash = ? AND state = ?`,
+      [state, patch.committedAtMs ?? null, patch.blockHash ?? null, txHash, expectedFromState],
+    );
+    return result.changes;
   }
 
   async listByState(state: string, limit = 500): Promise<OutgoingTransaction[]> {

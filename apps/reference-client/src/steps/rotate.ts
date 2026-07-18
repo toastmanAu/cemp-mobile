@@ -158,6 +158,7 @@ export const stepRotate: StepFn = async (ctx, log) => {
           oldProfileId: committed.oldProfileId,
           oldMlDsaPublicKey: committed.oldMlDsaPublicKey,
           oldKemPublicKey: committed.oldKemPublicKey,
+          oldOutPoint: { txHash: oldCell.outPoint.txHash, index: oldCell.outPoint.index },
           newProfileId: committed.newProfileId,
           txHash: committed.txHash,
         };

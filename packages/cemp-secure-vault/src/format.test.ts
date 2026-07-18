@@ -347,3 +347,23 @@ describe("hex helpers", () => {
     expect(bytesToHex(new Uint8Array(0))).toBe("");
   });
 });
+
+describe("hostile-file caps (review V4)", () => {
+  it("rejects a file above the 64 KiB cap before parsing", () => {
+    const huge = new Uint8Array(65_537).fill(0x20);
+    expect(() => parseVaultFile(huge)).toThrow(/above the 65536-byte cap/);
+  });
+
+  it("rejects an oversized biometric blob", () => {
+    const doc = {
+      version: 1,
+      kdf: { alg: "scrypt", logN: 17, r: 8, p: 1, salt: "00".repeat(16) },
+      passwordSlot: { nonce: "00".repeat(12), wrappedVek: "00".repeat(48) },
+      biometricSlot: { wrappedVek: "00".repeat(513) },
+      payload: { nonce: "00".repeat(12), ct: "00".repeat(98) },
+      meta: { createdAt: 0, wordCount: 12, hasPassphrase: false, autoLockSeconds: 300 },
+    };
+    const bytes = new TextEncoder().encode(JSON.stringify(doc));
+    expect(() => parseVaultFile(bytes)).toThrow(/biometricSlot.wrappedVek/);
+  });
+});

@@ -137,6 +137,15 @@ export function validateProfileFields(profile: CempProfileV1): ValidationResult 
   if (profile.handle !== undefined && profile.handle.byteLength > V1_LIMITS.maxHandleBytes) {
     return fail(`handle is ${profile.handle.byteLength} bytes (max ${V1_LIMITS.maxHandleBytes})`);
   }
+  // Review C1: revoked is 0x00|0x01; supported_attachments is a 2-bit mask.
+  if (profile.revoked !== 0x00 && profile.revoked !== 0x01) {
+    return fail(`unknown revoked value ${hexByte(profile.revoked)} (spec §5.3)`);
+  }
+  if (profile.supported_attachments > 0x03) {
+    return fail(
+      `supported_attachments ${hexByte(profile.supported_attachments)} is not a valid bitmask`,
+    );
+  }
   return OK;
 }
 
@@ -230,6 +239,22 @@ export function validatePayloadFields(
   payload: CempPayloadV1,
   totalBytes: number | undefined,
 ): ValidationResult {
+  // Review C1: discriminant bytes are range-checked, not just shape-decoded.
+  const knownBodyTypes = Object.values(CONTENT_TYPE) as number[];
+  if (!knownBodyTypes.includes(payload.body_type)) {
+    return fail(`unknown body_type ${hexByte(payload.body_type)} (spec §8)`);
+  }
+  if (payload.receipt_request > 0x03) {
+    return fail(
+      `receipt_request ${hexByte(payload.receipt_request)} is not a valid 0x01|0x02 bitmask`,
+    );
+  }
+  for (const receipt of payload.receipts) {
+    // Spec §9: status is the 0x00–0x06 enum (unknown…rejected).
+    if (receipt.status > 0x06) {
+      return fail(`unknown receipt status ${hexByte(receipt.status)} (spec §9)`);
+    }
+  }
   if (payload.text !== undefined && payload.text.byteLength > V1_LIMITS.maxTextBytes) {
     return fail(`text is ${payload.text.byteLength} bytes (max ${V1_LIMITS.maxTextBytes})`);
   }

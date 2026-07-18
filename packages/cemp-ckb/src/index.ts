@@ -15,3 +15,4 @@ export * from "./publisher.js";
 export * from "./incoming.js";
 export * from "./lifecycle.js";
 export * from "./rate-limit.js";
+export * from "./rotation-verify.js";

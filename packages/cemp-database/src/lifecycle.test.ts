@@ -303,17 +303,19 @@ describe("ResponseLifecycle.executeReclaimBatch (tasks 6–8)", () => {
       expect(result).not.toBeNull();
       expect(result!.resumed).toBe(false);
       expect(result!.reclaimedRowIds).toEqual([message.id]);
-      expect(result!.releasedShannon).toBe(cellShannon.toString());
       expect(parseReclaimPurpose(`reclaim:${String(message.id)}`)).toEqual([message.id]);
 
-      // Message reclaimed; journal committed; capacity back to available.
+      // Message reclaimed; journal committed; released capacity is NET of fee.
       expect((await stack.messages.getById(message.id))?.state).toBe("reclaimed");
       const journal = await stack.outgoingTxs.getByTxHash(result!.txHash);
       expect(journal?.state).toBe("committed");
       expect(journal?.capacityShannon).toBe(cellShannon.toString());
+      const fee = BigInt(journal!.feeShannon!);
+      expect(result!.releasedShannon).toBe((cellShannon - fee).toString());
       const balance = await stack.balances.getBalance(stack.walletId);
       expect(balance.reclaimableShannon).toBe(0n);
-      expect(balance.availableShannon).toBe(fixedPointFrom(10_000));
+      // Available = starting balance minus the fee actually burned.
+      expect(balance.availableShannon).toBe(fixedPointFrom(10_000) - fee);
       // The moot ack-watch was spent by the reclaim tx and pruned.
       expect(await stack.watchedOutpoints.listActive()).toHaveLength(0);
     } finally {

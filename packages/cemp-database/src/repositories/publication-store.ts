@@ -77,6 +77,7 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
     feeShannon?: string | undefined;
     submittedAtMs?: number | undefined;
     capacityShannon?: string | undefined;
+    txHex?: string | undefined;
   }): Promise<void> {
     await this.#outgoingTxs.record(input);
   }
@@ -89,9 +90,19 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
 
   async findOutgoingTxByPurpose(
     purpose: string,
-  ): Promise<{ txHash: string; state: string } | undefined> {
+  ): Promise<
+    | { txHash: string; state: string; txHex: string | null; capacityShannon: string | null }
+    | undefined
+  > {
     const latest = await this.#outgoingTxs.findLatestByPurpose(purpose);
-    return latest === undefined ? undefined : { txHash: latest.txHash, state: latest.state };
+    return latest === undefined
+      ? undefined
+      : {
+          txHash: latest.txHash,
+          state: latest.state,
+          txHex: latest.txHex,
+          capacityShannon: latest.capacityShannon,
+        };
   }
 
   /* -------------------------------------------------- lifecycle (P8) -- */
@@ -124,10 +135,16 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
     return result;
   }
 
-  async findLatestOutgoingTxByPurposePrefix(
-    prefix: string,
-  ): Promise<
-    { txHash: string; state: string; purpose: string; capacityShannon: string | null } | undefined
+  async findLatestOutgoingTxByPurposePrefix(prefix: string): Promise<
+    | {
+        txHash: string;
+        state: string;
+        purpose: string;
+        capacityShannon: string | null;
+        feeShannon: string | null;
+        txHex: string | null;
+      }
+    | undefined
   > {
     const latest = await this.#outgoingTxs.findLatestByPurposePrefix(prefix);
     if (latest === undefined) {
@@ -138,6 +155,45 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
       state: latest.state,
       purpose: latest.purpose,
       capacityShannon: latest.capacityShannon,
+      feeShannon: latest.feeShannon,
+      txHex: latest.txHex,
+    };
+  }
+
+  async markOutgoingTxStateIf(
+    txHash: string,
+    expectedFromState: string,
+    state: string,
+    committedAtMs?: number,
+  ): Promise<number> {
+    return await this.#outgoingTxs.markStateIf(txHash, expectedFromState, state, {
+      ...(committedAtMs === undefined ? {} : { committedAtMs }),
+    });
+  }
+
+  async reserveCapacity(amountShannon: string): Promise<void> {
+    const { balances, walletId } = this.#requireLifecycle();
+    await balances.reserveCapacity(walletId, BigInt(amountShannon));
+  }
+
+  async markCapacityReclaimable(amountShannon: string): Promise<void> {
+    const { balances, walletId } = this.#requireLifecycle();
+    await balances.markReclaimable(walletId, BigInt(amountShannon));
+  }
+
+  async getMessageJournalInfo(
+    rowId: number,
+  ): Promise<{ logicalMessageId: string; capacityShannon: string | null } | undefined> {
+    const message = await this.#messages.getById(rowId);
+    if (message === undefined) {
+      return undefined;
+    }
+    const journal = await this.#outgoingTxs.findLatestByPurpose(
+      `message:${message.logicalMessageId}`,
+    );
+    return {
+      logicalMessageId: message.logicalMessageId,
+      capacityShannon: journal?.capacityShannon ?? null,
     };
   }
 
@@ -177,5 +233,10 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
   async releaseReclaimedCapacity(amountShannon: string): Promise<void> {
     const { balances, walletId } = this.#requireLifecycle();
     await balances.releaseReclaimedCapacity(walletId, BigInt(amountShannon));
+  }
+
+  async recordFeeBurn(amountShannon: string): Promise<void> {
+    const { balances, walletId } = this.#requireLifecycle();
+    await balances.recordFeeBurn(walletId, BigInt(amountShannon));
   }
 }

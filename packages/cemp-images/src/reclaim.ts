@@ -13,7 +13,7 @@
  */
 
 import { buildReclaimTx, type CempMessageTypeRef } from "@cemp/ckb";
-import { waitForTransactionCommit } from "@cemp/ckb";
+import { resumeJournaledBroadcast, waitForTransactionCommit } from "@cemp/ckb";
 import { cccTransactionToWire, type CempClient } from "@cemp/ckb";
 import type { MlDsaV2TxSigner } from "@cemp/ckb";
 import type { Cell, OutPoint } from "@cemp/ckb";
@@ -52,17 +52,30 @@ export async function reclaimAttachmentGroup(
   const { client, signer, messageType, store } = deps;
   const purpose = groupPurpose(reclaimGroupId);
 
-  // Resume: a journaled group reclaim still in flight (rule 5).
+  // Resume: a journaled group reclaim still in flight (rule 5). Review
+  // E1/E10: rebroadcast from the journaled signed bytes; on commit, release
+  // the capacity recorded in the journal.
   const journaled = await store.findLatestOutgoingTxByPurposePrefix(purpose);
   if (journaled !== undefined && journaled.state === "submitted") {
-    await waitForTransactionCommit(client, journaled.txHash, {
-      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-    });
+    await resumeJournaledBroadcast(
+      client,
+      { txHash: journaled.txHash, txHex: journaled.txHex ?? null },
+      {
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      },
+    );
     await store.markOutgoingTxState(journaled.txHash, "committed", Date.now());
+    const released =
+      "capacityShannon" in journaled && typeof journaled.capacityShannon === "string"
+        ? (journaled.capacityShannon as string)
+        : "0";
+    if (released !== "0") {
+      await store.releaseReclaimedCapacity(released);
+    }
     return {
       txHash: journaled.txHash,
       cellCount: outpoints.length,
-      releasedShannon: "0",
+      releasedShannon: released,
       resumed: true,
     };
   }
@@ -94,16 +107,18 @@ export async function reclaimAttachmentGroup(
   });
   const signed = await signer.signTransaction(built.tx);
   const txHash = signed.hash();
-  // Rule 6: journal BEFORE broadcast.
+  // Rule 6: journal BEFORE broadcast, signed bytes included (review E1).
+  const wire = cccTransactionToWire(signed);
   await store.recordOutgoingTx({
     txHash,
     purpose,
     state: "submitted",
     feeShannon: built.estimatedFee.toString(),
     capacityShannon: releasedTotal.toString(),
+    txHex: JSON.stringify(wire),
     submittedAtMs: Date.now(),
   });
-  const accepted = await client.sendTransaction(cccTransactionToWire(signed));
+  const accepted = await client.sendTransaction(wire);
   if (accepted !== txHash) {
     throw new Error("reclaimAttachmentGroup: node returned a different tx hash");
   }

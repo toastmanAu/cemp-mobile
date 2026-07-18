@@ -24,7 +24,7 @@ import { codec } from "@cemp/core";
 import { assembleTextMessage } from "./assemble.js";
 import { buildSendMessageTx, type CempMessageTypeRef } from "./builders.js";
 import { CempCkbError, type CempClient } from "./client.js";
-import { waitForTransactionCommit } from "./monitor.js";
+import { resumeJournaledBroadcast, waitForTransactionCommit } from "./monitor.js";
 import { checkResolvedProfileBinding, resolveLiveProfile } from "./profiles.js";
 import type { MlDsaV2TxSigner } from "./signing.js";
 import { cccTransactionToWire } from "./wire.js";
@@ -34,6 +34,8 @@ import { cccTransactionToWire } from "./wire.js";
 export interface OutgoingTxRecord {
   readonly txHash: string;
   readonly state: string;
+  readonly txHex: string | null;
+  readonly capacityShannon: string | null;
 }
 
 /** Narrow persistence boundary — cemp-database implements this (rule 14 style). */
@@ -51,10 +53,16 @@ export interface PublicationStore {
     state: string;
     feeShannon?: string;
     submittedAtMs?: number;
+    /** Message-cell capacity (accounting, review E3). */
+    capacityShannon?: string;
+    /** The signed wire transaction as JSON (schema v6; stored BEFORE broadcast). */
+    txHex?: string;
   }): Promise<void>;
   markOutgoingTxState(txHash: string, state: string, committedAtMs?: number): Promise<void>;
   /** Latest outgoing-tx record for a purpose string, for resume-after-crash. */
   findOutgoingTxByPurpose(purpose: string): Promise<OutgoingTxRecord | undefined>;
+  /** Reserve message-cell capacity at commit time (review E3 accounting). */
+  reserveCapacity(amountShannon: string): Promise<void>;
 }
 
 /* ── user-facing failure mapping (task 9, rule 15) ───────────────────────── */
@@ -195,11 +203,25 @@ export class MessagePublisher {
     let broadcast = false;
     try {
       // Resume: a journaled tx for this logical message already exists (crash
-      // between journal and monitor, or an app restart mid-flight).
+      // between journal and monitor, or an app restart mid-flight). Review E1:
+      // rebroadcast from the journaled signed bytes when the network never saw
+      // the tx; a tx the network never saw is NOT marked broadcast, so the
+      // failure path below records it as a normal send failure.
       const existing = await store.findOutgoingTxByPurpose(purpose);
       if (existing !== undefined) {
+        await resumeJournaledBroadcast(
+          this.#deps.client,
+          { txHash: existing.txHash, txHex: existing.txHex },
+          { ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }) },
+        );
         broadcast = true;
-        return await this.#monitor(input.messageRowId, existing.txHash, true, input.timeoutMs);
+        return await this.#monitor(
+          input.messageRowId,
+          existing.txHash,
+          true,
+          input.timeoutMs,
+          existing.capacityShannon ?? undefined,
+        );
       }
 
       await store.transitionMessage(input.messageRowId, "encrypting");
@@ -240,19 +262,24 @@ export class MessagePublisher {
       const txHash = signed.hash();
 
       await store.transitionMessage(input.messageRowId, "submitting");
-      // RULE 6: journal (tx record + chain ref) BEFORE broadcast.
+      // RULE 6: journal (tx record + chain ref) BEFORE broadcast. The signed
+      // wire bytes are journaled for rebroadcast resume (review E1), and the
+      // message cell's capacity for the accounting path (review E3).
+      const messageCellCapacity = built.tx.outputs[0]?.capacity ?? 0n;
+      const wire = cccTransactionToWire(signed);
       await store.recordOutgoingTx({
         txHash,
         purpose,
         state: "submitted",
         feeShannon: built.estimatedFee.toString(),
+        capacityShannon: messageCellCapacity.toString(),
+        txHex: JSON.stringify(wire),
         submittedAtMs: Date.now(),
       });
       await store.setMessageChainRef(input.messageRowId, { txHash, outpointIndex: 0 });
       // Receipts and reply_to reference the ENVELOPE message id (Phase 8).
       await store.setEnvelopeMessageId(input.messageRowId, codec.bytesToHex(assembled.messageId));
 
-      const wire = cccTransactionToWire(signed);
       const accepted = await this.#deps.client.sendTransaction(wire);
       if (accepted !== txHash) {
         throw new CempCkbError(
@@ -263,7 +290,13 @@ export class MessagePublisher {
       broadcast = true;
 
       await store.transitionMessage(input.messageRowId, "pending");
-      return await this.#monitor(input.messageRowId, txHash, false, input.timeoutMs);
+      return await this.#monitor(
+        input.messageRowId,
+        txHash,
+        false,
+        input.timeoutMs,
+        messageCellCapacity.toString(),
+      );
     } catch (error) {
       const publicationError = classifyPublishError(error);
       if (!broadcast) {
@@ -285,16 +318,21 @@ export class MessagePublisher {
     txHash: string,
     resumed: boolean,
     timeoutMs?: number,
+    reserveAmountShannon?: string,
   ): Promise<PublishResult> {
     const { store } = this.#deps;
-    const commit = await waitForTransactionCommit(this.#deps.client, txHash, {
+    await waitForTransactionCommit(this.#deps.client, txHash, {
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     });
-    void commit;
     await store.markOutgoingTxState(txHash, "committed", Date.now());
     await store.setMessageChainRef(messageRowId, { txHash, outpointIndex: 0 });
     await store.transitionMessage(messageRowId, "committed");
     await store.transitionMessage(messageRowId, "available_on_chain");
+    // Review E3: reserve the committed message cell's capacity in the ledger
+    // (the ack path later moves it to reclaimable; reclaim releases it).
+    if (reserveAmountShannon !== undefined && reserveAmountShannon !== "0") {
+      await store.reserveCapacity(reserveAmountShannon);
+    }
     return { txHash, outPoint: { txHash, index: 0 }, committed: true, resumed };
   }
 }

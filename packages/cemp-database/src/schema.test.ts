@@ -7,8 +7,8 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v5: hardening (Phase 11 rate limits + contact block).
-    expect(SCHEMA_VERSION).toBe(5);
+    // v6: crash-safe journals (review E1 signed-tx bytes).
+    expect(SCHEMA_VERSION).toBe(6);
   });
 
   it("covers the spec §11 core tables", () => {

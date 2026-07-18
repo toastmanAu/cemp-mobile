@@ -54,9 +54,21 @@ pnpm test                                  # repo-wide vitest (includes src/plat
 
 - **pnpm + Metro**: `metro.config.js` watches the workspace root and resolves
   against both `node_modules` roots with symlink + package-exports support
-  (our packages export via `"exports"` subpaths). If resolution still bites,
-  the documented fallback is `node-linker=hoisted` in a package-local
-  `.npmrc` (ADR 0001).
+  (our packages export via `"exports"` subpaths). Verified on-device
+  (2026-07-18): the following must be DIRECT deps of this package because
+  pnpm does not hoist them and the RN build/bundler resolves from
+  `node_modules`: `@react-native/gradle-plugin`, `@react-native/codegen`,
+  `@react-native-community/cli`, `@babel/runtime`. The RN preset also needs
+  `@babel/plugin-transform-export-namespace-from` (workspace dist is ES2020).
+- **Hermes polyfills** (loaded first in `index.js`): `react-native-get-random-values`
+  (backs cemp-crypto's only CSPRNG) and `fast-text-encoding`.
+- **Vault KDF is NATIVE**: pure-JS argon2/scrypt (noble) is unusably slow
+  under Hermes — measured on this A53: > 4 minutes for argon2id m=19 MiB/t=2.
+  The vault derives through the app-local `CempKdf` Kotlin module
+  (Bouncy Castle) via the `KdfEngine` seam in `@cemp/secure-vault`: the same
+  argon2id profile completes in **~510 ms**. Vault creation uses the
+  OWASP-minimum profile (`src/platform/kdf.ts`, recorded in the vault file
+  per rule 13); the desktop default stays at RFC 9106 first profile.
 - **SQLCipher**: op-sqlite must be built in its SQLCipher configuration for
   the `encryptionKey` open option to take effect — follow the op-sqlite
   README (SQLCipher build flag) and VERIFY at first device build that the
@@ -65,8 +77,8 @@ pnpm test                                  # repo-wide vitest (includes src/plat
 - **Dependency floor**: the user's pnpm `minimumReleaseAge` (5 days) pins us
   back from day-old releases — react-native is 0.83.10 rather than 0.86 for
   that reason; `react-native-screens` is 4.25.0 (peer range wants RN ≥ 0.82).
-- **First device build checklist**: app launches past the vault gate; create
-  wallet → reveal shows 12 words; lock → unlock with password; enable
-  biometrics → lock → biometric prompt appears; add contact → send local
-  message (stays `queued` until Phase 7 wires publication); kill app →
-  restart → state intact.
+- **First device checklist**: ~~app launches past the vault gate~~ ✓;
+  ~~create wallet → reveal shows 12 words~~ ✓ (2026-07-18, A53); lock →
+  unlock with password; enable biometrics → lock → biometric prompt appears;
+  add contact → send local message (stays `queued` until Phase 7 wires
+  publication); kill app → restart → state intact.

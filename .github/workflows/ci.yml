@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# CEMP Mobile (CellSend) — the gates that must stay green before mainnet
+# consideration (AGENTS.md rule 12). Mirrors the local gate sequence exactly.
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Compilation is the type check (strict; cross-package imports resolve
+      # against dist, so build precedes tests).
+      - run: pnpm build
+
+      - run: pnpm test
+
+      - run: pnpm lint
+
+      - name: Prettier check (no writes on CI)
+        run: pnpm exec prettier --check .
+
+      - name: Dependency audit (high severity and above)
+        run: pnpm audit --prod --audit-level=high
+
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv64imac-unknown-none-elf
+
+      - name: Contract tests
+        run: cargo test --locked
+        working-directory: contracts
+
+      - name: Reproducible-build check (byte-identical codeHash, twice)
+        run: contracts/cemp-message-type/verify-reproducible.sh
+
+      - name: ML-DSA signing-harness interop vectors
+        run: |
+          cargo run --locked --manifest-path tools/signing-harness/Cargo.toml -- vectors --out /tmp/mldsa-v2.json
+          diff -u packages/cemp-test-vectors/vectors/mldsa-v2.json /tmp/mldsa-v2.json

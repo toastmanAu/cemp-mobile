@@ -107,6 +107,7 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
         />
         <Button title="Send" disabled={draft.trim().length === 0} onPress={() => void send()} />
       </View>
+      {composer.error !== null ? <Text style={styles.errorText}>{composer.error}</Text> : null}
       <Text style={styles.byteCount}>
         {composer.byteLength}/{composer.maxBytes} bytes
       </Text>
@@ -141,4 +142,5 @@ const styles = StyleSheet.create({
     paddingRight: 12,
     paddingBottom: 4,
   },
+  errorText: { color: "#b00020", paddingHorizontal: 12, paddingBottom: 4 },
 });

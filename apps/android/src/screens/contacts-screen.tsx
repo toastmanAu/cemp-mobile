@@ -64,13 +64,27 @@ export function ContactsScreen(): React.JSX.Element {
           </View>
         }
         renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.row}
-            onPress={() => navigation.navigate("ContactEdit", { contactId: item.id })}
-          >
-            <Text style={styles.name}>{item.displayName}</Text>
-            {item.notes !== "" ? <Text style={styles.notes}>{item.notes}</Text> : null}
-          </TouchableOpacity>
+          <View style={styles.row}>
+            <TouchableOpacity
+              style={styles.rowBody}
+              onPress={() => {
+                // Message-first: opening a contact goes to the conversation
+                // (created on demand, idempotent — Phase 6 repository).
+                void container.repositories.conversations.getOrCreateForContact(item.id).then((conversation) => {
+                  navigation.navigate("Chat", { conversationId: conversation.id, title: item.displayName });
+                });
+              }}
+            >
+              <Text style={styles.name}>{item.displayName}</Text>
+              {item.notes !== "" ? <Text style={styles.notes}>{item.notes}</Text> : null}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.editButton}
+              onPress={() => navigation.navigate("ContactEdit", { contactId: item.id })}
+            >
+              <Text style={styles.editButtonText}>EDIT</Text>
+            </TouchableOpacity>
+          </View>
         )}
       />
     </View>
@@ -82,7 +96,16 @@ const styles = StyleSheet.create({
   searchRow: { flexDirection: "row", padding: 8, gap: 8, alignItems: "center" },
   search: { flex: 1, borderWidth: 1, borderColor: "#999", borderRadius: 8, padding: 8 },
   empty: { padding: 32, alignItems: "center" },
-  row: { padding: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#ccc" },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#ccc",
+  },
+  rowBody: { flex: 1 },
+  editButton: { paddingHorizontal: 12, paddingVertical: 6 },
+  editButtonText: { color: "#4a6fa5", fontWeight: "700", fontSize: 12 },
   name: { fontSize: 16, fontWeight: "600" },
   notes: { color: "#666", marginTop: 2 },
 });

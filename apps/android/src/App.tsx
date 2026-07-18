@@ -68,7 +68,7 @@ export function App(): React.JSX.Element {
   if (initError !== null) {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <Text>Something went wrong starting CEMP.</Text>
+        <Text>Something went wrong starting CellSend.</Text>
         <Text>{initError}</Text>
       </View>
     );
@@ -76,7 +76,7 @@ export function App(): React.JSX.Element {
   if (container === null || containerState === "loading") {
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-        <Text>CEMP</Text>
+        <Text>CellSend</Text>
       </View>
     );
   }

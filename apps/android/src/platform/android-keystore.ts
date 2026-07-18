@@ -42,7 +42,7 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 const BIOMETRIC_PROMPT = {
-  title: "CEMP",
+  title: "CellSend",
   subtitle: "Unlock with biometrics",
 } as const;
 

@@ -41,7 +41,7 @@ export function UnlockScreen(): React.JSX.Element {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>CEMP</Text>
+      <Text style={styles.title}>CellSend</Text>
       <TextInput
         style={styles.input}
         secureTextEntry

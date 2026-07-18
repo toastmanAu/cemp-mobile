@@ -1,6 +1,8 @@
-# CEMP Mobile
+# CEMP Mobile — "CellSend"
 
-Android-first, post-quantum direct messaging where **Nervos CKB cells are the transport layer**.
+![CellSend logo](docs/brand/logo.png)
+
+**CellSend** is the app: Android-first, post-quantum direct messaging where **Nervos CKB cells are the transport layer**.
 
 Encrypted payloads are published to CKB as sender-owned cells, discovered and decrypted by the
 recipient, and reclaimed by the sender after acknowledgement. There is no central messaging

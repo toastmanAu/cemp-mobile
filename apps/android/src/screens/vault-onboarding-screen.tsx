@@ -58,7 +58,7 @@ export function VaultOnboardingScreen(): React.JSX.Element {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Set up your CEMP wallet</Text>
+      <Text style={styles.title}>Set up your CellSend wallet</Text>
       <Text>Choose a vault password (min. 8 characters). It protects this device only.</Text>
       <TextInput
         style={styles.input}

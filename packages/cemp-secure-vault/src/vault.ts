@@ -48,11 +48,12 @@ import {
   type VaultWordCount,
 } from "./format.js";
 import {
-  deriveKek,
+  NobleKdfEngine,
   resolveKdfParams,
   validateKdfParams,
   KDF_SALT_BYTES,
   type KdfAlgorithm,
+  type KdfEngine,
   type KdfOptions,
   type KdfParams,
 } from "./kdf.js";
@@ -89,6 +90,11 @@ export interface MnemonicQuiz {
 export interface SecureVaultDeps {
   readonly storage: VaultStorage;
   readonly keystore: PlatformKeyStore;
+  /**
+   * Password-KDF engine (default: pure-JS noble). Hermes builds should pass
+   * the native engine — noble argon2/scrypt is unusably slow there (kdf.ts).
+   */
+  readonly kdfEngine?: KdfEngine;
 }
 
 /**
@@ -206,6 +212,7 @@ export interface SecureVault {
 export class SecureVaultImpl implements SecureVault {
   readonly #storage: VaultStorage;
   readonly #keystore: PlatformKeyStore;
+  readonly #kdfEngine: KdfEngine;
 
   #state: VaultState;
   /** Live secret material, present only while unlocked (see header). */
@@ -218,6 +225,7 @@ export class SecureVaultImpl implements SecureVault {
   private constructor(deps: SecureVaultDeps, state: VaultState) {
     this.#storage = deps.storage;
     this.#keystore = deps.keystore;
+    this.#kdfEngine = deps.kdfEngine ?? new NobleKdfEngine();
     this.#state = state;
   }
 
@@ -305,7 +313,7 @@ export class SecureVaultImpl implements SecureVault {
     const salt = fixed.kdfSalt ?? randomBytes(KDF_SALT_BYTES);
     const kdf = resolveKdfParams(opts.kdf, salt);
     validateKdfParams(kdf); // creation overrides are validated like file input
-    const kek = deriveKek(password, kdf);
+    const kek = await this.#kdfEngine.deriveKek(password, kdf);
 
     const vek = fixed.vek ?? randomBytes(VEK_BYTES);
     if (vek.length !== VEK_BYTES) {
@@ -375,7 +383,7 @@ export class SecureVaultImpl implements SecureVault {
 
   async unlock(password: string): Promise<void> {
     const file = await this.#readVaultFile();
-    const kek = deriveKek(password, file.kdf);
+    const kek = await this.#kdfEngine.deriveKek(password, file.kdf);
     let vek: Uint8Array;
     try {
       vek = aes256GcmDecrypt(
@@ -439,7 +447,7 @@ export class SecureVaultImpl implements SecureVault {
 
   async revealMnemonic(password: string): Promise<MnemonicReveal> {
     const file = await this.#readVaultFile();
-    const kek = deriveKek(password, file.kdf);
+    const kek = await this.#kdfEngine.deriveKek(password, file.kdf);
     let vek: Uint8Array;
     try {
       vek = aes256GcmDecrypt(
@@ -466,7 +474,7 @@ export class SecureVaultImpl implements SecureVault {
 
   async changePassword(oldPassword: string, newPassword: string): Promise<void> {
     const file = await this.#readVaultFile();
-    const oldKek = deriveKek(oldPassword, file.kdf);
+    const oldKek = await this.#kdfEngine.deriveKek(oldPassword, file.kdf);
     let vek: Uint8Array;
     try {
       vek = aes256GcmDecrypt(
@@ -486,7 +494,7 @@ export class SecureVaultImpl implements SecureVault {
     // re-encrypted with a fresh nonce because the header it authenticates
     // changed), and the biometric slot is carried over untouched.
     const newKdf: KdfParams = { ...file.kdf, salt: randomBytes(KDF_SALT_BYTES) };
-    const newKek = deriveKek(newPassword, newKdf);
+    const newKek = await this.#kdfEngine.deriveKek(newPassword, newKdf);
     const newSlotNonce = randomBytes(12);
     const newPasswordSlot = {
       nonce: newSlotNonce,

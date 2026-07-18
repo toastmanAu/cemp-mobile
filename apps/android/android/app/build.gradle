@@ -116,6 +116,10 @@ dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 
+    // Bouncy Castle for the app-local native vault KDF (com.cempmobile.kdf):
+    // pure-JS argon2/scrypt is unusably slow under Hermes (see kdf.ts).
+    implementation("org.bouncycastle:bcprov-jdk18on:1.84")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {

@@ -23,6 +23,7 @@ import {
 import { SecureVaultImpl } from "@cemp/secure-vault";
 import { NoopNotifier, type Notifier } from "@cemp/ui";
 import { AndroidKeychainKeyStore } from "./platform/android-keystore";
+import { NativeKdfEngine } from "./platform/native-kdf";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
 import { AsyncStorageVaultStorage } from "./platform/vault-storage";
 
@@ -58,6 +59,9 @@ export class AppContainer {
     const vault = await SecureVaultImpl.open({
       storage: new AsyncStorageVaultStorage(),
       keystore: new AndroidKeychainKeyStore(),
+      // Native Bouncy Castle KDF — noble argon2/scrypt is unusably slow
+      // under Hermes (see kdf.ts in cemp-secure-vault).
+      kdfEngine: new NativeKdfEngine(),
     });
     const container = new AppContainer(vault);
     container.#setState(vault.state === "uninitialized" ? "uninitialized" : "locked");

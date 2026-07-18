@@ -9,6 +9,7 @@
 import React, { useState } from "react";
 import { Button, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useAppContainer } from "../navigation";
+import { MOBILE_VAULT_KDF } from "../platform/kdf";
 
 export function VaultOnboardingScreen(): React.JSX.Element {
   const container = useAppContainer();
@@ -72,7 +73,9 @@ export function VaultOnboardingScreen(): React.JSX.Element {
         disabled={!passwordOk || busy}
         onPress={() =>
           void run(async () => {
-            const reveal = await container.vault.createWithNewMnemonic(12, password);
+            const reveal = await container.vault.createWithNewMnemonic(12, password, {
+              kdf: MOBILE_VAULT_KDF,
+            });
             setCreatedWords(reveal.words);
           })
         }
@@ -83,7 +86,9 @@ export function VaultOnboardingScreen(): React.JSX.Element {
         disabled={!passwordOk || busy}
         onPress={() =>
           void run(async () => {
-            const reveal = await container.vault.createWithNewMnemonic(24, password);
+            const reveal = await container.vault.createWithNewMnemonic(24, password, {
+              kdf: MOBILE_VAULT_KDF,
+            });
             setCreatedWords(reveal.words);
           })
         }
@@ -106,7 +111,9 @@ export function VaultOnboardingScreen(): React.JSX.Element {
         onPress={() =>
           void run(async () => {
             const words = mnemonicInput.trim().toLowerCase().split(/\s+/);
-            await container.vault.importMnemonic(words, password);
+            await container.vault.importMnemonic(words, password, undefined, {
+              kdf: MOBILE_VAULT_KDF,
+            });
             setMnemonicInput("");
             setPassword("");
             await container.afterVaultUnlock();

@@ -195,3 +195,28 @@ export function resolveKdfParams(options: KdfOptions | undefined, salt: Uint8Arr
   };
   return params;
 }
+
+/* ── KDF engine seam (AGENTS.md rule 14) ─────────────────────────────────── */
+
+/**
+ * Password-KDF engine boundary. Pure-JS memory-hard KDFs (noble argon2/scrypt)
+ * are catastrophically slow under Hermes — measured on a Galaxy A53
+ * (2026-07-18): argon2id m=19 MiB/t=2 exceeds FOUR MINUTES. The Android
+ * NativeKdfEngine (apps/android) computes the SAME algorithms in native code
+ * (Bouncy Castle) at RFC 9106 strength in ~1 s. Engines must return
+ * byte-identical output to {@link deriveKek} for every supported algorithm —
+ * the vault file is engine-agnostic by design (params are recorded, rule 13).
+ */
+export interface KdfEngine {
+  readonly kind: string;
+  deriveKek(password: string, params: KdfParams): Promise<Uint8Array>;
+}
+
+/** The pure-JS reference engine (noble) — default everywhere. */
+export class NobleKdfEngine implements KdfEngine {
+  readonly kind = "noble-js";
+
+  deriveKek(password: string, params: KdfParams): Promise<Uint8Array> {
+    return Promise.resolve(deriveKek(password, params));
+  }
+}

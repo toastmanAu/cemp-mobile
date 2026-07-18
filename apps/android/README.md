@@ -69,16 +69,22 @@ pnpm test                                  # repo-wide vitest (includes src/plat
   argon2id profile completes in **~510 ms**. Vault creation uses the
   OWASP-minimum profile (`src/platform/kdf.ts`, recorded in the vault file
   per rule 13); the desktop default stays at RFC 9106 first profile.
-- **SQLCipher**: op-sqlite must be built in its SQLCipher configuration for
-  the `encryptionKey` open option to take effect — follow the op-sqlite
-  README (SQLCipher build flag) and VERIFY at first device build that the
-  database file is not readable without the key (Phase 3 exit criterion).
-  Until that check is done, treat on-device data as unverified-encrypted.
+- **SQLCipher**: ENABLED via `"op-sqlite": {"sqlcipher": true}` in
+  package.json — required: the DEFAULT op-sqlite build silently ignores
+  `encryptionKey` (verified on-device 2026-07-18: plaintext `SQLite format 3`
+  header). With the flag, `cemp.db` opens only under the vault-derived key —
+  no plaintext header (Phase 3/6 exit criteria verified on-device). NOTE:
+  enabling it invalidates any DB created by the plaintext build — delete
+  `databases/cemp.db` once when upgrading.
 - **Dependency floor**: the user's pnpm `minimumReleaseAge` (5 days) pins us
   back from day-old releases — react-native is 0.83.10 rather than 0.86 for
   that reason; `react-native-screens` is 4.25.0 (peer range wants RN ≥ 0.82).
-- **First device checklist**: ~~app launches past the vault gate~~ ✓;
-  ~~create wallet → reveal shows 12 words~~ ✓ (2026-07-18, A53); lock →
-  unlock with password; enable biometrics → lock → biometric prompt appears;
-  add contact → send local message (stays `queued` until Phase 7 wires
-  publication); kill app → restart → state intact.
+- **First device checklist** (Galaxy A53, 2026-07-18): ~~app launches past
+  the vault gate~~ ✓; ~~create wallet → reveal shows 12 words~~ ✓ (native
+  argon2id 510 ms); ~~lock → unlock with password~~ ✓ (392 ms); ~~auto-lock
+  after 5 min~~ ✓; ~~add contact → persists across restarts~~ ✓; ~~contact →
+  conversation → send local message (`queued`/`sending…` bubble)~~ ✓;
+  ~~kill app → restart → state intact~~ ✓; ~~DB encrypted at rest
+  (SQLCipher)~~ ✓. Biometrics NOT yet tested (needs an enrolled finger on
+  the prompt). ADB-driving note: the soft IME covers the composer SEND
+  button — focus the field, then TAB + ENTER to click.

@@ -125,6 +125,17 @@ export interface SharedState {
   contractCellCapacity: string | null;
   profiles: { alice: ProfileRecord | null; bob: ProfileRecord | null };
   messages: { aliceToBob: MessageMapping | null; bobToAlice: MessageMapping | null };
+  /** Alice's rotation record (rotate step); null until the first rotation. */
+  rotation: RotationRecord | null;
+}
+
+/** What the rotate step proved on-chain (verify-rotation consumes it). */
+export interface RotationRecord {
+  oldProfileId: string;
+  oldMlDsaPublicKey: string;
+  oldKemPublicKey: string;
+  newProfileId: string;
+  txHash: string;
 }
 
 // ── construction ────────────────────────────────────────────────────────────
@@ -138,6 +149,7 @@ export function defaultSharedState(): SharedState {
     contractCellCapacity: null,
     profiles: { alice: null, bob: null },
     messages: { aliceToBob: null, bobToAlice: null },
+    rotation: null,
   };
 }
 

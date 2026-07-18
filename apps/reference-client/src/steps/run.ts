@@ -8,6 +8,8 @@ import { stepRespond } from "./respond.js";
 import { stepAckReclaim } from "./ack-reclaim.js";
 import { stepWatch } from "./watch.js";
 import { stepReconcile } from "./reconcile.js";
+import { stepRotate } from "./rotate.js";
+import { stepVerifyRotation } from "./verify-rotation.js";
 
 /** The full lifecycle in order (ckd.txt §20); every step checkpoints. */
 export const ORDERED_STEPS: readonly { name: string; fn: StepFn }[] = [
@@ -20,6 +22,10 @@ export const ORDERED_STEPS: readonly { name: string; fn: StepFn }[] = [
   { name: "ack-reclaim", fn: stepAckReclaim },
   { name: "watch", fn: stepWatch },
   { name: "reconcile", fn: stepReconcile },
+  // Post-§20 addenda (Phase 5, live): alice rotates her profile identity
+  // keys on-chain; bob verifies the rotation chain + trust verdict.
+  { name: "rotate", fn: stepRotate },
+  { name: "verify-rotation", fn: stepVerifyRotation },
 ];
 
 export const stepRun: StepFn = async (ctx, log) => {

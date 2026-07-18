@@ -488,3 +488,59 @@ describe("buildRotateProfileTx", () => {
     ).rejects.toThrow(/previous_profile_id/);
   });
 });
+
+describe("buildRotateProfileTx capacity floor", () => {
+  function wireCell(cell: Cell): WireCell {
+    const type = cell.cellOutput.type;
+    return {
+      outPoint: { txHash: cell.outPoint.txHash, index: `0x${cell.outPoint.index.toString(16)}` },
+      output: {
+        capacity: `0x${cell.cellOutput.capacity.toString(16)}`,
+        lock: {
+          codeHash: cell.cellOutput.lock.codeHash,
+          hashType: cell.cellOutput.lock.hashType,
+          args: cell.cellOutput.lock.args,
+        },
+        type:
+          type === undefined
+            ? null
+            : { codeHash: type.codeHash, hashType: type.hashType, args: type.args },
+      },
+      data: cell.outputData,
+    };
+  }
+
+  it("raises the successor's capacity to its occupied size when the new profile is bigger", async () => {
+    // Old cell: minimal profile, exactly occupied-sized (small capacity).
+    const oldCell = Cell.from({
+      outPoint: { txHash: fill(0xb9, 32), index: 0 },
+      cellOutput: toOutputLike(
+        CellOutput.from({
+          capacity: fixedPointFrom(200),
+          lock: fixtureSigner.lockScript(),
+          type: { codeHash: TYPE_ID_CODE_HASH, hashType: "type", args: `0x${"ab".repeat(32)}` },
+        }),
+      ),
+      outputData: "0x1234",
+    });
+    const funds = [fundingCell(5000, 0xf6)];
+    const { signer } = makeSigner(oldCell, ...funds);
+    const bigProfile = {
+      ...codec.buildProfileBoundaries(), // 64-byte handle + 8 versions
+      rotation_sequence: 1,
+      previous_profile_id: bytesFrom(`0x${"ab".repeat(32)}`),
+    };
+    const oldCapacity = fixedPointFrom(200);
+
+    const { tx } = await buildRotateProfileTx({
+      oldProfileCell: wireCell(oldCell),
+      newProfile: bigProfile,
+      newLock: signer.lockScript(),
+      signer,
+    });
+    const output = tx.outputs[0]!;
+    // The successor must NOT stay at the old 200 CKB: its occupied size grew
+    // (previous_profile_id + max handle), and capacity must cover it.
+    expect(output.capacity > oldCapacity).toBe(true);
+  });
+});

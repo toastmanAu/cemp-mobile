@@ -344,14 +344,29 @@ export async function buildRotateProfileTx(
           // Placeholder; replaced with the Type ID args after coin selection.
           args: hexFrom(new Uint8Array(32)),
         },
-        // The old cell's capacity rolls into its successor.
-        capacity: numFrom(oldProfileCell.output.capacity),
+        // Zero on entry: CCC auto-sizes to the NEW cell's occupied size from
+        // its (larger) data — see the roll-over floor below.
+        capacity: 0,
       },
     ],
     outputsData: [hexFrom(data)],
   });
   // Type ID executes twice here (burn of the old id, creation of the new).
   await tx.addCellDepsOfKnownScripts(signer.client, KnownScript.TypeId);
+
+  // Roll-over floor: the successor carries the OLD cell's capacity, raised
+  // to at least the NEW occupied size (rotation adds previous_profile_id to
+  // the data — the successor is ~32 bytes bigger; live testnet rejection
+  // 2026-07-18), plus the builder margin.
+  const profileOutput = tx.outputs[0];
+  if (profileOutput === undefined) {
+    throw new CempCkbError("buildRotateProfileTx", "internal: profile output missing");
+  }
+  const oldCapacity = numFrom(oldProfileCell.output.capacity);
+  if (profileOutput.capacity < oldCapacity) {
+    profileOutput.capacity = oldCapacity;
+  }
+  profileOutput.capacity += CAPACITY_MARGIN;
 
   await tx.completeInputsByCapacity(signer);
   const firstInput = tx.inputs[0];

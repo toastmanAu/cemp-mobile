@@ -9,3 +9,6 @@ dist/
 coverage/
 target/
 node_modules/
+
+# Generated golden vectors — byte-parity with their generators (CI diffs them)
+packages/cemp-test-vectors/vectors/*.json

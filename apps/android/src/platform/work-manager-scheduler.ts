@@ -15,6 +15,7 @@ interface CempSchedulerNativeModule {
   schedulePeriodic(intervalMs: number, requiresNetwork: boolean): Promise<void>;
   scheduleOneShot(id: string, delayMs: number): Promise<void>;
   cancel(id: string): Promise<void>;
+  cancelPeriodic(): Promise<void>;
 }
 
 export class WorkManagerScheduler implements Scheduler {
@@ -54,5 +55,15 @@ export class WorkManagerScheduler implements Scheduler {
   cancel(id: string): void {
     this.#registry.remove(id);
     void this.#module().cancel(id);
+  }
+
+  /**
+   * Cancel the coalesced periodic tick itself. NOT part of the `Scheduler`
+   * interface — the engine has no reason to stop its own heartbeat. This
+   * exists for `AppContainer.wipe()`, so no background work keeps running for
+   * a wiped identity.
+   */
+  cancelPeriodic(): void {
+    void this.#module().cancelPeriodic();
   }
 }

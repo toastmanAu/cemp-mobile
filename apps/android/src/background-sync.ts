@@ -8,27 +8,45 @@
 import { AppContainer } from "./app-container";
 import { runBackgroundSync } from "./background-sync-core";
 import { AndroidNotifier } from "./platform/android-notifier";
-import { AndroidKeychainKeyStore } from "./platform/android-keystore";
 import { outpointsForTag } from "./platform/locked-probe";
-import { RouteTagCache } from "./platform/route-tag-cache";
+import { createRouteTagCache } from "./platform/route-tag-cache";
+
+/**
+ * `afterVaultUnlock` deliberately tolerates a `MessagingService.init` failure,
+ * so `state === "ready"` with no messaging service is reachable. In that
+ * degraded state the full-sync branch must FAIL LOUDLY rather than return
+ * normally: a silent no-op would have the core believe a sync ran and tags
+ * were refreshed, and the tags would then go stale across an epoch rollover
+ * with no signal at all — locked notifications would stop dead.
+ *
+ * Throwing is the right shape here because the HeadlessJS task's rejection is
+ * already the app's error channel for a failed tick: WorkManager retries with
+ * backoff, which is exactly the recovery a transient messaging-init failure
+ * needs. It also keeps `background-sync-core.ts` untouched.
+ */
+function requireMessaging(container: AppContainer | null): AppContainer {
+  if (container === null || !container.hasMessaging) {
+    throw new Error(
+      "backgroundSyncTask: the vault reports unlocked but messaging is unavailable — " +
+        "the full sync and the route-tag refresh cannot run",
+    );
+  }
+  return container;
+}
 
 export async function backgroundSyncTask(): Promise<void> {
-  const cache = new RouteTagCache(new AndroidKeychainKeyStore());
+  const cache = createRouteTagCache();
   const notifier = new AndroidNotifier();
   const container = AppContainer.current();
 
   await runBackgroundSync({
     isVaultUnlocked: () => container?.state === "ready",
     runFullSync: async () => {
-      if (container?.hasMessaging === true) {
-        await container.messaging.syncNow();
-      }
+      await requireMessaging(container).messaging.syncNow();
     },
     refreshTagCache: async () => {
-      if (container?.hasMessaging !== true) {
-        return;
-      }
-      await cache.writeTags(await container.messaging.routeTagsHex());
+      const ready = requireMessaging(container);
+      await cache.writeTags(await ready.messaging.routeTagsHex());
     },
     readTagCache: () => cache.read(),
     writeTagCache: (next) => cache.write(next),

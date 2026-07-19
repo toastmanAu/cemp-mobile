@@ -27,15 +27,12 @@ import { AndroidNotifier, requestNotificationPermission } from "./platform/andro
 import { MessagingService } from "./messaging";
 import { NativeKdfEngine } from "./platform/native-kdf";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
-import { RouteTagCache } from "./platform/route-tag-cache";
+import { createRouteTagCache } from "./platform/route-tag-cache";
 import { AsyncStorageVaultStorage } from "./platform/vault-storage";
 import { WorkManagerScheduler } from "./platform/work-manager-scheduler";
+import { bytesToHex } from "./platform/hex";
 
 export type AppContainerState = "loading" | "uninitialized" | "locked" | "ready";
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
 
 export interface AppRepositories {
   readonly contacts: ContactRepository;
@@ -147,8 +144,7 @@ export class AppContainer {
       return;
     }
     try {
-      const cache = new RouteTagCache(new AndroidKeychainKeyStore());
-      await cache.writeTags(await this.#messaging.routeTagsHex());
+      await createRouteTagCache().writeTags(await this.#messaging.routeTagsHex());
     } catch {
       // A cache miss only costs locked-mode notifications; never fail unlock.
     }
@@ -171,6 +167,24 @@ export class AppContainer {
   async wipe(): Promise<void> {
     this.#stopPoll();
     await this.#closeDatabase();
+    // Stop the periodic tick BEFORE wiping: otherwise WorkManager keeps waking
+    // a wiped identity and the locked probe keeps querying its route tags and
+    // posting notifications for it.
+    try {
+      new WorkManagerScheduler().cancelPeriodic();
+    } catch {
+      // A missing native module must not block the wipe.
+    }
+    // The route-tag cache is the ONE keystore artifact whose pointer lives
+    // outside the vault file, so `vault.wipe()` (which deletes the vault file
+    // and resets the default keychain service) does not make it unreachable.
+    // Left alone, route tags and `lastSeen` outpoints — roughly three epochs
+    // of inbox linkability — survive a factory wipe fully readable.
+    try {
+      await createRouteTagCache().clear();
+    } catch {
+      // Best effort; the vault wipe below must still happen.
+    }
     await this.vault.wipe();
     this.#setState("uninitialized");
   }

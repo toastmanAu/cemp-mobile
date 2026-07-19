@@ -29,10 +29,30 @@ export async function outpointsForTag(
     return [];
   }
   const client = new CempClient({ transport, endpoints: CKB_TESTNET.endpoints[0]! });
-  const page = await findMessageCells(
-    client,
-    { codeHash: cempType.codeHash, hashType: cempType.hashType },
-    bytesFrom(`0x${tagHex}`),
-  );
-  return page.cells.map((cell) => `${cell.outPoint.txHash}:${Number(cell.outPoint.index)}`);
+  const routeTag = bytesFrom(`0x${tagHex}`);
+  const messageType = { codeHash: cempType.codeHash, hashType: cempType.hashType };
+
+  // FULL scan, exactly as the unlocked discovery worker does
+  // (packages/cemp-sync/src/workers.ts runIncomingDiscovery). Reading only the
+  // first page would silently go dark: `findMessageCells` pages 64 cells at a
+  // time in `asc` order, so once a route tag holds 64+ cells every new arrival
+  // sorts past page one and is never seen — while the tag still counts as
+  // having answered, so the caller overwrites `lastSeen` with the stale page
+  // and reports success. The cursor below paginates WITHIN this one scan only
+  // and is never persisted: an exhausted indexer scan returns a terminal "0x"
+  // cursor, and `get_cells(after: "0x")` then returns nothing forever, even
+  // once new cells arrive.
+  const outpoints: string[] = [];
+  let cursor: string | undefined = undefined;
+  for (;;) {
+    const page = await findMessageCells(client, messageType, routeTag, cursor);
+    for (const cell of page.cells) {
+      outpoints.push(`${cell.outPoint.txHash}:${Number(cell.outPoint.index)}`);
+    }
+    if (page.cells.length === 0 || page.lastCursor === "0x" || page.lastCursor === "") {
+      break;
+    }
+    cursor = page.lastCursor;
+  }
+  return outpoints;
 }

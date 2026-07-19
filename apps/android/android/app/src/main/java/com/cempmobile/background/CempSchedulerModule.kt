@@ -59,6 +59,22 @@ class CempSchedulerModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * Cancel the coalesced periodic tick. Used by the factory wipe so no
+   * background work keeps waking for a wiped identity — `cancel(id)` cannot
+   * reach it, because the periodic request is enqueued under the fixed unique
+   * name [PERIODIC_WORK] rather than any worker id.
+   */
+  @ReactMethod
+  fun cancelPeriodic(promise: Promise) {
+    try {
+      WorkManager.getInstance(reactApplicationContext).cancelUniqueWork(PERIODIC_WORK)
+      promise.resolve(null)
+    } catch (error: Exception) {
+      promise.reject("scheduler_error", error.message, error)
+    }
+  }
+
   @ReactMethod
   fun cancel(id: String, promise: Promise) {
     try {

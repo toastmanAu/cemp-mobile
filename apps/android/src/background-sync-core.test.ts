@@ -138,6 +138,73 @@ describe("background sync branch", () => {
     expect(written).toEqual([{ tags: ["aa", "bb"], lastSeen: ["b:0", "a:0"] }]);
   });
 
+  /* ── security property: the locked branch touches no container dependency ── */
+
+  it("never invokes a container-dependent dependency on the locked branch", async () => {
+    // runFullSync and refreshTagCache both need an unlocked vault (they reach
+    // through AppContainer into MessagingService, which holds identity keys).
+    // While locked they must not be called AT ALL — calling them would mean
+    // the probe had opened the database or attempted to decrypt.
+    const forbidden: string[] = [];
+    const { deps, notified } = makeDeps({
+      readTagCache: () => Promise.resolve({ tags: ["aa", "bb"], lastSeen: [] }),
+      listOutpointsForTag: (tag) => Promise.resolve(tag === "aa" ? ["x:0"] : ["y:0"]),
+      runFullSync: () => {
+        forbidden.push("runFullSync");
+        return Promise.resolve();
+      },
+      refreshTagCache: () => {
+        forbidden.push("refreshTagCache");
+        return Promise.resolve();
+      },
+    });
+
+    expect(await runBackgroundSync(deps)).toBe("notified");
+    // Positive proof the locked path actually ran (so the assertion below is
+    // not trivially true because nothing happened at all).
+    expect(notified).toEqual([2]);
+    expect(forbidden).toEqual([]);
+  });
+
+  it("never invokes a container-dependent dependency on any locked outcome", async () => {
+    const outcomes: string[] = [];
+    for (const readTagCache of [
+      () => Promise.resolve(undefined), // "idle"
+      () => Promise.resolve({ tags: [] as string[], lastSeen: [] as string[] }), // "idle"
+      () => Promise.resolve({ tags: ["aa"], lastSeen: ["x:0"] }), // "quiet"
+      () => Promise.resolve({ tags: ["aa"], lastSeen: [] }), // "notified"
+    ]) {
+      const forbidden: string[] = [];
+      const { deps } = makeDeps({
+        readTagCache,
+        listOutpointsForTag: () => Promise.resolve(["x:0"]),
+        runFullSync: () => {
+          forbidden.push("runFullSync");
+          return Promise.resolve();
+        },
+        refreshTagCache: () => {
+          forbidden.push("refreshTagCache");
+          return Promise.resolve();
+        },
+      });
+      outcomes.push(await runBackgroundSync(deps));
+      expect(forbidden).toEqual([]);
+    }
+    // Every locked outcome was genuinely exercised.
+    expect(outcomes).toEqual(["idle", "idle", "quiet", "notified"]);
+  });
+
+  it("propagates a full-sync failure instead of reporting a successful sync", async () => {
+    // AppContainer can reach state "ready" with no MessagingService, in which
+    // case background-sync.ts throws rather than silently no-opping — the tick
+    // must fail so WorkManager retries, not claim a sync that never ran.
+    const { deps } = makeDeps({
+      isVaultUnlocked: () => true,
+      runFullSync: () => Promise.reject(new Error("messaging is unavailable")),
+    });
+    await expect(runBackgroundSync(deps)).rejects.toThrow("messaging is unavailable");
+  });
+
   it("still records the sighting when every tag answers but none report anything", async () => {
     // Distinct from "no tag answers": here every tag succeeds, they just
     // have nothing to report. This is the answered === tags.length path, so

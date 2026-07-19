@@ -120,6 +120,10 @@ dependencies {
     // pure-JS argon2/scrypt is unusably slow under Hermes (see kdf.ts).
     implementation("org.bouncycastle:bcprov-jdk18on:1.84")
 
+    // WorkManager backs the Phase 9 background sync scheduler
+    // (com.cempmobile.background, work-manager-scheduler.ts).
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {

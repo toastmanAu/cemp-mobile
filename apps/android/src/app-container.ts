@@ -21,12 +21,15 @@ import {
   migrate,
 } from "@cemp/database";
 import { SecureVaultImpl } from "@cemp/secure-vault";
-import { NoopNotifier, type Notifier } from "@cemp/ui";
+import type { Notifier } from "@cemp/ui";
 import { AndroidKeychainKeyStore } from "./platform/android-keystore";
+import { AndroidNotifier, requestNotificationPermission } from "./platform/android-notifier";
 import { MessagingService } from "./messaging";
 import { NativeKdfEngine } from "./platform/native-kdf";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
+import { RouteTagCache } from "./platform/route-tag-cache";
 import { AsyncStorageVaultStorage } from "./platform/vault-storage";
+import { WorkManagerScheduler } from "./platform/work-manager-scheduler";
 
 export type AppContainerState = "loading" | "uninitialized" | "locked" | "ready";
 
@@ -44,7 +47,7 @@ export interface AppRepositories {
 
 export class AppContainer {
   readonly vault: SecureVaultImpl;
-  readonly notifier: Notifier = new NoopNotifier();
+  readonly notifier: Notifier = new AndroidNotifier();
 
   #db: OpSqlCipherAdapter | null = null;
   #repositories: AppRepositories | null = null;
@@ -52,6 +55,13 @@ export class AppContainer {
   #state: AppContainerState = "loading";
   #listeners = new Set<() => void>();
   #poll: ReturnType<typeof setInterval> | null = null;
+
+  static #current: AppContainer | null = null;
+
+  /** The live container, when the app process is alive. */
+  static current(): AppContainer | null {
+    return AppContainer.#current;
+  }
 
   private constructor(vault: SecureVaultImpl) {
     this.vault = vault;
@@ -67,6 +77,7 @@ export class AppContainer {
     });
     const container = new AppContainer(vault);
     container.#setState(vault.state === "uninitialized" ? "uninitialized" : "locked");
+    AppContainer.#current = container;
     return container;
   }
 
@@ -121,10 +132,26 @@ export class AppContainer {
         vault: this.vault,
         db: this.#db,
         notifier: this.notifier,
+        scheduler: new WorkManagerScheduler(),
       });
     }
     this.#setState("ready");
     this.#startPoll();
+    void requestNotificationPermission();
+    void this.#refreshRouteTags();
+  }
+
+  /** Cache route tags so the locked background probe has something to query. */
+  async #refreshRouteTags(): Promise<void> {
+    if (this.#messaging === null) {
+      return;
+    }
+    try {
+      const cache = new RouteTagCache(new AndroidKeychainKeyStore());
+      await cache.writeTags(await this.#messaging.routeTagsHex());
+    } catch {
+      // A cache miss only costs locked-mode notifications; never fail unlock.
+    }
   }
 
   async lock(): Promise<void> {

@@ -16,11 +16,12 @@ import {
   buildCreateProfileTx,
   cccTransactionToWire,
   trackBroadcastSpend,
+  currentRoutingEpoch,
   fetchJsonRpcTransport,
   waitForTransactionCommit,
   type CempMessageTypeRef,
 } from "@cemp/ckb";
-import { CKB_TESTNET, formatFingerprint } from "@cemp/core";
+import { CKB_TESTNET, deriveRouteTag, formatFingerprint } from "@cemp/core";
 import {
   deriveIdentityKeys,
   mldsaV2LockArgs,
@@ -29,7 +30,7 @@ import {
   type IdentityKeyBundle,
 } from "@cemp/crypto";
 import { RateLimiter, DEFAULT_RATE_LIMITS } from "@cemp/ckb";
-import { SyncEngine, BackoffPolicy, InMemoryScheduler, buildWorkerSpecs } from "@cemp/sync";
+import { SyncEngine, BackoffPolicy, buildWorkerSpecs, type Scheduler } from "@cemp/sync";
 import type { Notifier } from "@cemp/ui";
 import type { SecureVaultImpl } from "@cemp/secure-vault";
 import {
@@ -102,8 +103,9 @@ export class MessagingService {
     vault: SecureVaultImpl;
     db: SqliteAdapter;
     notifier: Notifier;
+    scheduler: Scheduler;
   }): Promise<MessagingService> {
-    const { vault, db, notifier } = deps;
+    const { vault, db, notifier, scheduler } = deps;
     const bundle = await vault.withUnlockedSeed((seed) => deriveIdentityKeys(seed));
     const mlDsaDeployment = CKB_TESTNET.deployments.mlDsaLock;
     const cempType = CKB_TESTNET.deployments.cempMessageType;
@@ -166,7 +168,7 @@ export class MessagingService {
     const leases = new WorkerLeaseRepository(db);
     const engineId = `engine-${bytesToHex(randomBytes(8))}`;
     const engine = new SyncEngine({
-      scheduler: new InMemoryScheduler(),
+      scheduler,
       leases,
       cursors,
       workers: buildWorkerSpecs({
@@ -319,6 +321,21 @@ export class MessagingService {
   /** Foreground sync: discovery + pending txs + watches + reclaim. */
   async syncNow(): Promise<Record<string, string>> {
     return await this.#engine.runAllNow();
+  }
+
+  /**
+   * Hex route tags for the previous, current and next epoch. Caching the NEXT
+   * epoch's tag is what keeps the locked probe working across a rollover
+   * (Phase 9 design D2).
+   */
+  async routeTagsHex(): Promise<string[]> {
+    const profileIdHex = await this.myProfileId();
+    if (profileIdHex === null) {
+      return [];
+    }
+    const profileId = bytesFrom(`0x${profileIdHex}`);
+    const epoch = currentRoutingEpoch(Date.now());
+    return [epoch - 1n, epoch, epoch + 1n].map((e) => bytesToHex(deriveRouteTag(profileId, e)));
   }
 
   /** Wipe in-memory secret key material (called on lock/wipe). */

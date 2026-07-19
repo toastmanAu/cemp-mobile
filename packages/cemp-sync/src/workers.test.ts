@@ -568,6 +568,46 @@ describe("pending-transactions worker (exit criterion 2)", () => {
       await second.db.close();
     }
   });
+
+  it("heals a message stranded at pending behind an already-committed tx", async () => {
+    // The publish monitor marks the outgoing tx `committed` BEFORE advancing the
+    // message; an interruption (background/lock/kill) between those two writes
+    // leaves the message at `pending` with a `committed` tx. The `submitted`
+    // scan never revisits a committed tx, so without a heal the message is
+    // stuck at "sent" forever and can never be acknowledged. Found live.
+    const stack = await makeStack();
+    try {
+      const conv = await stack.conversations.getOrCreateForContact(
+        (await stack.contacts.create({ displayName: "alice" })).id,
+      );
+      const message = await stack.messages.insert({
+        conversationId: conv.id,
+        direction: "outgoing",
+        body: "stranded",
+        logicalMessageId: "lm-strand",
+      });
+      for (const s of [
+        "queued",
+        "encrypting",
+        "building_transaction",
+        "awaiting_signature",
+        "submitting",
+        "pending",
+      ] as const) {
+        await stack.messages.transitionState(message.id, s);
+      }
+      await stack.outgoingTxs.record({
+        txHash: fillHex(0xab, 32),
+        purpose: "message:lm-strand",
+        state: "committed",
+      });
+
+      expect(await stack.engine.runWorker("pending-transactions")).toBe("success");
+      expect((await stack.messages.getById(message.id))?.state).toBe("available_on_chain");
+    } finally {
+      await stack.db.close();
+    }
+  });
 });
 
 describe("reclaim-batch worker (task 10)", () => {

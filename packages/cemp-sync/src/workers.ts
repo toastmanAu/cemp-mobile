@@ -381,6 +381,26 @@ async function runPendingTransactions(deps: SyncWorkerDeps): Promise<void> {
       await deps.outgoingTxs.markState(tx.txHash, "rejected");
     }
   }
+
+  // Heal messages stranded behind an already-committed tx. The publish monitor
+  // marks the outgoing tx `committed` BEFORE advancing the message, so an
+  // interruption (background/lock/kill) between those two writes leaves the
+  // message at pending/committed with a committed tx — which the `submitted`
+  // scan above never revisits. Bring it forward so it becomes ack-able (found
+  // live: a message stuck at "sent" could never advance to delivered/read).
+  const stranded = await deps.messages.listByState(["pending", "committed"]);
+  for (const message of stranded) {
+    const journal = await deps.outgoingTxs.findLatestByPurpose(
+      `message:${message.logicalMessageId}`,
+    );
+    if (journal?.state !== "committed") {
+      continue;
+    }
+    if (message.state === "pending") {
+      await deps.messages.transitionState(message.id, "committed");
+    }
+    await deps.messages.transitionState(message.id, "available_on_chain");
+  }
 }
 
 /* ── balance refresh (§12 worker 8; Phase 4 task 7) ──────────────────────── */

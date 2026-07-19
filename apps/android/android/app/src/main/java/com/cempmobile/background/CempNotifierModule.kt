@@ -16,9 +16,13 @@ import com.facebook.react.bridge.ReactMethod
  * so they must stay stable.
  *
  * Security: message contents and sender identity must never appear on a
- * locked device. Every notification is built with VISIBILITY_PRIVATE plus a
- * generic `setPublicVersion`, so a secure lock screen shows only that
- * something arrived — never the caller-supplied title/body.
+ * locked device. The caller-supplied title/body are themselves generic by
+ * construction (see cemp-sync's workers.ts) rather than relying on this
+ * being reachable only via a device setting the app cannot verify, but
+ * VISIBILITY_PRIVATE plus a generic `setPublicVersion` stay on as
+ * defence in depth for a secure lock screen. `setLocalOnly(true)` stops the
+ * notification from mirroring to a paired Wear OS watch, which is often
+ * ambient-on and less secured than the phone.
  */
 class CempNotifierModule(reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
@@ -56,6 +60,10 @@ class CempNotifierModule(reactContext: ReactApplicationContext) :
           .setAutoCancel(true)
           .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
           .setPublicVersion(publicVersion)
+          // A paired Wear OS watch is often ambient-on and less secured than
+          // the phone; mirroring there would bypass the visibility/redaction
+          // handling above. Keep this notification phone-only.
+          .setLocalOnly(true)
           .build()
       // Stable id: a re-post replaces rather than stacks.
       NotificationManagerCompat.from(reactApplicationContext).notify(id.hashCode(), notification)

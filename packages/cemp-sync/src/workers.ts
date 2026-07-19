@@ -229,12 +229,17 @@ async function processDiscoveredCell(
     await deps.messages.transitionState(inserted.id, "downloading");
     await deps.messages.transitionState(inserted.id, "decrypting");
     await deps.messages.transitionState(inserted.id, "received");
-    // Notification (task 8): messages channel, contact name + preview.
+    // Notification (task 8; hardened per security review — no sender identity
+    // or message content ever leaves the app, regardless of the device's
+    // "hide sensitive content" setting, which the app cannot verify or trust
+    // as a default). Copy matches the locked-probe notification in
+    // background-sync-core.ts: generic, always — detail is shown only in-app
+    // after unlock.
     await deps.notifier.post({
       id: `message:${String(inserted.id)}`,
       channel: "messages",
-      title: contact.displayName,
-      body: incoming.text.length > 60 ? `${incoming.text.slice(0, 57)}…` : incoming.text,
+      title: "CellSend",
+      body: "New message. Unlock to view.",
     });
     // Auto-ack on receive (§7.3, ADR 0005): queue a receipt-only response so the
     // sender advances to delivered/read without any action here. Idempotent on

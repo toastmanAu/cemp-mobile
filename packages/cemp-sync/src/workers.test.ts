@@ -311,7 +311,18 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
       expect(stored?.state).toBe("received");
       expect(stored?.envelopeMessageIdHex).toBe(bytesToHex(messageId));
       expect(stack.notifier.posted).toHaveLength(1);
-      expect(stack.notifier.posted[0]!.channel).toBe("messages");
+      const posted = stack.notifier.posted[0]!;
+      expect(posted.channel).toBe("messages");
+      // Security-hardened (no OS-setting-dependent redaction): the posted
+      // notification must never carry the sender's identity or the decrypted
+      // message text, so a lock screen can never leak either. It stays
+      // generic and prompts the user to unlock the app instead.
+      expect(posted.title).not.toBe(contact.displayName);
+      expect(posted.title).not.toContain(contact.displayName);
+      expect(posted.body).not.toBe("background hello");
+      expect(posted.body).not.toContain("background hello");
+      expect(posted.title).toBe("CellSend");
+      expect(posted.body).toBe("New message. Unlock to view.");
       // Discovery persists NO cursor: the indexer orders a prefix search by the
       // type args, which end in a random nonce, so a resumed scan can skip a
       // newly published cell forever (see the sorts-BEFORE test above).
@@ -785,6 +796,10 @@ describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 
       expect(stored).toHaveLength(1);
       expect(stored[0]!.body).toBe("real message in spam flood");
       expect(stack.notifier.posted).toHaveLength(1);
+      // No leak of the decrypted body into the notification even though it
+      // is available at this point in the pipeline.
+      expect(stack.notifier.posted[0]!.body).not.toContain("real message in spam flood");
+      expect(stack.notifier.posted[0]!.body).toBe("New message. Unlock to view.");
       const epoch = currentRoutingEpoch();
       // No cursor is persisted (see the sorts-BEFORE test); spam simply does not
       // stall the scan.
@@ -809,6 +824,8 @@ describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 
       await stack.engine.runWorker("incoming-discovery");
       expect(await stack.messages.listByState(["received"])).toHaveLength(1);
       expect(stack.notifier.posted).toHaveLength(1);
+      expect(stack.notifier.posted[0]!.body).not.toContain("replay me");
+      expect(stack.notifier.posted[0]!.body).toBe("New message. Unlock to view.");
     } finally {
       await stack.db.close();
     }

@@ -14,9 +14,15 @@ message store.
 > Do not use with real funds. The operational wallet is for messaging floats only; see the
 > [wallet warning](docs/architecture/overview.md#operational-wallet-warning).
 
-## Where things stand (2026-07-17)
+## Where things stand (2026-07-19)
 
-- **Full message lifecycle proven live on CKB testnet** by the headless two-user
+- **Full message lifecycle proven on two physical Android devices** over CKB testnet:
+  compose → publish → discovery → decrypt → automatic acknowledgement → `read` on the
+  sender → sender reclaim. The reclaim transaction `0xaa1a8bee…fc91631b` consumed both
+  acknowledged message cells and returned 3,417 CKB (~1,700 per message), closing the
+  sender-funded temporary-storage loop end to end. Acknowledgement is automatic on
+  receipt ([ADR 0005](docs/adr/0005-acknowledgement-responses.md)).
+- **Full message lifecycle also proven headless** by the two-user
   [reference client](apps/reference-client/): type-script deploy → Profile Cells →
   encrypted send → discovery + decrypt → ack response → sender reclaim → balance reconcile.
   Every step is a committed, journaled testnet transaction (see its README for tx hashes).
@@ -29,13 +35,26 @@ message store.
   (multi-slot VEK: password Argon2id + biometric keystore slot, auto-lock, wipe),
   the local database (migrations, §11 state machine, repositories), messenger-shell
   view-models, profile key rotation + fingerprints + contact QR bundles + trust verdicts,
-  and the Android app skeleton (vault gate → Chats/Contacts/Wallet/Settings).
-- **360 unit tests + 1 skipped green** (`pnpm test`), plus ~10k-case malformed-input
+  the sync workers (discovery, response sender, pending-transaction reconciliation,
+  reclaim batching, leases), and the Android app itself — vault gate →
+  Chats/Contacts/Wallet/Settings, with live P2P messaging and the wallet balance feed.
+- **465 unit tests + 1 skipped green** (`pnpm test`), plus ~10k-case malformed-input
   property suites and Rust↔TypeScript interop vectors.
 
-Not yet done: text publication wiring in the app (Phase 7), background workers (Phase 9),
-the wallet-balance feed (Phase 4 remainder), first on-device build of the Android app, and
-mainnet readiness (Phase 11 gate).
+Not yet done:
+
+- **Background operation (Phase 9).** The workers, leases, retry/backoff and
+  foreground catch-up sync all exist, but nothing schedules them: the app installs
+  `InMemoryScheduler` (records intent, no timers) and a `NoopNotifier`. Messages are
+  therefore only discovered while the Chats tab is focused — the spec's
+  "discovered after the app has been backgrounded" criterion is not met. WorkManager
+  and a real notifier are the remaining work.
+- **Mainnet readiness (Phase 11 gate).** Cryptography and the message/reclaim
+  protocol remain unaudited; this build is testnet-only by construction.
+
+Smaller known gaps: `receipt_request: 0` is not yet honoured (the recipient
+acknowledges every content message), and the auto-lock interval is displayed in
+Settings but not configurable.
 
 ## Documentation
 

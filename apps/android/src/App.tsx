@@ -8,11 +8,15 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { Image, StyleSheet, Text, View, type ImageSourcePropType } from "react-native";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { AppContainer, type AppContainerState } from "./app-container";
+import chatIcon from "./assets/icons/chat.png";
+import contactsIcon from "./assets/icons/contacts.png";
+import settingsIcon from "./assets/icons/settings.png";
+import walletIcon from "./assets/icons/wallet.png";
 import { AppContext, type RootStackParamList, type TabParamList } from "./navigation";
 import { ChatScreen } from "./screens/chat-screen";
 import { ChatsScreen } from "./screens/chats-screen";
@@ -26,9 +30,30 @@ import { WalletScreen } from "./screens/wallet-screen";
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tabs = createBottomTabNavigator<TabParamList>();
 
+const TAB_ICONS: Record<keyof TabParamList, ImageSourcePropType> = {
+  Chats: chatIcon,
+  Contacts: contactsIcon,
+  Wallet: walletIcon,
+  Settings: settingsIcon,
+};
+
 function MainTabs(): React.JSX.Element {
   return (
-    <Tabs.Navigator>
+    <Tabs.Navigator
+      screenOptions={({ route }) => ({
+        // Full-colour artwork: the focused state is carried by opacity, not by
+        // tintColor — tinting would flatten the icons' shading to a flat mask.
+        // A fixed square box + `contain` normalises their differing aspect
+        // ratios so they sit optically consistent across the bar.
+        tabBarIcon: ({ focused }) => (
+          <Image
+            source={TAB_ICONS[route.name]}
+            resizeMode="contain"
+            style={[styles.tabIcon, focused ? null : styles.tabIconIdle]}
+          />
+        ),
+      })}
+    >
       <Tabs.Screen name="Chats" component={ChatsScreen} />
       <Tabs.Screen name="Contacts" component={ContactsScreen} />
       <Tabs.Screen name="Wallet" component={WalletScreen} />
@@ -36,6 +61,11 @@ function MainTabs(): React.JSX.Element {
     </Tabs.Navigator>
   );
 }
+
+const styles = StyleSheet.create({
+  tabIcon: { width: 26, height: 26 },
+  tabIconIdle: { opacity: 0.45 },
+});
 
 export function App(): React.JSX.Element {
   const [container, setContainer] = useState<AppContainer | null>(null);

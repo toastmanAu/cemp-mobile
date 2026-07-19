@@ -460,18 +460,18 @@ export async function runBackgroundSync(deps: BackgroundSyncDeps): Promise<Backg
   }
 
   const current: string[] = [];
-  let answered = false;
+  let answered = 0;
   for (const tag of cache.tags) {
     try {
       current.push(...(await deps.listOutpointsForTag(tag)));
-      answered = true;
+      answered += 1;
     } catch {
       // Per-tag isolation: one stale or failing tag must not suppress the
       // healthy ones. Only tags that answered contribute to `lastSeen`.
       continue;
     }
   }
-  if (!answered) {
+  if (answered === 0) {
     // Nothing was observed, so recording a sighting would wrongly mark every
     // waiting message as seen. WorkManager retries later.
     return "quiet";
@@ -487,7 +487,12 @@ export async function runBackgroundSync(deps: BackgroundSyncDeps): Promise<Backg
       return "quiet";
     }
   }
-  await deps.writeTagCache({ tags: cache.tags, lastSeen: current });
+  // Overwrite only when every tag answered. A tag that failed contributed
+  // nothing to `current`, so overwriting would drop outpoints it reported on an
+  // earlier tick and re-notify for messages the user has already seen.
+  const lastSeen =
+    answered === cache.tags.length ? current : [...new Set([...cache.lastSeen, ...current])];
+  await deps.writeTagCache({ tags: cache.tags, lastSeen });
   return unseen.length > 0 ? "notified" : "quiet";
 }
 ```

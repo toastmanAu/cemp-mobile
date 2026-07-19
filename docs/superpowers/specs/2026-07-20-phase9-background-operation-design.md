@@ -126,8 +126,9 @@ locked/unlocked branch — no protocol logic.
 ### Wiring
 
 `AppContainer` installs the real scheduler and notifier. `afterVaultUnlock()`
-refreshes the route-tag cache; this is the only place tags are written, because
-deriving them requires the profile id.
+refreshes the route-tag cache, and so does the unlocked background tick. Both
+writers require the vault to be unlocked, because deriving a tag needs the
+profile id — the locked probe is strictly a reader.
 
 No changes to `@cemp/sync` or `@cemp/ckb`.
 

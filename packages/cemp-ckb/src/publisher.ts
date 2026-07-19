@@ -26,6 +26,7 @@ import { buildSendMessageTx, type CempMessageTypeRef } from "./builders.js";
 import { CempCkbError, type CempClient } from "./client.js";
 import { resumeJournaledBroadcast, waitForTransactionCommit } from "./monitor.js";
 import { checkResolvedProfileBinding, resolveLiveProfile } from "./profiles.js";
+import { trackBroadcastSpend } from "./signing.js";
 import type { MlDsaV2TxSigner } from "./signing.js";
 import { cccTransactionToWire } from "./wire.js";
 
@@ -288,6 +289,10 @@ export class MessagePublisher {
         );
       }
       broadcast = true;
+      // The inputs are spent now, but the indexer keeps reporting them live
+      // until this tx commits — tell the coin selector, or the next message
+      // re-selects them and is dropped as a double-spend.
+      await trackBroadcastSpend(this.#deps.signer, signed);
 
       await store.transitionMessage(input.messageRowId, "pending");
       return await this.#monitor(

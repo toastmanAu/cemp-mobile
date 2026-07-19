@@ -27,6 +27,15 @@ function hexToBytes(hex: string): Uint8Array {
 
 const keyPair = mldsaV2KeygenFromSeed(hexToBytes(vectors.keygen[0]!.seed));
 
+/** `tx_hash:index` of every input in a broadcast wire body. */
+function inputKeys(body: Record<string, unknown>): string[] {
+  const inputs =
+    (body as { inputs?: { previous_output?: { tx_hash?: string; index?: string } }[] }).inputs ?? [];
+  return inputs.map(
+    (input) => `${String(input.previous_output?.tx_hash)}:${String(input.previous_output?.index)}`,
+  );
+}
+
 function fundingCell(ckb: number, seed: number, lock: Script): Cell {
   return Cell.from({
     outPoint: { txHash: fillHex(seed, 32), index: 0 },
@@ -163,6 +172,7 @@ function makeFixture(profileCellJson?: unknown): {
   publisher: MessagePublisher;
   store: FakeStore;
   sentBodies: Record<string, unknown>[];
+  mockChain: MockCkbClient;
 } {
   const store = new FakeStore();
   const { transport, sentBodies } = makeFakeChain({
@@ -183,7 +193,7 @@ function makeFixture(profileCellJson?: unknown): {
     senderProfileId: hexToBytes("11".repeat(32)),
     senderDeviceId: hexToBytes("22".repeat(16)),
   });
-  return { publisher, store, sentBodies };
+  return { publisher, store, sentBodies, mockChain };
 }
 
 function recipientProfileCellJson(): { json: unknown; profileIdHex: string } {
@@ -331,5 +341,34 @@ describe("MessagePublisher.publishText", () => {
     const again = await publisher.publishText(input);
     expect(again.resumed).toBe(true);
     expect(again.txHash).toBe(result.txHash);
+  });
+
+  it("does not re-spend inputs consumed by a previous, still-unconfirmed publish", async () => {
+    // Coin selection (completeInputsByCapacity) resolves live cells through the
+    // signer's CCC client, which filters on `cache.isUnusable`. CCC only marks
+    // that cache inside its OWN client.sendTransaction — we broadcast through
+    // CempClient, so without an explicit mark the second message re-selects the
+    // input the first one just spent and is dropped as a double-spend. Found
+    // live: consecutive sends showed "sent" but never committed.
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const { publisher, sentBodies } = makeFixture(json);
+
+    await publisher.publishText({
+      messageRowId: 21,
+      logicalMessageId: "lm-spend-a",
+      text: "first",
+      recipientProfileIdHex: profileIdHex,
+    });
+    await publisher.publishText({
+      messageRowId: 22,
+      logicalMessageId: "lm-spend-b",
+      text: "second",
+      recipientProfileIdHex: profileIdHex,
+    });
+
+    expect(sentBodies).toHaveLength(2);
+    const spent = new Set(inputKeys(sentBodies[0]!));
+    const reused = inputKeys(sentBodies[1]!).filter((key) => spent.has(key));
+    expect(reused).toEqual([]);
   });
 });

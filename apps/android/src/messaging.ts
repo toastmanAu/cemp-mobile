@@ -15,6 +15,7 @@ import {
   addressFromLockScript,
   buildCreateProfileTx,
   cccTransactionToWire,
+  trackBroadcastSpend,
   fetchJsonRpcTransport,
   waitForTransactionCommit,
   type CempMessageTypeRef,
@@ -273,6 +274,10 @@ export class MessagingService {
     if (accepted !== txHash) {
       throw new Error("publishMyProfile: node returned a different tx hash");
     }
+    // Record the spend so the first message send does not re-select the cells
+    // this profile transaction just consumed (they stay "live" on the indexer
+    // until it commits).
+    await trackBroadcastSpend(this.#signer, signed);
     await waitForTransactionCommit(this.#client, txHash, {});
     await this.#outgoingTxs.markState(txHash, "committed", { committedAtMs: Date.now() });
     await this.#profiles.create({

@@ -28,6 +28,7 @@ import {
   resumeJournaledBroadcast,
   waitForTransactionCommit,
 } from "./monitor.js";
+import { trackBroadcastSpend } from "./signing.js";
 import type { MlDsaV2TxSigner } from "./signing.js";
 import type { Cell, OutPoint } from "./types.js";
 import { cccTransactionToWire } from "./wire.js";
@@ -338,6 +339,9 @@ export class ResponseLifecycle {
         "node returned a tx hash different from the signed reclaim",
       );
     }
+    // A reclaim spends the same wallet cells message publication draws on —
+    // record the spend so the next transaction does not re-select them.
+    await trackBroadcastSpend(this.#deps.signer, signed);
     await waitForTransactionCommit(this.#deps.client, txHash, {
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     });

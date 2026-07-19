@@ -76,10 +76,25 @@ export function clientCellResolver(client: CccClient): CellResolver {
   return {
     async resolve(outPoint) {
       const cell = await client.getCellLive(outPoint, true);
-      if (cell === undefined) {
+      if (cell !== undefined) {
+        return { cellOutput: cell.cellOutput, data: bytesFrom(cell.outputData) };
+      }
+      // Chained spend: an output of our OWN still-unconfirmed transaction is not
+      // live on the node yet (`get_live_cell` only sees committed cells), and
+      // `getCellLive` — unlike `getCell` — never consults the cache. CCC's cache
+      // holds that output verbatim from when we broadcast (see
+      // {@link trackBroadcastSpend}), so resolve from there; without this the
+      // second message of a burst spends the first one's change and cannot be
+      // signed at all. A cell already marked spent is refused, and the cache
+      // only returns fully-populated cells.
+      if (await client.cache.isUnusable(outPoint)) {
         return undefined;
       }
-      return { cellOutput: cell.cellOutput, data: bytesFrom(cell.outputData) };
+      const cached = await client.cache.getCell(outPoint);
+      if (cached === undefined) {
+        return undefined;
+      }
+      return { cellOutput: cached.cellOutput, data: bytesFrom(cached.outputData) };
     },
   };
 }
@@ -398,4 +413,29 @@ function assertAllInputsLockedBy(resolvedInputs: readonly ResolvedInput[], lock:
       );
     }
   }
+}
+
+/**
+ * Record a just-broadcast transaction in the signer's CCC client cache.
+ *
+ * Coin selection (`completeInputsByCapacity`) resolves live cells through that
+ * client: `Client.findCells` yields the cache's usable cells first, then skips
+ * any on-chain cell whose outpoint the cache marks unusable. CCC populates that
+ * cache ONLY inside its own `client.sendTransaction` — every broadcast in this
+ * codebase goes out through {@link CempClient} instead, so without this call the
+ * indexer (which still reports the spent cell as live until the tx commits)
+ * hands the same input to the next transaction. The node then drops the loser as
+ * a double-spend and its message sits at `pending` forever.
+ *
+ * Marking is idempotent, so re-broadcast/resume paths may call it again safely.
+ */
+export async function trackBroadcastSpend(
+  signer: { readonly client: CccClient },
+  tx: Transaction,
+): Promise<void> {
+  // CCC's own `client.sendTransaction` hands a concrete `Transaction` to this
+  // very method, but the parameter is declared `TransactionLike`, whose
+  // optional properties are not satisfied by the class under this repo's
+  // `exactOptionalPropertyTypes` (ADR 0001). Structurally identical at runtime.
+  await signer.client.cache.markTransactions(tx as unknown as TransactionLike);
 }

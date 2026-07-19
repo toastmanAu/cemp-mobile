@@ -73,11 +73,44 @@ describe("background sync branch", () => {
   });
 
   it("survives a chain error without throwing", async () => {
-    const { deps, notified } = makeDeps({
+    const { deps, notified, written } = makeDeps({
       readTagCache: () => Promise.resolve({ tags: ["aa"], lastSeen: [] }),
       listOutpointsForTag: () => Promise.reject(new Error("rpc down")),
     });
     expect(await runBackgroundSync(deps)).toBe("quiet");
     expect(notified).toEqual([]);
+    expect(written).toEqual([]);
+  });
+
+  it("records nothing when the notification fails", async () => {
+    const { deps, notified, written } = makeDeps({
+      readTagCache: () => Promise.resolve({ tags: ["aa"], lastSeen: [] }),
+      listOutpointsForTag: () => Promise.resolve(["x:0"]),
+      notify: () => Promise.reject(new Error("notification channel down")),
+    });
+    expect(await runBackgroundSync(deps)).toBe("quiet");
+    expect(notified).toEqual([]);
+    expect(written).toEqual([]);
+  });
+
+  it("does not let a failing tag suppress notification for a healthy one", async () => {
+    const { deps, notified, written } = makeDeps({
+      readTagCache: () => Promise.resolve({ tags: ["aa", "bb"], lastSeen: [] }),
+      listOutpointsForTag: (tag) =>
+        tag === "aa" ? Promise.reject(new Error("rpc down")) : Promise.resolve(["z:0"]),
+    });
+    expect(await runBackgroundSync(deps)).toBe("notified");
+    expect(notified).toEqual([1]);
+    expect(written).toEqual([{ tags: ["aa", "bb"], lastSeen: ["z:0"] }]);
+  });
+
+  it("records no sighting when no tag answers", async () => {
+    const { deps, notified, written } = makeDeps({
+      readTagCache: () => Promise.resolve({ tags: ["aa"], lastSeen: [] }),
+      listOutpointsForTag: () => Promise.reject(new Error("rpc down")),
+    });
+    expect(await runBackgroundSync(deps)).toBe("quiet");
+    expect(notified).toEqual([]);
+    expect(written).toEqual([]);
   });
 });

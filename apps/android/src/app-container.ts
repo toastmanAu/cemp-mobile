@@ -169,12 +169,11 @@ export class AppContainer {
     await this.#closeDatabase();
     // Stop the periodic tick BEFORE wiping: otherwise WorkManager keeps waking
     // a wiped identity and the locked probe keeps querying its route tags and
-    // posting notifications for it.
-    try {
-      new WorkManagerScheduler().cancelPeriodic();
-    } catch {
-      // A missing native module must not block the wipe.
-    }
+    // posting notifications for it. `cancelPeriodic()` is best-effort on its
+    // own terms (WorkManagerScheduler swallows a missing native module or a
+    // rejected native call, so its promise never rejects) — awaited here only
+    // to sequence it ahead of the vault wipe below, never to gate it.
+    await new WorkManagerScheduler().cancelPeriodic();
     // The route-tag cache is the ONE keystore artifact whose pointer lives
     // outside the vault file, so `vault.wipe()` (which deletes the vault file
     // and resets the default keychain service) does not make it unreachable.

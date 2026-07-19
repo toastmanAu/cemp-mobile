@@ -9,6 +9,7 @@
 
 import { NativeModules } from "react-native";
 import type { Scheduler } from "@cemp/sync";
+import { bestEffort } from "./best-effort";
 import { SpecRegistry } from "./scheduler-coalesce";
 
 interface CempSchedulerNativeModule {
@@ -54,7 +55,9 @@ export class WorkManagerScheduler implements Scheduler {
    */
   cancel(id: string): void {
     this.#registry.remove(id);
-    void this.#module().cancel(id);
+    // Best-effort: a missing native module or a rejected native promise here
+    // must not become an unhandled rejection (see `bestEffort`).
+    void bestEffort(() => this.#module().cancel(id));
   }
 
   /**
@@ -62,8 +65,14 @@ export class WorkManagerScheduler implements Scheduler {
    * interface — the engine has no reason to stop its own heartbeat. This
    * exists for `AppContainer.wipe()`, so no background work keeps running for
    * a wiped identity.
+   *
+   * Best-effort, like `cancel` above: the returned promise never rejects, so
+   * a missing native module or a rejected native call can never block or
+   * fail the wipe that calls this. It IS awaited by the caller, purely to
+   * sequence "stop the tick" ahead of "wipe the vault" — not because failure
+   * here needs to be observed.
    */
-  cancelPeriodic(): void {
-    void this.#module().cancelPeriodic();
+  cancelPeriodic(): Promise<void> {
+    return bestEffort(() => this.#module().cancelPeriodic());
   }
 }

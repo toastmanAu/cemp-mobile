@@ -12,6 +12,7 @@
 
 import { NativeModules } from "react-native";
 import type { KdfEngine, KdfParams } from "@cemp/secure-vault";
+import { bytesToHex, hexToBytes } from "./hex";
 
 interface CempKdfNativeModule {
   argon2id(
@@ -30,18 +31,6 @@ interface CempKdfNativeModule {
     p: number,
     outBytes: number,
   ): Promise<string>;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(hex.slice(2 * i, 2 * i + 2), 16);
-  }
-  return out;
 }
 
 export class NativeKdfEngine implements KdfEngine {

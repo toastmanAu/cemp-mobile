@@ -11,20 +11,9 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { VaultStorage } from "@cemp/secure-vault";
+import { bytesToHex, hexToBytes } from "./hex";
 
 const KEY_PREFIX = "@cemp/vault/";
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(hex.slice(2 * i, 2 * i + 2), 16);
-  }
-  return out;
-}
 
 export class AsyncStorageVaultStorage implements VaultStorage {
   async read(name: string): Promise<Uint8Array | null> {

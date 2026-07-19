@@ -134,6 +134,13 @@ export class AppContainer {
     this.#setState("locked");
   }
 
+  /** Reset the vault's inactivity timer — any user interaction counts. */
+  touch(): void {
+    if (this.vault.state === "unlocked") {
+      this.vault.touch();
+    }
+  }
+
   async wipe(): Promise<void> {
     this.#stopPoll();
     await this.#closeDatabase();

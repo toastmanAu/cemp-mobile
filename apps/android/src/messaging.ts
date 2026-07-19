@@ -312,8 +312,8 @@ export class MessagingService {
   }
 
   /** Foreground sync: discovery + pending txs + watches + reclaim. */
-  async syncNow(): Promise<void> {
-    await this.#engine.runAllNow();
+  async syncNow(): Promise<Record<string, string>> {
+    return await this.#engine.runAllNow();
   }
 
   /** Wipe in-memory secret key material (called on lock/wipe). */

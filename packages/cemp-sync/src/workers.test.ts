@@ -174,7 +174,13 @@ interface Stack {
 }
 
 async function makeStack(
-  opts: { cells?: unknown[]; db?: NodeSqliteAdapter; engineId?: string } = {},
+  opts: {
+    cells?: unknown[];
+    db?: NodeSqliteAdapter;
+    engineId?: string;
+    ownProfileId?: Uint8Array;
+    transport?: JsonRpcTransport;
+  } = {},
 ): Promise<Stack> {
   const db = opts.db ?? new NodeSqliteAdapter();
   await migrate(db);
@@ -194,7 +200,7 @@ async function makeStack(
     walletId,
   });
 
-  const client = new CempClient({ transport: makeTransport(opts.cells ?? []) });
+  const client = new CempClient({ transport: opts.transport ?? makeTransport(opts.cells ?? []) });
   const mockChain = new MockCkbClient();
   const signer = new (await import("@cemp/ckb")).MlDsaV2TxSigner({
     keyPair: signerKeyPair,
@@ -233,7 +239,7 @@ async function makeStack(
     },
     notifier,
     engineId,
-    ownProfileId: BOB_PROFILE_ID,
+    ownProfileId: opts.ownProfileId ?? BOB_PROFILE_ID,
     ownKemSecretKey: BOB.mlKem.secretKey,
   };
   const engine = new SyncEngine({
@@ -278,10 +284,18 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
       expect(stored?.envelopeMessageIdHex).toBe(bytesToHex(messageId));
       expect(stack.notifier.posted).toHaveLength(1);
       expect(stack.notifier.posted[0]!.channel).toBe("messages");
-      // Cursors persisted for BOTH epochs (task 4).
+      // The current-epoch scan matched the cell, so its resume position is
+      // persisted; the grace (epoch-1) scan matched nothing, so its terminal
+      // cursor is deliberately NOT persisted (persisting an exhausted-scan
+      // cursor poisons later discovery — see the terminal-cursor test below).
       const epoch = currentRoutingEpoch();
-      expect(await stack.cursors.get(`incoming-discovery:${epoch.toString()}`)).toBe("0x64");
-      expect(await stack.cursors.get(`incoming-discovery:${(epoch - 1n).toString()}`)).toBe("0x64");
+      const bobHex = bytesToHex(BOB_PROFILE_ID);
+      expect(await stack.cursors.get(`incoming-discovery:${epoch.toString()}:${bobHex}`)).toBe(
+        "0x64",
+      );
+      expect(
+        await stack.cursors.get(`incoming-discovery:${(epoch - 1n).toString()}:${bobHex}`),
+      ).toBeNull();
 
       // Duplicate run (e.g. WorkManager fires twice): no duplicate chat row,
       // no duplicate notification (exit criterion 3).
@@ -306,6 +320,103 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
       await stack.engine.runWorker("incoming-discovery");
       expect(await stack.messages.listByState(["received"])).toHaveLength(0);
       expect(stack.notifier.posted).toHaveLength(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a cursor left by a different profile never skips this profile's cells", async () => {
+    // On-device find: a first sync ran before the profile existed (zero id)
+    // and advanced the epoch cursor; the post-publish sync then resumed the
+    // REAL profile's scan from that global position and silently skipped the
+    // waiting cell. Cursors are now keyed per profile id.
+    const dir = await mkdtemp(join(tmpdir(), "cemp-sync-cursor-"));
+    tempDirs.push(dir);
+    const path = join(dir, "sync.sqlite");
+    const other = await makeStack({
+      db: new NodeSqliteAdapter({ path }),
+      ownProfileId: new Uint8Array(32),
+    });
+    await other.engine.runWorker("incoming-discovery");
+    await other.db.close();
+
+    const { json } = discoveryCellJson("waiting for me");
+    const mine = await makeStack({ db: new NodeSqliteAdapter({ path }), cells: [json] });
+    try {
+      expect(await mine.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await mine.messages.listByState(["received"])).toHaveLength(1);
+    } finally {
+      await mine.db.close();
+    }
+  });
+
+  it("a terminal (empty-page) cursor is never persisted, so a later cell is still found", async () => {
+    // On-device find: the real CKB indexer returns last_cursor "0x" for an
+    // exhausted scan, and a follow-up get_cells with after:"0x" returns nothing
+    // EVEN ONCE a matching cell exists. Persisting that terminal cursor (from a
+    // first, empty pre-message sync) silently poisoned discovery forever. The
+    // shared makeTransport mock hid this by always returning "0x64"; this
+    // transport models the real indexer so the regression is caught off-device.
+    const base = makeTransport([]);
+    let waiting: unknown[] = [];
+    const realisticIndexer: JsonRpcTransport = {
+      call(url, method, params) {
+        if (method === "get_cells") {
+          // after any real position OR the terminal "0x" -> the scan is done.
+          if (params[3] !== undefined) return Promise.resolve({ objects: [], last_cursor: "0x" });
+          if (waiting.length === 0) return Promise.resolve({ objects: [], last_cursor: "0x" });
+          return Promise.resolve({ objects: waiting, last_cursor: "0x64" });
+        }
+        return base.call(url, method, params);
+      },
+    };
+
+    const dir = await mkdtemp(join(tmpdir(), "cemp-sync-poison-"));
+    tempDirs.push(dir);
+    const path = join(dir, "sync.sqlite");
+
+    // Sync 1: no cell yet (device unlocked before the reply was published).
+    const first = await makeStack({ db: new NodeSqliteAdapter({ path }), transport: realisticIndexer });
+    expect(await first.engine.runWorker("incoming-discovery")).toBe("success");
+    await first.db.close();
+
+    // The reply now waits on-chain, addressed to this profile.
+    waiting = [discoveryCellJson("waiting after an empty sync").json];
+
+    const second = await makeStack({ db: new NodeSqliteAdapter({ path }), transport: realisticIndexer });
+    try {
+      expect(await second.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await second.messages.listByState(["received"])).toHaveLength(1);
+    } finally {
+      await second.db.close();
+    }
+  });
+
+  it("heals a cursor already poisoned with a terminal '0x' on-device", async () => {
+    // Recovery path for devices that already persisted "0x" before the fix: a
+    // stored terminal cursor must be treated as a fresh scan, not replayed as
+    // `after` (which the indexer answers with nothing, forever).
+    const base = makeTransport([]);
+    const waiting = [discoveryCellJson("recovered after poison").json];
+    const transport: JsonRpcTransport = {
+      call(url, method, params) {
+        if (method === "get_cells") {
+          if (params[3] !== undefined) return Promise.resolve({ objects: [], last_cursor: "0x" });
+          return Promise.resolve({ objects: waiting, last_cursor: "0x64" });
+        }
+        return base.call(url, method, params);
+      },
+    };
+    const stack = await makeStack({ transport });
+    try {
+      // Pre-poison exactly as the pre-fix worker would have on a first empty sync.
+      const epoch = currentRoutingEpoch();
+      const bobHex = bytesToHex(BOB_PROFILE_ID);
+      await stack.cursors.set(`incoming-discovery:${epoch.toString()}:${bobHex}`, "0x");
+      await stack.cursors.set(`incoming-discovery:${(epoch - 1n).toString()}:${bobHex}`, "0x");
+
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await stack.messages.listByState(["received"])).toHaveLength(1);
     } finally {
       await stack.db.close();
     }
@@ -441,7 +552,11 @@ describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 
       expect(stored[0]!.body).toBe("real message in spam flood");
       expect(stack.notifier.posted).toHaveLength(1);
       const epoch = currentRoutingEpoch();
-      expect(await stack.cursors.get(`incoming-discovery:${epoch.toString()}`)).toBe("0x64");
+      expect(
+        await stack.cursors.get(
+          `incoming-discovery:${epoch.toString()}:${bytesToHex(BOB_PROFILE_ID)}`,
+        ),
+      ).toBe("0x64");
     } finally {
       await stack.db.close();
     }
@@ -505,7 +620,11 @@ describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 
       expect(await withCell.messages.listByState(["received"])).toHaveLength(0);
       expect(withCell.notifier.posted).toHaveLength(0);
       const epoch = currentRoutingEpoch();
-      expect(await withCell.cursors.get(`incoming-discovery:${epoch.toString()}`)).toBe("0x64");
+      expect(
+        await withCell.cursors.get(
+          `incoming-discovery:${epoch.toString()}:${bytesToHex(BOB_PROFILE_ID)}`,
+        ),
+      ).toBe("0x64");
     } finally {
       await stack.db.close();
     }

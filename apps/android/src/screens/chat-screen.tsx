@@ -16,6 +16,7 @@ import {
   View,
 } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { Contact, Message } from "@cemp/database";
 import { ChatComposerViewModel, messageBubbleState, type BubbleStatus } from "@cemp/ui";
 import { useAppContainer, type RootStackParamList } from "../navigation";
@@ -39,6 +40,10 @@ type Props = NativeStackScreenProps<RootStackParamList, "Chat">;
 export function ChatScreen({ route }: Props): React.JSX.Element {
   const { conversationId } = route.params;
   const container = useAppContainer();
+  // Keep the composer + byte-count clear of the Android system navigation bar
+  // (gesture pill / 3-button bar). Insets come from the SafeAreaProviderCompat
+  // that the native-stack navigator mounts above every screen.
+  const insets = useSafeAreaInsets();
   const [messages, setMessages] = useState<Message[]>([]);
   const [composer] = useState(
     () => new ChatComposerViewModel(container.repositories.messages, conversationId),
@@ -114,7 +119,7 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
 
   return (
     <KeyboardAvoidingView
-      style={styles.flex}
+      style={[styles.flex, { paddingBottom: insets.bottom }]}
       behavior={Platform.OS === "android" ? undefined : "padding"}
     >
       <FlatList

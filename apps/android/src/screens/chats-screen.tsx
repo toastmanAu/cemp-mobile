@@ -5,7 +5,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import { useNavigation } from "@react-navigation/native";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { ConversationListViewModel } from "@cemp/ui";
 import type { ConversationListItem } from "@cemp/database";
@@ -16,6 +16,7 @@ export function ChatsScreen(): React.JSX.Element {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [vm] = useState(() => new ConversationListViewModel(container.repositories.conversations));
   const [items, setItems] = useState<readonly ConversationListItem[]>([]);
+  const [syncStatus, setSyncStatus] = useState("");
 
   useEffect(() => {
     const unsubscribe = vm.subscribe(() => {
@@ -27,50 +28,80 @@ export function ChatsScreen(): React.JSX.Element {
 
   const onRefresh = useCallback(() => void vm.refresh(), [vm]);
 
+  // Foreground sync on tab focus (discovery, receipts, watches, balances).
+  // Failures stay quiet here — the workers retry with backoff (rule 5).
+  useFocusEffect(
+    useCallback(() => {
+      if (!container.hasMessaging) return;
+      setSyncStatus("syncing…");
+      void container.messaging
+        .syncNow()
+        .then((results) => {
+          const failed = Object.entries(results)
+            .filter(([, r]) => r !== "success")
+            .map(([id, r]) => `${id}:${r}`);
+          setSyncStatus(
+            failed.length === 0
+              ? `synced ${new Date().toLocaleTimeString()}`
+              : `failed: ${failed.join(", ")}`,
+          );
+        })
+        .catch((e: unknown) =>
+          setSyncStatus(`sync error: ${e instanceof Error ? e.message : String(e)}`),
+        )
+        .finally(() => void vm.refresh());
+    }, [container, vm]),
+  );
+
   return (
-    <FlatList
-      data={items as ConversationListItem[]}
-      keyExtractor={(item) => String(item.id)}
-      refreshing={vm.loading}
-      onRefresh={onRefresh}
-      ListEmptyComponent={
-        <View style={styles.empty}>
-          <Text>No conversations yet. Add a contact to start.</Text>
-        </View>
-      }
-      renderItem={({ item }) => (
-        <TouchableOpacity
-          style={styles.row}
-          onPress={() => {
-            navigation.navigate("Chat", {
-              conversationId: item.id,
-              title: item.contactDisplayName,
-            });
-          }}
-        >
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>
-              {item.contactDisplayName.slice(0, 1).toUpperCase()}
-            </Text>
+    <View style={styles.screen}>
+      {syncStatus !== "" ? <Text style={styles.syncStatus}>{syncStatus}</Text> : null}
+      <FlatList
+        data={items as ConversationListItem[]}
+        keyExtractor={(item) => String(item.id)}
+        refreshing={vm.loading}
+        onRefresh={onRefresh}
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Text>No conversations yet. Add a contact to start.</Text>
           </View>
-          <View style={styles.rowBody}>
-            <Text style={styles.name}>{item.contactDisplayName}</Text>
-            <Text numberOfLines={1} style={styles.preview}>
-              {item.lastMessageBody ?? ""}
-            </Text>
-          </View>
-          {item.unreadCount > 0 ? (
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>{item.unreadCount}</Text>
+        }
+        renderItem={({ item }) => (
+          <TouchableOpacity
+            style={styles.row}
+            onPress={() => {
+              navigation.navigate("Chat", {
+                conversationId: item.id,
+                title: item.contactDisplayName,
+              });
+            }}
+          >
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>
+                {item.contactDisplayName.slice(0, 1).toUpperCase()}
+              </Text>
             </View>
-          ) : null}
-        </TouchableOpacity>
-      )}
-    />
+            <View style={styles.rowBody}>
+              <Text style={styles.name}>{item.contactDisplayName}</Text>
+              <Text numberOfLines={1} style={styles.preview}>
+                {item.lastMessageBody ?? ""}
+              </Text>
+            </View>
+            {item.unreadCount > 0 ? (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{item.unreadCount}</Text>
+              </View>
+            ) : null}
+          </TouchableOpacity>
+        )}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: { flex: 1 },
+  syncStatus: { fontSize: 11, color: "#666", paddingHorizontal: 12, paddingTop: 4 },
   empty: { padding: 32, alignItems: "center" },
   row: { flexDirection: "row", alignItems: "center", padding: 12, gap: 12 },
   avatar: {

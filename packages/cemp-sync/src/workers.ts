@@ -121,11 +121,24 @@ export function buildWorkerSpecs(deps: SyncWorkerDeps): WorkerSpec[] {
 async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
   const now = Date.now();
   const epoch = currentRoutingEpoch(now);
+  // The cursor is keyed by epoch AND profile id: a scan run before the
+  // profile existed (or before a rotation) must not advance the position a
+  // later same-epoch scan for the real profile resumes from — indexer
+  // cursors are global ordering positions, so a cross-profile resume would
+  // silently skip cells (found via on-device P2P testing).
+  const ownProfileIdHex = bytesToHex(deps.ownProfileId);
   // Watch the current and previous epoch's route tags (protocol §2 grace).
   for (const tagEpoch of [epoch, epoch - 1n]) {
     const routeTag = deriveRouteTag(deps.ownProfileId, tagEpoch);
-    const cursorName = `incoming-discovery:${tagEpoch.toString()}`;
+    const cursorName = `incoming-discovery:${tagEpoch.toString()}:${ownProfileIdHex}`;
     let cursor = (await deps.cursors.get(cursorName)) ?? undefined;
+    // A persisted terminal cursor ("0x" from an exhausted scan) must be treated
+    // as "start fresh": reusing it as `after` makes the indexer return nothing
+    // forever. This also heals cursors already poisoned on-device by the earlier
+    // persist-on-empty bug.
+    if (cursor === "0x" || cursor === "") {
+      cursor = undefined;
+    }
     for (;;) {
       const page = await findMessageCells(deps.client, deps.messageType, routeTag, cursor);
       for (const cell of page.cells) {
@@ -147,11 +160,17 @@ async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
           await deps.leases.release(leaseKey, deps.engineId);
         }
       }
-      cursor = page.lastCursor;
-      await deps.cursors.set(cursorName, cursor);
       if (page.cells.length === 0) {
+        // Reached the end of the scan. Do NOT persist the cursor here: an
+        // exhausted scan returns a terminal/empty ("0x") cursor, and reusing
+        // that as `after` makes the indexer return nothing even once new cells
+        // arrive — permanently poisoning discovery. Only positions from a
+        // non-empty page are safe to resume from (found via on-device P2P
+        // testing; the first pre-message sync was silently poisoning the rest).
         break;
       }
+      cursor = page.lastCursor;
+      await deps.cursors.set(cursorName, cursor);
     }
   }
 }

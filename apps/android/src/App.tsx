@@ -88,21 +88,28 @@ export function App(): React.JSX.Element {
       ) : containerState === "locked" ? (
         <UnlockScreen />
       ) : (
-        <NavigationContainer>
-          <Stack.Navigator>
-            <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
-            <Stack.Screen
-              name="Chat"
-              component={ChatScreen}
-              options={({ route }) => ({ title: route.params.title })}
-            />
-            <Stack.Screen
-              name="ContactEdit"
-              component={ContactEditScreen}
-              options={{ title: "Edit contact" }}
-            />
-          </Stack.Navigator>
-        </NavigationContainer>
+        <View
+          style={{ flex: 1 }}
+          onTouchStart={() => {
+            container.touch();
+          }}
+        >
+          <NavigationContainer>
+            <Stack.Navigator>
+              <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
+              <Stack.Screen
+                name="Chat"
+                component={ChatScreen}
+                options={({ route }) => ({ title: route.params.title })}
+              />
+              <Stack.Screen
+                name="ContactEdit"
+                component={ContactEditScreen}
+                options={{ title: "Edit contact" }}
+              />
+            </Stack.Navigator>
+          </NavigationContainer>
+        </View>
       )}
     </AppContext.Provider>
   );

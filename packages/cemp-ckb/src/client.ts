@@ -515,19 +515,26 @@ export function fetchJsonRpcTransport(timeoutMs: number): JsonRpcTransport {
   return {
     async call(url, method, params) {
       let response: Response;
+      // AbortController + setTimeout, not AbortSignal.timeout: Hermes (React
+      // Native) lacks the static factory, so stay on the portable primitive.
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        controller.abort();
+      }, timeoutMs);
       try {
         response = await fetch(url, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ jsonrpc: "2.0", id: nextId++, method, params }),
-          // Node >= 18.17; Hermes support is a later-platform concern.
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: controller.signal,
         });
       } catch (err) {
         throw new CempCkbError(
           `${method} ${url}`,
           `request failed: ${err instanceof Error ? err.message : String(err)}`,
         );
+      } finally {
+        clearTimeout(timer);
       }
       if (!response.ok) {
         throw new CempCkbError(`${method} ${url}`, `HTTP ${response.status}`);

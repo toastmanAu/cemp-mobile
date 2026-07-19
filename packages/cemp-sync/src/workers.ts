@@ -103,9 +103,17 @@ function spec(id: WorkerId, requiresNetwork: boolean, run: () => Promise<void>):
 /** All §12 workers, wired to the pipelines. */
 export function buildWorkerSpecs(deps: SyncWorkerDeps): WorkerSpec[] {
   return [
+    // ORDER MATTERS (runAllNow drains in registration order): pending
+    // transactions run FIRST so our own committed messages reach
+    // `available_on_chain` before incoming receipts are applied to them in the
+    // same pass. Discovery consumes an ack cell exactly once — the cursor moves
+    // past it — so a receipt skipped because its message was not yet ack-able
+    // is lost forever (the message could never reach delivered/read).
+    // Discovery then precedes response-sender so auto-acks queued this pass are
+    // published in the same pass.
+    spec("pending-transactions", true, () => runPendingTransactions(deps)),
     spec("incoming-discovery", true, () => runIncomingDiscovery(deps)),
     spec("response-sender", true, () => runResponseSender(deps)),
-    spec("pending-transactions", true, () => runPendingTransactions(deps)),
     spec("watched-outpoints", true, () => deps.lifecycle.pollWatchesOnce().then(() => undefined)),
     spec("reclaim-batch", true, () => runReclaimBatch(deps)),
     spec("balance-refresh", true, () => runBalanceRefresh(deps)),

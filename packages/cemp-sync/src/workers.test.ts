@@ -608,6 +608,45 @@ describe("pending-transactions worker (exit criterion 2)", () => {
       await stack.db.close();
     }
   });
+
+  it("applies a receipt to a message that is still pending when the pass starts", async () => {
+    // runAllNow drains workers in REGISTRATION ORDER. With incoming-discovery
+    // ahead of pending-transactions, a receipt arriving for a not-yet-ackable
+    // (pending) message is skipped by processAcknowledgements AND its cell is
+    // consumed by the discovery cursor — permanently losing the ack, so the
+    // message can never reach delivered/read. Found live on-device.
+    const envId = hexToBytes("ef".repeat(16));
+    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01 }]);
+    const stack = await makeStack({ cells: [json] });
+    try {
+      const contact = await stack.contacts.create({
+        displayName: "peer",
+        profileIdHex: bytesToHex(ALICE_PROFILE_ID),
+      });
+      const conv = await stack.conversations.getOrCreateForContact(contact.id);
+      const mine = await stack.messages.insert({
+        conversationId: conv.id,
+        direction: "outgoing",
+        body: "awaiting ack",
+        logicalMessageId: "lm-order",
+        state: "pending",
+      });
+      await stack.messages.setEnvelopeMessageId(mine.id, bytesToHex(envId));
+      // Its tx already committed (the monitor was interrupted before advancing
+      // the row), so pending-transactions must make it ack-able THIS pass.
+      await stack.outgoingTxs.record({
+        txHash: fillHex(0xcd, 32),
+        purpose: "message:lm-order",
+        state: "committed",
+      });
+
+      await stack.engine.runAllNow();
+
+      expect((await stack.messages.getById(mine.id))?.state).toBe("reclaim_queued");
+    } finally {
+      await stack.db.close();
+    }
+  });
 });
 
 describe("reclaim-batch worker (task 10)", () => {

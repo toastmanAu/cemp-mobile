@@ -460,22 +460,35 @@ export async function runBackgroundSync(deps: BackgroundSyncDeps): Promise<Backg
   }
 
   const current: string[] = [];
+  let answered = false;
   for (const tag of cache.tags) {
     try {
       current.push(...(await deps.listOutpointsForTag(tag)));
+      answered = true;
     } catch {
-      // Transport noise must not wedge the tick; WorkManager retries.
-      return "quiet";
+      // Per-tag isolation: one stale or failing tag must not suppress the
+      // healthy ones. Only tags that answered contribute to `lastSeen`.
+      continue;
     }
+  }
+  if (!answered) {
+    // Nothing was observed, so recording a sighting would wrongly mark every
+    // waiting message as seen. WorkManager retries later.
+    return "quiet";
   }
 
   const unseen = newOutpoints(cache.lastSeen, current);
-  await deps.writeTagCache({ tags: cache.tags, lastSeen: current });
-  if (unseen.length === 0) {
-    return "quiet";
+  if (unseen.length > 0) {
+    try {
+      // Notify BEFORE recording the sighting: if the notification fails, the
+      // next tick must see these outpoints as new again rather than lose them.
+      await deps.notify(unseen.length);
+    } catch {
+      return "quiet";
+    }
   }
-  await deps.notify(unseen.length);
-  return "notified";
+  await deps.writeTagCache({ tags: cache.tags, lastSeen: current });
+  return unseen.length > 0 ? "notified" : "quiet";
 }
 ```
 

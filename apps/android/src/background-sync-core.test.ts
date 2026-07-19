@@ -83,12 +83,20 @@ describe("background sync branch", () => {
   });
 
   it("records nothing when the notification fails", async () => {
+    const notifyAttempts: number[] = [];
     const { deps, notified, written } = makeDeps({
       readTagCache: () => Promise.resolve({ tags: ["aa"], lastSeen: [] }),
       listOutpointsForTag: () => Promise.resolve(["x:0"]),
-      notify: () => Promise.reject(new Error("notification channel down")),
+      notify: (count) => {
+        // Record the attempt BEFORE rejecting, so the assertion below proves
+        // notify was actually invoked rather than being trivially true
+        // because the overridden notify never runs.
+        notifyAttempts.push(count);
+        return Promise.reject(new Error("notification channel down"));
+      },
     });
     expect(await runBackgroundSync(deps)).toBe("quiet");
+    expect(notifyAttempts).toEqual([1]);
     expect(notified).toEqual([]);
     expect(written).toEqual([]);
   });
@@ -112,5 +120,35 @@ describe("background sync branch", () => {
     expect(await runBackgroundSync(deps)).toBe("quiet");
     expect(notified).toEqual([]);
     expect(written).toEqual([]);
+  });
+
+  it("carries a failing tag's earlier outpoints forward instead of dropping them", async () => {
+    // Tag "bb" answered on an earlier tick and its outpoint "b:0" is already
+    // in lastSeen. This tick "bb" transiently fails while "aa" succeeds with
+    // a genuinely new outpoint. The write must NOT drop "b:0" — otherwise
+    // "bb" reporting the same still-unspent outpoint on a later tick would
+    // look new again and fire a spurious duplicate notification.
+    const { deps, notified, written } = makeDeps({
+      readTagCache: () => Promise.resolve({ tags: ["aa", "bb"], lastSeen: ["b:0"] }),
+      listOutpointsForTag: (tag) =>
+        tag === "aa" ? Promise.resolve(["a:0"]) : Promise.reject(new Error("rpc down")),
+    });
+    expect(await runBackgroundSync(deps)).toBe("notified");
+    expect(notified).toEqual([1]); // only "a:0" is new
+    expect(written).toEqual([{ tags: ["aa", "bb"], lastSeen: ["b:0", "a:0"] }]);
+  });
+
+  it("still records the sighting when every tag answers but none report anything", async () => {
+    // Distinct from "no tag answers": here every tag succeeds, they just
+    // have nothing to report. This is the answered === tags.length path, so
+    // the cache write still happens (with an empty lastSeen), unlike the
+    // all-failed case which skips the write entirely.
+    const { deps, notified, written } = makeDeps({
+      readTagCache: () => Promise.resolve({ tags: ["aa", "bb"], lastSeen: [] }),
+      listOutpointsForTag: () => Promise.resolve([]),
+    });
+    expect(await runBackgroundSync(deps)).toBe("quiet");
+    expect(notified).toEqual([]);
+    expect(written).toEqual([{ tags: ["aa", "bb"], lastSeen: [] }]);
   });
 });

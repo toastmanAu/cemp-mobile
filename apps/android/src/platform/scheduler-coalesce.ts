@@ -36,3 +36,33 @@ export function coalesce(specs: readonly PeriodicSpec[]): CoalescedTick | undefi
     requiresNetwork: specs.some((spec) => spec.requiresNetwork),
   };
 }
+
+/**
+ * Bookkeeping for the specs behind a coalesced tick: which worker asked for
+ * what, so the tick can be recomputed as workers come and go.
+ *
+ * This lived inline in `WorkManagerScheduler` (apps/android/src/platform,
+ * react-native import) where it could never run under vitest, even though
+ * it has no dependency on React Native itself. Pulled out here so the
+ * insert/delete/recompute logic is exercised directly; the RN adapter
+ * becomes a thin pass-through that just forwards the result to the native
+ * module.
+ */
+export class SpecRegistry {
+  readonly #specs = new Map<string, PeriodicSpec>();
+
+  /** Registers or replaces `spec`, returning the tick to schedule now. */
+  add(spec: PeriodicSpec): CoalescedTick | undefined {
+    this.#specs.set(spec.id, spec);
+    return coalesce([...this.#specs.values()]);
+  }
+
+  /**
+   * Removes `id`, returning the tick to schedule now (or `undefined` if
+   * nothing remains). Removing an id that was never added is a no-op.
+   */
+  remove(id: string): CoalescedTick | undefined {
+    this.#specs.delete(id);
+    return coalesce([...this.#specs.values()]);
+  }
+}

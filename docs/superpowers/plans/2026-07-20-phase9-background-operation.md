@@ -193,7 +193,7 @@ Collapses the engine's per-worker periodic requests into one WorkManager tick (d
 **Interfaces:**
 
 - Consumes: nothing.
-- Produces: `WORKMANAGER_MIN_INTERVAL_MS` (number), `interface PeriodicSpec { readonly id: string; readonly intervalMs: number; readonly requiresNetwork: boolean }`, `interface CoalescedTick { readonly intervalMs: number; readonly requiresNetwork: boolean }`, `coalesce(specs: readonly PeriodicSpec[]): CoalescedTick | undefined`.
+- Produces: `WORKMANAGER_MIN_INTERVAL_MS` (number), `interface PeriodicSpec { readonly id: string; readonly intervalMs: number; readonly requiresNetwork: boolean }`, `interface CoalescedTick { readonly intervalMs: number; readonly requiresNetwork: boolean }`, `coalesce(specs: readonly PeriodicSpec[]): CoalescedTick | undefined`, `class SpecRegistry` with `add(spec: PeriodicSpec): CoalescedTick | undefined` and `remove(id: string): CoalescedTick | undefined` (Task 4's stateful bookkeeping, kept here so it stays vitest-testable).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -513,7 +513,7 @@ git commit -m "feat(android): background sync branch — full engine unlocked, n
 
 ### Task 4: Native WorkManager scheduler
 
-Kotlin adapter plus the TypeScript `Scheduler` implementation. Not unit-tested (React Native + Android APIs); verified in Task 8.
+Kotlin adapter plus the TypeScript `Scheduler` implementation. The adapter itself is not unit-tested (React Native + Android APIs; verified on-device in Task 8) — its bookkeeping (which specs are registered, what tick they coalesce to) lives in `SpecRegistry` (Task 2) instead, precisely so that part runs under vitest.
 
 **Files:**
 
@@ -525,8 +525,8 @@ Kotlin adapter plus the TypeScript `Scheduler` implementation. Not unit-tested (
 
 **Interfaces:**
 
-- Consumes: `coalesce`, `PeriodicSpec`, `WORKMANAGER_MIN_INTERVAL_MS` from Task 2.
-- Produces: `class WorkManagerScheduler implements Scheduler` (from `@cemp/sync`), native module name `"CempScheduler"` with `schedulePeriodic(intervalMs: number, requiresNetwork: boolean): Promise<void>`, `scheduleOneShot(id: string, delayMs: number): Promise<void>`, `cancel(id: string): Promise<void>`.
+- Consumes: `SpecRegistry`, `coalesce`, `PeriodicSpec`, `WORKMANAGER_MIN_INTERVAL_MS` from Task 2. `SpecRegistry` owns the insert/delete/recompute bookkeeping (`add`/`remove`, each returning the coalesced tick to schedule or `undefined`) so that logic runs under vitest instead of sitting behind the `react-native` import; `work-manager-scheduler.ts` is a thin pass-through over it.
+- Produces: `class WorkManagerScheduler implements Scheduler` (from `@cemp/sync`), native module name `"CempScheduler"` with `schedulePeriodic(intervalMs: number, requiresNetwork: boolean): Promise<void>`, `scheduleOneShot(id: string, delayMs: number): Promise<void>`, `cancel(id: string): Promise<void>`. The native module is looked up lazily per call (matching the `native-kdf.ts` convention), not cached at module scope, so a call before the native package is registered throws a clear "not linked" error instead of an opaque `Cannot read properties of undefined`.
 
 - [ ] **Step 1: Add the WorkManager dependency**
 
@@ -695,7 +695,7 @@ Create `apps/android/src/platform/work-manager-scheduler.ts`:
 
 import { NativeModules } from "react-native";
 import type { Scheduler } from "@cemp/sync";
-import { coalesce, type PeriodicSpec } from "./scheduler-coalesce";
+import { SpecRegistry } from "./scheduler-coalesce";
 
 interface CempSchedulerNativeModule {
   schedulePeriodic(intervalMs: number, requiresNetwork: boolean): Promise<void>;
@@ -703,27 +703,43 @@ interface CempSchedulerNativeModule {
   cancel(id: string): Promise<void>;
 }
 
-const native = NativeModules.CempScheduler as CempSchedulerNativeModule;
-
 export class WorkManagerScheduler implements Scheduler {
-  readonly #specs = new Map<string, PeriodicSpec>();
+  readonly #registry = new SpecRegistry();
+
+  #module(): CempSchedulerNativeModule {
+    const module = NativeModules.CempScheduler as CempSchedulerNativeModule | undefined;
+    if (module === undefined) {
+      throw new Error("WorkManagerScheduler: the CempScheduler native module is not linked");
+    }
+    return module;
+  }
 
   schedulePeriodic(spec: { id: string; intervalMs: number; requiresNetwork: boolean }): void {
-    this.#specs.set(spec.id, spec);
-    const tick = coalesce([...this.#specs.values()]);
+    const tick = this.#registry.add(spec);
     if (tick === undefined) {
       return;
     }
-    void native.schedulePeriodic(tick.intervalMs, tick.requiresNetwork);
+    void this.#module().schedulePeriodic(tick.intervalMs, tick.requiresNetwork);
   }
 
   scheduleOneShot(id: string, delayMs: number): void {
-    void native.scheduleOneShot(id, delayMs);
+    void this.#module().scheduleOneShot(id, delayMs);
   }
 
+  /**
+   * The periodic tick is always enqueued under the fixed WorkManager name
+   * "cemp-sync-tick" (CempSchedulerModule.kt), never a per-worker id — the
+   * TypeScript side coalesces every worker into that one request, so there
+   * is no periodic work individually addressable by id. The sync engine
+   * (packages/cemp-sync/src/engine.ts runWorker) only ever calls `cancel`
+   * with a one-shot `:retry` id, which this reaches unmodified; if anything
+   * ever called `cancel(workerId)` expecting to pull that worker out of the
+   * periodic tick, it would silently no-op against the native side (though
+   * the registry lookup below still drops it from future coalescing).
+   */
   cancel(id: string): void {
-    this.#specs.delete(id);
-    void native.cancel(id);
+    this.#registry.remove(id);
+    void this.#module().cancel(id);
   }
 }
 ```
@@ -1408,6 +1424,6 @@ git commit -m "docs(android): record Phase 9 on-device background verification"
 
 **Spec coverage.** D1 notify-only → Task 3. D2 keystore-wrapped tags, never the profile id → Tasks 1, 7. D3 all logic in TypeScript → Tasks 3, 4 (Kotlin holds no protocol logic). D4 coalescing → Tasks 2, 4. Components → Tasks 4–7. Data flow → Tasks 3, 7. Failure modes: permission Task 5, `lastSeen` bounded by overwrite Task 3, stable notification id Tasks 3/5, RPC failure Task 3, epoch rollover Task 7 (`routeTagsHex` caches next epoch). Testing → Tasks 1–3 unit, Task 8 on-device. Exit criteria → Task 8.
 
-**Type consistency.** `TagCache` (Task 1) is consumed unchanged by Tasks 3 and 7. `PeriodicSpec`/`coalesce` (Task 2) are consumed by Task 4. `BackgroundSyncDeps` (Task 3) is satisfied field-for-field by Task 7's `backgroundSyncTask`. Native module names `CempScheduler`/`CempNotifier` match `getName()` in Kotlin and `NativeModules.*` in TypeScript. `routeTagsHex` is defined in Task 7 Step 2 and `outpointsForTag` in Step 2b; both are used in Step 3. The locked probe deliberately does NOT depend on AppContainer or MessagingService, because neither exists on a cold start.
+**Type consistency.** `TagCache` (Task 1) is consumed unchanged by Tasks 3 and 7. `PeriodicSpec`/`coalesce`/`SpecRegistry` (Task 2) are consumed by Task 4. `BackgroundSyncDeps` (Task 3) is satisfied field-for-field by Task 7's `backgroundSyncTask`. Native module names `CempScheduler`/`CempNotifier` match `getName()` in Kotlin and `NativeModules.*` in TypeScript. `routeTagsHex` is defined in Task 7 Step 2 and `outpointsForTag` in Step 2b; both are used in Step 3. The locked probe deliberately does NOT depend on AppContainer or MessagingService, because neither exists on a cold start.
 
 **Known follow-ups (deliberately out of scope):** honouring `receipt_request: 0`, and a configurable auto-lock interval.

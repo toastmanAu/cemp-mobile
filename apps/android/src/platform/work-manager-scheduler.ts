@@ -9,7 +9,7 @@
 
 import { NativeModules } from "react-native";
 import type { Scheduler } from "@cemp/sync";
-import { coalesce, type PeriodicSpec } from "./scheduler-coalesce";
+import { SpecRegistry } from "./scheduler-coalesce";
 
 interface CempSchedulerNativeModule {
   schedulePeriodic(intervalMs: number, requiresNetwork: boolean): Promise<void>;
@@ -17,26 +17,42 @@ interface CempSchedulerNativeModule {
   cancel(id: string): Promise<void>;
 }
 
-const native = NativeModules.CempScheduler as CempSchedulerNativeModule;
-
 export class WorkManagerScheduler implements Scheduler {
-  readonly #specs = new Map<string, PeriodicSpec>();
+  readonly #registry = new SpecRegistry();
+
+  #module(): CempSchedulerNativeModule {
+    const module = NativeModules.CempScheduler as CempSchedulerNativeModule | undefined;
+    if (module === undefined) {
+      throw new Error("WorkManagerScheduler: the CempScheduler native module is not linked");
+    }
+    return module;
+  }
 
   schedulePeriodic(spec: { id: string; intervalMs: number; requiresNetwork: boolean }): void {
-    this.#specs.set(spec.id, spec);
-    const tick = coalesce([...this.#specs.values()]);
+    const tick = this.#registry.add(spec);
     if (tick === undefined) {
       return;
     }
-    void native.schedulePeriodic(tick.intervalMs, tick.requiresNetwork);
+    void this.#module().schedulePeriodic(tick.intervalMs, tick.requiresNetwork);
   }
 
   scheduleOneShot(id: string, delayMs: number): void {
-    void native.scheduleOneShot(id, delayMs);
+    void this.#module().scheduleOneShot(id, delayMs);
   }
 
+  /**
+   * The periodic tick is always enqueued under the fixed WorkManager name
+   * "cemp-sync-tick" (CempSchedulerModule.kt), never a per-worker id — the
+   * TypeScript side coalesces every worker into that one request, so there
+   * is no periodic work individually addressable by id. The sync engine
+   * (packages/cemp-sync/src/engine.ts runWorker) only ever calls `cancel`
+   * with a one-shot `:retry` id, which this reaches unmodified; if anything
+   * ever called `cancel(workerId)` expecting to pull that worker out of the
+   * periodic tick, it would silently no-op against the native side (though
+   * the registry lookup below still drops it from future coalescing).
+   */
   cancel(id: string): void {
-    this.#specs.delete(id);
-    void native.cancel(id);
+    this.#registry.remove(id);
+    void this.#module().cancel(id);
   }
 }

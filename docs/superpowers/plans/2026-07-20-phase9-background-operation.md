@@ -33,6 +33,8 @@
 - `apps/android/src/platform/scheduler-coalesce.test.ts`
 - `apps/android/src/background-sync-core.ts` — locked/unlocked branch, fully injected
 - `apps/android/src/background-sync-core.test.ts`
+- `apps/android/src/platform/locked-probe.ts` — chain query for one route tag, no vault required
+- `apps/android/src/platform/locked-probe.test.ts`
 
 **Create (RN/native adapters, verified on-device):**
 
@@ -959,7 +961,7 @@ Joins everything: the cache adapter, the headless task, and installing the real 
 **Interfaces:**
 
 - Consumes: `encodeTagCache`/`decodeTagCache`/`TagCache` (Task 1), `runBackgroundSync`/`BackgroundSyncDeps` (Task 3), `WorkManagerScheduler` (Task 4), `AndroidNotifier`/`requestNotificationPermission` (Task 5).
-- Produces: `class RouteTagCache { read(): Promise<TagCache | undefined>; write(cache: TagCache): Promise<void> }`, `MessagingService.routeTagsHex(): Promise<string[]>`, `MessagingService.outpointsForTagHex(tagHex: string): Promise<string[]>`.
+- Produces: `class RouteTagCache { read(): Promise<TagCache | undefined>; write(cache: TagCache): Promise<void>; writeTags(tags: readonly string[]): Promise<void> }`, `MessagingService.routeTagsHex(): Promise<string[]>`, `outpointsForTag(tagHex: string, transport?: JsonRpcTransport): Promise<string[]>` from `./platform/locked-probe`.
 
 - [ ] **Step 1: Create the cache adapter**
 
@@ -1017,6 +1019,16 @@ export class RouteTagCache {
     const blob = await this.#keystore.wrap(encodeTagCache(cache));
     await AsyncStorage.setItem(BLOB_KEY, bytesToHex(blob));
   }
+
+  /**
+   * Replace the tags while preserving `lastSeen`. Both refresh sites (unlock
+   * and the unlocked tick) need exactly this, so it lives here rather than
+   * being duplicated at each call site.
+   */
+  async writeTags(tags: readonly string[]): Promise<void> {
+    const existing = await this.read();
+    await this.write({ tags, lastSeen: existing?.lastSeen ?? [] });
+  }
 }
 ```
 
@@ -1026,7 +1038,6 @@ In `apps/android/src/messaging.ts`, add these imports to the existing `@cemp/ckb
 
 ```ts
   currentRoutingEpoch,
-  findMessageCells,
 ```
 
 add `deriveRouteTag` to the existing `@cemp/core` import block, and add these two methods to `MessagingService` (next to `syncNow`):
@@ -1049,20 +1060,104 @@ add `deriveRouteTag` to the existing `@cemp/core` import block, and add these tw
     );
   }
 
-  /** Outpoints (`txHash:index`) on-chain for one hex route tag. */
-  async outpointsForTagHex(tagHex: string): Promise<string[]> {
-    const cempType = CKB_TESTNET.deployments.cempMessageType;
-    if (cempType === null) {
-      return [];
-    }
-    const page = await findMessageCells(
-      this.#client,
-      { codeHash: cempType.codeHash, hashType: cempType.hashType },
-      bytesFrom(`0x${tagHex}`),
-    );
-    return page.cells.map((cell) => `${cell.outPoint.txHash}:${String(cell.outPoint.index)}`);
-  }
 ```
+
+Only `currentRoutingEpoch` and `deriveRouteTag` are needed here; the chain query
+lives in Task 7 Step 2b because it must run WITHOUT a vault.
+
+- [ ] **Step 2b: Create the locked probe (with test)**
+
+The probe must work on a cold start, when no `AppContainer` exists and
+`MessagingService` cannot be constructed (building it derives identity keys,
+which needs an unlocked vault). It therefore builds its own client: a transport
+plus endpoints, no keys. This module imports no React Native, so it is
+unit-tested.
+
+Create `apps/android/src/platform/locked-probe.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import type { JsonRpcTransport } from "@cemp/ckb";
+import { outpointsForTag } from "./locked-probe";
+
+describe("locked probe", () => {
+  it("returns txHash:index for every cell at the tag", async () => {
+    const transport: JsonRpcTransport = {
+      call: (_url, method) =>
+        method === "get_cells"
+          ? Promise.resolve({
+              objects: [
+                {
+                  out_point: { tx_hash: `0x${"ab".repeat(32)}`, index: "0x0" },
+                  output: {},
+                  output_data: "0x",
+                },
+              ],
+              last_cursor: "0x",
+            })
+          : Promise.reject(new Error(`unexpected ${method}`)),
+    };
+    const found = await outpointsForTag("cd".repeat(32), transport);
+    expect(found).toEqual([`0x${"ab".repeat(32)}:0`]);
+  });
+
+  it("returns nothing when the tag has no cells", async () => {
+    const transport: JsonRpcTransport = {
+      call: () => Promise.resolve({ objects: [], last_cursor: "0x" }),
+    };
+    expect(await outpointsForTag("cd".repeat(32), transport)).toEqual([]);
+  });
+});
+```
+
+Run: `npx vitest run apps/android/src/platform/locked-probe.test.ts`
+Expected: FAIL — cannot resolve `./locked-probe`.
+
+Create `apps/android/src/platform/locked-probe.ts`:
+
+```ts
+/**
+ * Chain query for the locked-mode probe (Phase 9 design D1).
+ *
+ * Deliberately standalone: on a cold start there is no AppContainer, and
+ * MessagingService cannot be built because constructing it derives identity
+ * keys from an unlocked vault. A route-tag lookup needs neither — only a
+ * transport and the pinned testnet endpoints — so this module builds its own
+ * client and never touches the vault or the database.
+ */
+
+import {
+  CempClient,
+  fetchJsonRpcTransport,
+  findMessageCells,
+  type JsonRpcTransport,
+} from "@cemp/ckb";
+import { CKB_TESTNET } from "@cemp/core";
+import { bytesFrom } from "@ckb-ccc/core";
+
+const RPC_TIMEOUT_MS = 15_000;
+
+/** Outpoints (`txHash:index`) currently on-chain for one hex route tag. */
+export async function outpointsForTag(
+  tagHex: string,
+  transport: JsonRpcTransport = fetchJsonRpcTransport(RPC_TIMEOUT_MS),
+): Promise<string[]> {
+  const cempType = CKB_TESTNET.deployments.cempMessageType;
+  if (cempType === null) {
+    return [];
+  }
+  const client = new CempClient({ transport, endpoints: CKB_TESTNET.endpoints[0]! });
+  const page = await findMessageCells(
+    client,
+    { codeHash: cempType.codeHash, hashType: cempType.hashType },
+    bytesFrom(`0x${tagHex}`),
+  );
+  return page.cells.map((cell) => `${cell.outPoint.txHash}:${String(cell.outPoint.index)}`);
+}
+```
+
+Run: `npx vitest run apps/android/src/platform/locked-probe.test.ts`
+Expected: PASS, 2 tests.
 
 - [ ] **Step 3: Create the headless entry**
 
@@ -1080,6 +1175,7 @@ import { AppContainer } from "./app-container";
 import { runBackgroundSync } from "./background-sync-core";
 import { AndroidNotifier } from "./platform/android-notifier";
 import { AndroidKeychainKeyStore } from "./platform/android-keystore";
+import { outpointsForTag } from "./platform/locked-probe";
 import { RouteTagCache } from "./platform/route-tag-cache";
 
 export async function backgroundSyncTask(): Promise<void> {
@@ -1098,18 +1194,13 @@ export async function backgroundSyncTask(): Promise<void> {
       if (container?.hasMessaging !== true) {
         return;
       }
-      const tags = await container.messaging.routeTagsHex();
-      const existing = await cache.read();
-      await cache.write({ tags, lastSeen: existing?.lastSeen ?? [] });
+      await cache.writeTags(await container.messaging.routeTagsHex());
     },
     readTagCache: () => cache.read(),
     writeTagCache: (next) => cache.write(next),
-    listOutpointsForTag: async (tagHex) => {
-      if (container?.hasMessaging !== true) {
-        return [];
-      }
-      return await container.messaging.outpointsForTagHex(tagHex);
-    },
+    // Standalone by design: on a cold start there is no container, so this
+    // must not depend on one (see Step 2b).
+    listOutpointsForTag: (tagHex) => outpointsForTag(tagHex),
     notify: async (count) => {
       await notifier.post({
         id: "locked-inbox",
@@ -1178,9 +1269,7 @@ import { RouteTagCache } from "./platform/route-tag-cache";
     }
     try {
       const cache = new RouteTagCache(new AndroidKeychainKeyStore());
-      const tags = await this.#messaging.routeTagsHex();
-      const existing = await cache.read();
-      await cache.write({ tags, lastSeen: existing?.lastSeen ?? [] });
+      await cache.writeTags(await this.#messaging.routeTagsHex());
     } catch {
       // A cache miss only costs locked-mode notifications; never fail unlock.
     }
@@ -1301,6 +1390,6 @@ git commit -m "docs(android): record Phase 9 on-device background verification"
 
 **Spec coverage.** D1 notify-only → Task 3. D2 keystore-wrapped tags, never the profile id → Tasks 1, 7. D3 all logic in TypeScript → Tasks 3, 4 (Kotlin holds no protocol logic). D4 coalescing → Tasks 2, 4. Components → Tasks 4–7. Data flow → Tasks 3, 7. Failure modes: permission Task 5, `lastSeen` bounded by overwrite Task 3, stable notification id Tasks 3/5, RPC failure Task 3, epoch rollover Task 7 (`routeTagsHex` caches next epoch). Testing → Tasks 1–3 unit, Task 8 on-device. Exit criteria → Task 8.
 
-**Type consistency.** `TagCache` (Task 1) is consumed unchanged by Tasks 3 and 7. `PeriodicSpec`/`coalesce` (Task 2) are consumed by Task 4. `BackgroundSyncDeps` (Task 3) is satisfied field-for-field by Task 7's `backgroundSyncTask`. Native module names `CempScheduler`/`CempNotifier` match `getName()` in Kotlin and `NativeModules.*` in TypeScript. `routeTagsHex`/`outpointsForTagHex` are defined in Task 7 Step 2 and used in Task 7 Step 3.
+**Type consistency.** `TagCache` (Task 1) is consumed unchanged by Tasks 3 and 7. `PeriodicSpec`/`coalesce` (Task 2) are consumed by Task 4. `BackgroundSyncDeps` (Task 3) is satisfied field-for-field by Task 7's `backgroundSyncTask`. Native module names `CempScheduler`/`CempNotifier` match `getName()` in Kotlin and `NativeModules.*` in TypeScript. `routeTagsHex` is defined in Task 7 Step 2 and `outpointsForTag` in Step 2b; both are used in Step 3. The locked probe deliberately does NOT depend on AppContainer or MessagingService, because neither exists on a cold start.
 
 **Known follow-ups (deliberately out of scope):** honouring `receipt_request: 0`, and a configurable auto-lock interval.

@@ -131,14 +131,16 @@ export class MessageRepository {
     options: { beforeId?: number; limit?: number } = {},
   ): Promise<Message[]> {
     const limit = options.limit ?? 50;
+    // Receipt-only acknowledgement rows (logical id `response:%`, ADR 0005) are
+    // internal — never shown as chat bubbles.
     const rows =
       options.beforeId === undefined
         ? await this.#db.all(
-            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM messages WHERE conversation_id = ? AND logical_message_id NOT LIKE 'response:%' ORDER BY id DESC LIMIT ?",
             [conversationId, limit],
           )
         : await this.#db.all(
-            "SELECT * FROM messages WHERE conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+            "SELECT * FROM messages WHERE conversation_id = ? AND id < ? AND logical_message_id NOT LIKE 'response:%' ORDER BY id DESC LIMIT ?",
             [conversationId, options.beforeId, limit],
           );
     return rows.map(rowToMessage);

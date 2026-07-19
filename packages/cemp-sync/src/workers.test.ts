@@ -84,20 +84,11 @@ class RecordingNotifier implements Notifier {
   }
 }
 
-/** A discovered message cell addressed to Bob (alice → bob), indexer JSON. */
-function discoveryCellJson(
-  text: string,
-  messageId?: Uint8Array,
+/** Wrap an assembled envelope as an indexer message-cell JSON (alice → bob). */
+function assembledCellJson(
+  assembled: ReturnType<typeof assembleTextMessage>,
+  outPointByte = 0xd1,
 ): { json: unknown; messageId: Uint8Array } {
-  const assembled = assembleTextMessage({
-    text,
-    senderProfileId: ALICE_PROFILE_ID,
-    recipientProfileId: BOB_PROFILE_ID,
-    recipientKemPublicKey: BOB.mlKem.publicKey,
-    senderDeviceId: hexToBytes("01".repeat(16)),
-    receiptRequest: 0,
-    ...(messageId === undefined ? {} : { messageId }),
-  });
   const typeArgs = new Uint8Array(81);
   typeArgs[0] = 1;
   typeArgs.set(assembled.routeTag, 1);
@@ -111,7 +102,7 @@ function discoveryCellJson(
   return {
     messageId: assembled.messageId,
     json: {
-      out_point: { tx_hash: fillHex(0xd1, 32), index: "0x0" },
+      out_point: { tx_hash: fillHex(outPointByte, 32), index: "0x0" },
       output: {
         capacity: `0x${fixedPointFrom(500).toString(16)}`,
         lock: { code_hash: lock.codeHash, hash_type: "type", args: lock.args },
@@ -125,6 +116,42 @@ function discoveryCellJson(
       block_number: "0x1",
     },
   };
+}
+
+/** A discovered message cell addressed to Bob (alice → bob), indexer JSON. */
+function discoveryCellJson(
+  text: string,
+  messageId?: Uint8Array,
+): { json: unknown; messageId: Uint8Array } {
+  return assembledCellJson(
+    assembleTextMessage({
+      text,
+      senderProfileId: ALICE_PROFILE_ID,
+      recipientProfileId: BOB_PROFILE_ID,
+      recipientKemPublicKey: BOB.mlKem.publicKey,
+      senderDeviceId: hexToBytes("01".repeat(16)),
+      receiptRequest: 0,
+      ...(messageId === undefined ? {} : { messageId }),
+    }),
+  );
+}
+
+/** A receipt-only ack cell (empty body + 0x01 receipts) addressed to Bob. */
+function receiptOnlyCellJson(
+  receipts: readonly { messageId: Uint8Array; status: number }[],
+): { json: unknown; messageId: Uint8Array } {
+  return assembledCellJson(
+    assembleTextMessage({
+      text: "",
+      senderProfileId: ALICE_PROFILE_ID,
+      recipientProfileId: BOB_PROFILE_ID,
+      recipientKemPublicKey: BOB.mlKem.publicKey,
+      senderDeviceId: hexToBytes("01".repeat(16)),
+      receiptRequest: 0,
+      receipts,
+    }),
+    0xd2,
+  );
 }
 
 function makeTransport(cells: unknown[]): JsonRpcTransport {
@@ -417,6 +444,80 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
 
       expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
       expect(await stack.messages.listByState(["received"])).toHaveLength(1);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("auto-acks a received content message with a hidden queued response (ADR 0005)", async () => {
+    const { json, messageId } = discoveryCellJson("ping");
+    const stack = await makeStack({ cells: [json] });
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      // The content message is received and shown.
+      const received = await stack.messages.listByState(["received"]);
+      expect(received).toHaveLength(1);
+      // Exactly one receipt-only response is queued: outgoing, empty body,
+      // logical id response:<original>, with a replyTo chain ref to the cell.
+      const queuedResponses = (await stack.messages.listByState(["queued"])).filter(
+        (m) => m.direction === "outgoing" && m.logicalMessageId.startsWith("response:"),
+      );
+      expect(queuedResponses).toHaveLength(1);
+      const r = queuedResponses[0]!;
+      expect(r.body ?? "").toBe("");
+      expect(r.logicalMessageId).toBe(`response:${incomingLogicalMessageId(messageId)}`);
+      const ref = await stack.messages.getChainRef(r.id);
+      expect(ref?.replyToTxHash).toBe(fillHex(0xd1, 32));
+      expect(ref?.replyToOutpointIndex).toBe(0);
+      // The ack row is never shown as a chat bubble.
+      const shown = await stack.messages.listByConversation(received[0]!.conversationId, {
+        limit: 50,
+      });
+      expect(shown.some((m) => m.logicalMessageId.startsWith("response:"))).toBe(false);
+      // Idempotent: a second discovery does not queue a second response.
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(
+        (await stack.messages.listByState(["queued"])).filter((m) =>
+          m.logicalMessageId.startsWith("response:"),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a receipt-only ack advances our outgoing message, no bubble, no re-ack (ADR 0005)", async () => {
+    const envId = hexToBytes("cd".repeat(16)); // envelope message ids are 16 bytes
+    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01 }]);
+    const stack = await makeStack({ cells: [json] });
+    try {
+      // Seed one of OUR outgoing messages, on-chain, awaiting acknowledgement.
+      const contact = await stack.contacts.create({
+        displayName: "peer",
+        profileIdHex: bytesToHex(ALICE_PROFILE_ID),
+      });
+      const conversation = await stack.conversations.getOrCreateForContact(contact.id);
+      const mine = await stack.messages.insert({
+        conversationId: conversation.id,
+        direction: "outgoing",
+        body: "sent earlier",
+        logicalMessageId: "lm-outgoing-1",
+        state: "available_on_chain",
+      });
+      await stack.messages.setEnvelopeMessageId(mine.id, bytesToHex(envId));
+
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+
+      // The ack advanced our message through delivered → read → reclaim_queued.
+      expect((await stack.messages.getById(mine.id))?.state).toBe("reclaim_queued");
+      // No chat bubble was created for the receipt-only cell.
+      expect(await stack.messages.listByState(["received"])).toHaveLength(0);
+      // And a pure ack is never itself acked (no loop).
+      expect(
+        (await stack.messages.listByState(["queued"])).filter((m) =>
+          m.logicalMessageId.startsWith("response:"),
+        ),
+      ).toHaveLength(0);
     } finally {
       await stack.db.close();
     }

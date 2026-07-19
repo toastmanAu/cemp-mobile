@@ -104,9 +104,9 @@ export class ConversationRepository {
     const rows = await this.#db.all(
       `SELECT c.id, c.contact_id, c.created_at_ms, c.last_activity_at_ms,
               ct.display_name AS contact_display_name,
-              (SELECT m.body FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message_body,
-              (SELECT m.state FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message_state,
-              (SELECT m.direction FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message_direction,
+              (SELECT m.body FROM messages m WHERE m.conversation_id = c.id AND m.logical_message_id NOT LIKE 'response:%' ORDER BY m.id DESC LIMIT 1) AS last_message_body,
+              (SELECT m.state FROM messages m WHERE m.conversation_id = c.id AND m.logical_message_id NOT LIKE 'response:%' ORDER BY m.id DESC LIMIT 1) AS last_message_state,
+              (SELECT m.direction FROM messages m WHERE m.conversation_id = c.id AND m.logical_message_id NOT LIKE 'response:%' ORDER BY m.id DESC LIMIT 1) AS last_message_direction,
               (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.direction = 'incoming' AND m.state = 'received') AS unread_count
        FROM conversations c
        JOIN contacts ct ON ct.id = c.contact_id

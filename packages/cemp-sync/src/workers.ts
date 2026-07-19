@@ -193,6 +193,14 @@ async function processDiscoveredCell(
   if (await deps.contacts.isBlockedByProfileId(senderProfileIdHex)) {
     return;
   }
+  // A pure acknowledgement (empty body + receipts) advances OUR outgoing
+  // messages but is never shown and is never itself acked — that terminates the
+  // exchange (acks carry no content, and only content messages are auto-acked).
+  // Not rate-limited: an ack per delivered message is legitimate, not spam.
+  if (incoming.text.length === 0 && incoming.receipts.length > 0) {
+    await deps.lifecycle.processAcknowledgements(incoming);
+    return;
+  }
   // Phase 11 task 9: per-contact + global incoming rate limit. Over-limit
   // cells are skipped (the cursor still advances — spam cannot stall sync).
   if (!(await deps.rateLimiter.consume("incoming", senderProfileIdHex))) {
@@ -229,28 +237,68 @@ async function processDiscoveredCell(
       title: contact.displayName,
       body: incoming.text.length > 60 ? `${incoming.text.slice(0, 57)}…` : incoming.text,
     });
+    // Auto-ack on receive (§7.3, ADR 0005): queue a receipt-only response so the
+    // sender advances to delivered/read without any action here. Idempotent on
+    // the `response:` logical id; the response-sender worker publishes it.
+    await queueAcknowledgement(deps, {
+      conversationId: conversation.id,
+      originalLogicalId: inserted.logicalMessageId,
+      originalCell: { txHash, outpointIndex },
+    });
   }
-  // Receipts inside this reply advance OUR outgoing messages (Phase 8),
-  // on every processing pass — processAcknowledgements is idempotent.
+  // A reply that ALSO carries receipts (content + ack) still advances OUR
+  // outgoing messages — processAcknowledgements is idempotent.
   if (incoming.receipts.length > 0) {
     await deps.lifecycle.processAcknowledgements(incoming);
   }
-  void txHash;
-  void outpointIndex;
+}
+
+/**
+ * Queue a receipt-only acknowledgement response for a freshly received message
+ * (ADR 0005). The response is a normal OUTGOING `queued` row whose logical id is
+ * prefixed `response:` and whose chain ref names the original cell; the
+ * response-sender worker publishes it with a 0x01 receipt. Idempotent: a second
+ * discovery of the same message finds the existing row and does nothing.
+ */
+async function queueAcknowledgement(
+  deps: SyncWorkerDeps,
+  input: {
+    conversationId: number;
+    originalLogicalId: string;
+    originalCell: { txHash: string; outpointIndex: number };
+  },
+): Promise<void> {
+  const responseLogicalId = `response:${input.originalLogicalId}`;
+  if ((await deps.messages.getByLogicalId(responseLogicalId)) !== undefined) {
+    return;
+  }
+  const row = await deps.messages.insert({
+    conversationId: input.conversationId,
+    direction: "outgoing",
+    body: "",
+    logicalMessageId: responseLogicalId,
+    state: "queued",
+  });
+  await deps.messages.setChainRef(row.id, {
+    replyToTxHash: input.originalCell.txHash,
+    replyToOutpointIndex: input.originalCell.outpointIndex,
+  });
 }
 
 /* ── response sender (§12 worker 6) ──────────────────────────────────────── */
 
 /**
- * Drain `response_queued`: the app queues a response as
- * logical id `response:<originalIncomingLogicalId>` with the original
- * cell's outpoint in its chain ref (reply_to fields). Each response is
- * published with the receipt for the original, then the original's watch is
- * registered (Phase 8 task 9). The UNIQUE logical id makes duplicate worker
- * runs converge on one response (exit criterion 3).
+ * Drain queued acknowledgement responses (ADR 0005). A response is a normal
+ * OUTGOING `queued` row whose logical id is `response:<originalIncomingLogicalId>`
+ * with the original cell's outpoint in its chain ref (reply_to fields). Each is
+ * published with the receipt for the original via the standard outgoing path,
+ * then the original's watch is registered (Phase 8 task 9). The UNIQUE logical
+ * id makes duplicate worker runs converge on one response (exit criterion 3).
  */
 async function runResponseSender(deps: SyncWorkerDeps): Promise<void> {
-  const queued = await deps.messages.listByState(["response_queued"]);
+  const queued = (await deps.messages.listByState(["queued"])).filter(
+    (m) => m.direction === "outgoing" && m.logicalMessageId.startsWith("response:"),
+  );
   for (const response of queued) {
     // The response's chain ref names the ORIGINAL cell (reply_to fields),
     // and its logical id embeds the original incoming message's logical id.

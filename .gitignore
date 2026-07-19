@@ -36,5 +36,18 @@ apps/android/android/build/
 apps/android/android/local.properties
 apps/android/ios/Pods/
 
+# React Native bundle output. `react-native bundle --assets-dest .../res`
+# regenerates all of this from src/ on every build: the JS bundle, every image
+# asset copied into a density bucket (drawable-mdpi/…/drawable-xxxhdpi), and the
+# resource-shrinker keep file. The SOURCES stay tracked — src/assets/icons/*.png,
+# res/drawable/ (no density suffix), res/mipmap-*/ launcher icons, res/values/.
+apps/android/android/app/src/main/assets/index.android.bundle
+apps/android/android/app/src/main/assets/index.android.bundle.map
+apps/android/android/app/src/main/res/drawable-*/
+apps/android/android/app/src/main/res/raw/
+
 # Reference-client local state (testnet throwaway identities, journals)
 apps/reference-client/.cemp-state/
+
+# Ad-hoc local diagnostics (hardcoded testnet ids/addresses; not tooling)
+*.local.mts

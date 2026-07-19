@@ -311,15 +311,14 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
       expect(stored?.envelopeMessageIdHex).toBe(bytesToHex(messageId));
       expect(stack.notifier.posted).toHaveLength(1);
       expect(stack.notifier.posted[0]!.channel).toBe("messages");
-      // The current-epoch scan matched the cell, so its resume position is
-      // persisted; the grace (epoch-1) scan matched nothing, so its terminal
-      // cursor is deliberately NOT persisted (persisting an exhausted-scan
-      // cursor poisons later discovery — see the terminal-cursor test below).
+      // Discovery persists NO cursor: the indexer orders a prefix search by the
+      // type args, which end in a random nonce, so a resumed scan can skip a
+      // newly published cell forever (see the sorts-BEFORE test above).
       const epoch = currentRoutingEpoch();
       const bobHex = bytesToHex(BOB_PROFILE_ID);
-      expect(await stack.cursors.get(`incoming-discovery:${epoch.toString()}:${bobHex}`)).toBe(
-        "0x64",
-      );
+      expect(
+        await stack.cursors.get(`incoming-discovery:${epoch.toString()}:${bobHex}`),
+      ).toBeNull();
       expect(
         await stack.cursors.get(`incoming-discovery:${(epoch - 1n).toString()}:${bobHex}`),
       ).toBeNull();
@@ -446,6 +445,51 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
       expect(await stack.messages.listByState(["received"])).toHaveLength(1);
     } finally {
       await stack.db.close();
+    }
+  });
+
+  it("discovers a cell that sorts BEFORE the previous scan's cursor", async () => {
+    // The message type args end in a RANDOM 32-byte nonce and the indexer orders
+    // a prefix search BY THOSE ARGS — so a newly published cell sorts
+    // arbitrarily, very often before a cursor stored by an earlier scan.
+    // Resuming from a persisted cursor then skips that cell forever. Verified
+    // live: a committed cell at the right route tag was never discovered, while
+    // a cursorless scan always returned it.
+    const base = makeTransport([]);
+    let cells: unknown[] = [discoveryCellJson("first", hexToBytes("11".repeat(16))).json];
+    const orderedIndexer: JsonRpcTransport = {
+      call(url, method, params) {
+        if (method === "get_cells") {
+          // A resumed scan only ever yields what sorts AFTER the cursor — and
+          // the late arrival does not.
+          if (params[3] !== undefined) return Promise.resolve({ objects: [], last_cursor: "0x" });
+          return Promise.resolve({ objects: cells, last_cursor: "0xaa" });
+        }
+        return base.call(url, method, params);
+      },
+    };
+
+    const dir = await mkdtemp(join(tmpdir(), "cemp-sync-order-"));
+    tempDirs.push(dir);
+    const path = join(dir, "sync.sqlite");
+
+    const first = await makeStack({ db: new NodeSqliteAdapter({ path }), transport: orderedIndexer });
+    expect(await first.engine.runWorker("incoming-discovery")).toBe("success");
+    expect(await first.messages.listByState(["received"])).toHaveLength(1);
+    await first.db.close();
+
+    // A second message is published; it sorts BEFORE the first scan's cursor.
+    cells = [...cells, discoveryCellJson("late arrival", hexToBytes("22".repeat(16))).json];
+
+    const second = await makeStack({
+      db: new NodeSqliteAdapter({ path }),
+      transport: orderedIndexer,
+    });
+    try {
+      expect(await second.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await second.messages.listByState(["received"])).toHaveLength(2);
+    } finally {
+      await second.db.close();
     }
   });
 
@@ -689,7 +733,7 @@ describe("EndpointRotator (task 7)", () => {
 });
 
 describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 7–10)", () => {
-  it("route-tag spam: invalid cells are skipped, valid ones processed, cursor advances", async () => {
+  it("route-tag spam: invalid cells are skipped, valid ones processed", async () => {
     const valid = discoveryCellJson("real message in spam flood");
     const spamCells = [
       {
@@ -732,11 +776,13 @@ describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 
       expect(stored[0]!.body).toBe("real message in spam flood");
       expect(stack.notifier.posted).toHaveLength(1);
       const epoch = currentRoutingEpoch();
+      // No cursor is persisted (see the sorts-BEFORE test); spam simply does not
+      // stall the scan.
       expect(
         await stack.cursors.get(
           `incoming-discovery:${epoch.toString()}:${bytesToHex(BOB_PROFILE_ID)}`,
         ),
-      ).toBe("0x64");
+      ).toBeNull();
     } finally {
       await stack.db.close();
     }
@@ -784,7 +830,7 @@ describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 
     }
   });
 
-  it("incoming rate limit drops over-limit messages (cursor still advances)", async () => {
+  it("incoming rate limit drops over-limit messages without stalling the scan", async () => {
     const stack = await makeStack();
     try {
       // Drain the per-contact bucket for alice (60/hour default).
@@ -800,11 +846,13 @@ describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 
       expect(await withCell.messages.listByState(["received"])).toHaveLength(0);
       expect(withCell.notifier.posted).toHaveLength(0);
       const epoch = currentRoutingEpoch();
+      // No cursor is persisted (see the sorts-BEFORE test); an over-limit cell
+      // is skipped without stalling the scan.
       expect(
         await withCell.cursors.get(
           `incoming-discovery:${epoch.toString()}:${bytesToHex(BOB_PROFILE_ID)}`,
         ),
-      ).toBe("0x64");
+      ).toBeNull();
     } finally {
       await stack.db.close();
     }

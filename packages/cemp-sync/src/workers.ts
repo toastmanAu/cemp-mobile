@@ -129,24 +129,20 @@ export function buildWorkerSpecs(deps: SyncWorkerDeps): WorkerSpec[] {
 async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
   const now = Date.now();
   const epoch = currentRoutingEpoch(now);
-  // The cursor is keyed by epoch AND profile id: a scan run before the
-  // profile existed (or before a rotation) must not advance the position a
-  // later same-epoch scan for the real profile resumes from — indexer
-  // cursors are global ordering positions, so a cross-profile resume would
-  // silently skip cells (found via on-device P2P testing).
-  const ownProfileIdHex = bytesToHex(deps.ownProfileId);
+  // NO cursor is persisted between runs. A message cell's type args are
+  // `version ‖ routeTag ‖ conversationTag ‖ messageNonce`, and the indexer
+  // orders a prefix search BY THOSE ARGS — which end in a RANDOM 32-byte nonce.
+  // A newly published cell therefore sorts arbitrarily within the tag, very
+  // often BEFORE a cursor stored by an earlier scan, and `after: <cursor>` skips
+  // it forever (verified live: a committed cell at the right route tag was never
+  // discovered, while a cursorless scan always returned it). The result set per
+  // route tag is bounded — one epoch of one conversation — so each run re-scans
+  // it and the idempotent insert (logical message id) collapses the repeats.
+  // The cursor below paginates WITHIN a single scan only.
   // Watch the current and previous epoch's route tags (protocol §2 grace).
   for (const tagEpoch of [epoch, epoch - 1n]) {
     const routeTag = deriveRouteTag(deps.ownProfileId, tagEpoch);
-    const cursorName = `incoming-discovery:${tagEpoch.toString()}:${ownProfileIdHex}`;
-    let cursor = (await deps.cursors.get(cursorName)) ?? undefined;
-    // A persisted terminal cursor ("0x" from an exhausted scan) must be treated
-    // as "start fresh": reusing it as `after` makes the indexer return nothing
-    // forever. This also heals cursors already poisoned on-device by the earlier
-    // persist-on-empty bug.
-    if (cursor === "0x" || cursor === "") {
-      cursor = undefined;
-    }
+    let cursor: string | undefined = undefined;
     for (;;) {
       const page = await findMessageCells(deps.client, deps.messageType, routeTag, cursor);
       for (const cell of page.cells) {
@@ -168,17 +164,12 @@ async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
           await deps.leases.release(leaseKey, deps.engineId);
         }
       }
-      if (page.cells.length === 0) {
-        // Reached the end of the scan. Do NOT persist the cursor here: an
-        // exhausted scan returns a terminal/empty ("0x") cursor, and reusing
-        // that as `after` makes the indexer return nothing even once new cells
-        // arrive — permanently poisoning discovery. Only positions from a
-        // non-empty page are safe to resume from (found via on-device P2P
-        // testing; the first pre-message sync was silently poisoning the rest).
+      // An exhausted scan returns a terminal ("0x") cursor; paging on it would
+      // yield nothing forever, so stop as soon as a page comes back empty.
+      if (page.cells.length === 0 || page.lastCursor === "0x" || page.lastCursor === "") {
         break;
       }
       cursor = page.lastCursor;
-      await deps.cursors.set(cursorName, cursor);
     }
   }
 }

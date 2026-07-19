@@ -11,7 +11,7 @@ import com.facebook.react.jstasks.HeadlessJsTaskConfig
  * only hands control to the JS runtime.
  */
 class CempSyncTaskService : HeadlessJsTaskService() {
-  override fun getTaskConfig(intent: Intent): HeadlessJsTaskConfig =
+  override fun getTaskConfig(intent: Intent?): HeadlessJsTaskConfig =
     HeadlessJsTaskConfig(
       "CempBackgroundSync",
       Arguments.createMap(),

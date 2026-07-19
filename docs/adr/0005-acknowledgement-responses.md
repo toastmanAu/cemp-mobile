@@ -6,16 +6,16 @@
     carries a `0x01` receipt naming the original envelope message id (spec
     §7.3). On the sender side this advances the outgoing message
     `available_on_chain → downloaded_by_recipient ("delivered") → acknowledged
-    ("read") → reclaim_queued` (`ResponseLifecycle.processAcknowledgements`).
+("read") → reclaim_queued` (`ResponseLifecycle.processAcknowledgements`).
   - Two defects left the read-receipt path dead on-device (found during live
     two-device testnet bring-up):
-    1. **Nothing queued a response.** The app only ever published *fresh*
+    1. **Nothing queued a response.** The app only ever published _fresh_
        outgoing messages; no code created a response row, so no receipt was
        ever emitted and every sent message was stuck at "sent".
     2. **`runResponseSender` could not have published one anyway.** It selected
-       rows in state `response_queued` (an *incoming* state) and handed them to
+       rows in state `response_queued` (an _incoming_ state) and handed them to
        `MessagePublisher.publishText`, which walks its row through the
-       *outgoing* state machine (`queued → encrypting → …`). The first
+       _outgoing_ state machine (`queued → encrypting → …`). The first
        transition throws `illegal-state-transition`, so the worker fails. The
        path had **zero end-to-end test coverage**, so this stayed invisible.
 - Decision:
@@ -26,10 +26,10 @@
     `publishText` then drives it through the outgoing machine unchanged.
   - **`runResponseSender` selects `queued` outgoing rows whose logical id is
     prefixed `response:`** (idempotency + marker), publishes each with its
-    `0x01` receipt, and advances the *original incoming* message
+    `0x01` receipt, and advances the _original incoming_ message
     `received → displayed → response_queued → response_sent` (that incoming
     lifecycle is unchanged and correct).
-  - **Auto-ack on receive:** when incoming discovery ingests a *new content*
+  - **Auto-ack on receive:** when incoming discovery ingests a _new content_
     message, it queues exactly one such response row (idempotent on the
     `response:` logical id). The ack body is empty; a future "reply" feature can
     reuse the same row with text.

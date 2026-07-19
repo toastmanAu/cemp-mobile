@@ -30,7 +30,8 @@ const keyPair = mldsaV2KeygenFromSeed(hexToBytes(vectors.keygen[0]!.seed));
 /** `tx_hash:index` of every input in a broadcast wire body. */
 function inputKeys(body: Record<string, unknown>): string[] {
   const inputs =
-    (body as { inputs?: { previous_output?: { tx_hash?: string; index?: string } }[] }).inputs ?? [];
+    (body as { inputs?: { previous_output?: { tx_hash?: string; index?: string } }[] }).inputs ??
+    [];
   return inputs.map(
     (input) => `${String(input.previous_output?.tx_hash)}:${String(input.previous_output?.index)}`,
   );

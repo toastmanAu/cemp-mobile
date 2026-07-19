@@ -137,9 +137,10 @@ function discoveryCellJson(
 }
 
 /** A receipt-only ack cell (empty body + 0x01 receipts) addressed to Bob. */
-function receiptOnlyCellJson(
-  receipts: readonly { messageId: Uint8Array; status: number }[],
-): { json: unknown; messageId: Uint8Array } {
+function receiptOnlyCellJson(receipts: readonly { messageId: Uint8Array; status: number }[]): {
+  json: unknown;
+  messageId: Uint8Array;
+} {
   return assembledCellJson(
     assembleTextMessage({
       text: "",
@@ -402,14 +403,20 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
     const path = join(dir, "sync.sqlite");
 
     // Sync 1: no cell yet (device unlocked before the reply was published).
-    const first = await makeStack({ db: new NodeSqliteAdapter({ path }), transport: realisticIndexer });
+    const first = await makeStack({
+      db: new NodeSqliteAdapter({ path }),
+      transport: realisticIndexer,
+    });
     expect(await first.engine.runWorker("incoming-discovery")).toBe("success");
     await first.db.close();
 
     // The reply now waits on-chain, addressed to this profile.
     waiting = [discoveryCellJson("waiting after an empty sync").json];
 
-    const second = await makeStack({ db: new NodeSqliteAdapter({ path }), transport: realisticIndexer });
+    const second = await makeStack({
+      db: new NodeSqliteAdapter({ path }),
+      transport: realisticIndexer,
+    });
     try {
       expect(await second.engine.runWorker("incoming-discovery")).toBe("success");
       expect(await second.messages.listByState(["received"])).toHaveLength(1);
@@ -473,7 +480,10 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
     tempDirs.push(dir);
     const path = join(dir, "sync.sqlite");
 
-    const first = await makeStack({ db: new NodeSqliteAdapter({ path }), transport: orderedIndexer });
+    const first = await makeStack({
+      db: new NodeSqliteAdapter({ path }),
+      transport: orderedIndexer,
+    });
     expect(await first.engine.runWorker("incoming-discovery")).toBe("success");
     expect(await first.messages.listByState(["received"])).toHaveLength(1);
     await first.db.close();

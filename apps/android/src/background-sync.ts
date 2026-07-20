@@ -23,9 +23,25 @@ import { createRouteTagCache } from "./platform/route-tag-cache";
  */
 const LOG_TAG = "[CempSync]";
 
-/** Safe to log: our own errors carry static messages, never user data. */
+/**
+ * The error's CLASS ONLY — never its message.
+ *
+ * Error text reaching these catches is NOT safe to log. `outpointsForTag` ->
+ * `findMessageCells` -> `CempClient` raises `CempCkbError`, whose message is
+ * built from `preview()` of raw RPC response data (packages/cemp-ckb/src/client.ts)
+ * and clipped at 80 characters — a 32-byte tx hash is 66, so an outpoint tied
+ * to the user's own inbox fits comfortably and would reach world-readable
+ * logcat. Only our OWN errors carry static messages; these catches see other
+ * people's too.
+ *
+ * The class name alone distinguishes a transport failure from a shape failure
+ * from a programming error, which is what triage actually needs from a bug
+ * report. `CempCkbError`'s `context` field is deliberately NOT included: it is
+ * not exported from the package root, and several of its values interpolate
+ * the RPC endpoint URL.
+ */
 function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof Error ? error.name : typeof error;
 }
 
 /**

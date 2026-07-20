@@ -57,9 +57,13 @@ export async function outpointsForTag(
     try {
       result = await findMessageCells(client, messageType, routeTag, cursor);
     } catch (error) {
+      // The error CLASS only, never its message: `findMessageCells` raises
+      // `CempCkbError`, whose message embeds an 80-character `preview()` of
+      // raw RPC response data — long enough to carry a 66-character tx hash
+      // from the user's own inbox into world-readable logcat.
       console.warn(
         `${LOG_TAG} locked probe: chain query page ${page} failed — ` +
-          (error instanceof Error ? error.message : String(error)),
+          (error instanceof Error ? error.name : typeof error),
       );
       throw error;
     }

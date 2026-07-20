@@ -149,6 +149,22 @@ const textEncoder = new TextEncoder();
 export interface SecureVault {
   readonly state: VaultState;
 
+  /**
+   * Wall-clock epoch milliseconds at which the inactivity timer is due to fire,
+   * or `null` when no timer is armed (any state but `unlocked`).
+   *
+   * Exists because {@link state} alone is not trustworthy on a suspended
+   * runtime: the auto-lock is a `setTimeout`, and a host that freezes JS timers
+   * (React Native while the app is backgrounded) leaves `state` reading
+   * `"unlocked"` long past the deadline, until the overdue timer is finally
+   * dispatched on resume. A caller that must not act on a stale reading — the
+   * background tick — compares this deadline against `Date.now()` instead.
+   *
+   * Reading it is synchronous and side-effect-free: it does NOT extend the
+   * window the way {@link touch} does.
+   */
+  readonly autoLockDeadlineMs: number | null;
+
   createWithNewMnemonic(
     wordCount: VaultWordCount,
     password: string,
@@ -235,6 +251,7 @@ export class SecureVaultImpl implements SecureVault {
   #dbKey: Uint8Array | null = null;
   #autoLockSeconds = DEFAULT_AUTO_LOCK_SECONDS;
   #autoLockTimer: ReturnType<typeof setTimeout> | null = null;
+  #autoLockDeadlineMs: number | null = null;
 
   private constructor(deps: SecureVaultDeps, state: VaultState) {
     this.#storage = deps.storage;
@@ -254,6 +271,10 @@ export class SecureVaultImpl implements SecureVault {
 
   get state(): VaultState {
     return this.#state;
+  }
+
+  get autoLockDeadlineMs(): number | null {
+    return this.#autoLockDeadlineMs;
   }
 
   /* --------------------------------------------------------- creation -- */
@@ -815,6 +836,9 @@ export class SecureVaultImpl implements SecureVault {
       (timer as { unref: () => void }).unref();
     }
     this.#autoLockTimer = timer;
+    // Recorded alongside the timer so a caller can tell "the deadline has
+    // passed but the timer has not been dispatched yet" from "still live".
+    this.#autoLockDeadlineMs = Date.now() + this.#autoLockSeconds * 1000;
   }
 
   #clearAutoLockTimer(): void {
@@ -822,5 +846,6 @@ export class SecureVaultImpl implements SecureVault {
       clearTimeout(this.#autoLockTimer);
       this.#autoLockTimer = null;
     }
+    this.#autoLockDeadlineMs = null;
   }
 }

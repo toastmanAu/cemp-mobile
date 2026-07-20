@@ -31,6 +31,7 @@ import { createRouteTagCache } from "./platform/route-tag-cache";
 import { AsyncStorageVaultStorage } from "./platform/vault-storage";
 import { WorkManagerScheduler } from "./platform/work-manager-scheduler";
 import { bytesToHex } from "./platform/hex";
+import { isVaultUsable } from "./vault-liveness";
 
 export type AppContainerState = "loading" | "uninitialized" | "locked" | "ready";
 
@@ -80,6 +81,53 @@ export class AppContainer {
 
   get state(): AppContainerState {
     return this.#state;
+  }
+
+  /**
+   * Whether the vault is usable RIGHT NOW, from the vault's own state and its
+   * wall-clock inactivity deadline rather than from {@link state}.
+   *
+   * {@link state} is a UI-facing projection maintained by `#startPoll`, and
+   * that poll is a JS timer: React Native freezes it while the app is
+   * backgrounded, so the cached value can read `"ready"` minutes after the
+   * vault auto-locked. Anything running on a woken runtime — the WorkManager
+   * tick — must ask this instead.
+   *
+   * Synchronous and side-effect-free by construction: `vault.state` and
+   * `vault.autoLockDeadlineMs` are plain getters. Note that `touch()` is NOT a
+   * substitute — it RESTARTS the inactivity window, which would silently keep
+   * a backgrounded vault unlocked forever, one tick at a time.
+   */
+  get vaultUsable(): boolean {
+    return isVaultUsable({
+      containerReady: this.#state === "ready",
+      vaultUnlocked: this.vault.state === "unlocked",
+      autoLockDeadlineMs: this.vault.autoLockDeadlineMs,
+      nowMs: Date.now(),
+    });
+  }
+
+  /**
+   * Converge the cached projection with the vault's real state, for callers
+   * that arrive after the poll has been suspended (the background tick).
+   *
+   * Without this the tick would branch correctly but leave the container still
+   * claiming `"ready"` with the database open, until the resumed poll caught up
+   * a second later — which is exactly the mid-flight teardown that made the
+   * original failure a `DatabaseError` rather than a clean locked probe. Doing
+   * it up front means the database is closed BEFORE any work starts.
+   *
+   * Locks the vault itself when the deadline passed while its own `setTimeout`
+   * was frozen, so the overdue timer has nothing left to do when it fires.
+   */
+  async reconcileVaultState(): Promise<void> {
+    if (this.#state !== "ready" || this.vaultUsable) {
+      return;
+    }
+    if (this.vault.state === "unlocked") {
+      await this.vault.lock();
+    }
+    await this.#handleExternalLock();
   }
 
   get repositories(): AppRepositories {

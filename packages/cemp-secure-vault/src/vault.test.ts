@@ -252,6 +252,48 @@ describe("unlock and lock (tasks 6, 8)", () => {
       vi.useRealTimers();
     }
   });
+
+  it("exposes an auto-lock deadline that stays true when the timer is suspended", async () => {
+    vi.useFakeTimers();
+    try {
+      const { vault } = await makeVault();
+      expect(vault.autoLockDeadlineMs).toBeNull(); // uninitialized: no timer armed
+
+      await vault.createWithNewMnemonic(12, PASSWORD, { kdf: TINY_KDF, autoLockSeconds: 300 });
+      const deadline = vault.autoLockDeadlineMs;
+      expect(deadline).toBe(Date.now() + 300_000);
+
+      // Reading state must not extend the window the way touch() does.
+      expect(vault.state).toBe("unlocked");
+      expect(vault.autoLockDeadlineMs).toBe(deadline);
+      vi.advanceTimersByTime(1_000);
+      vault.touch();
+      expect(vault.autoLockDeadlineMs).toBe((deadline as number) + 1_000);
+
+      // Move the WALL CLOCK forward without dispatching timers — exactly what a
+      // React Native runtime frozen in the background does to the vault's own
+      // `setTimeout`. `state` is stale here; the deadline is not.
+      const overdueBy = 7 * 60_000;
+      vi.setSystemTime(Date.now() + overdueBy);
+      expect(vault.state).toBe("unlocked"); // stale, and knowably so
+      expect(Date.now()).toBeGreaterThan(vault.autoLockDeadlineMs as number);
+
+      // Once timers are dispatched again the vault catches up and disarms.
+      vi.advanceTimersByTime(300_000);
+      expect(vault.state).toBe("locked");
+      expect(vault.autoLockDeadlineMs).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the auto-lock deadline on an explicit lock", async () => {
+    const { vault } = await makeVault();
+    await vault.createWithNewMnemonic(12, PASSWORD, { kdf: TINY_KDF, autoLockSeconds: 300 });
+    expect(vault.autoLockDeadlineMs).not.toBeNull();
+    await vault.lock();
+    expect(vault.autoLockDeadlineMs).toBeNull();
+  });
 });
 
 describe("reinstall (Phase 3 exit criterion)", () => {

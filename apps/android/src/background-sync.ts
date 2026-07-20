@@ -108,7 +108,17 @@ async function runTick(): Promise<void> {
   const cache = createRouteTagCache();
   const notifier = new AndroidNotifier();
   const container = AppContainer.current();
-  const unlocked = container?.state === "ready";
+
+  // Before branching, make the container's cached state agree with the vault's
+  // real one. `AppContainer.state` is maintained by a 1-second `setInterval`
+  // and the vault auto-locks from a `setTimeout`; React Native freezes both
+  // while the app is backgrounded, so on a woken runtime the projection can
+  // still read "ready" long after the vault's inactivity deadline passed.
+  // Trusting it routed a locked vault into the full-sync branch, and the
+  // resumed poll then closed the database out from under that sync.
+  await container?.reconcileVaultState();
+
+  const unlocked = container?.vaultUsable === true;
   console.log(
     `${LOG_TAG} backgroundSyncTask: vault seen as ${unlocked ? "unlocked" : "locked"}; ` +
       `taking the ${unlocked ? "full-sync" : "locked-probe"} branch`,
@@ -122,7 +132,9 @@ async function runTick(): Promise<void> {
 
   try {
     const outcome = await runBackgroundSync({
-      isVaultUnlocked: () => container?.state === "ready",
+      // Re-read rather than reusing `unlocked`: the core owns the branch, and
+      // the authoritative reading can change between here and its call.
+      isVaultUnlocked: () => container?.vaultUsable === true,
       runFullSync: async () => {
         console.log(`${LOG_TAG} full sync: starting`);
         await requireMessaging(container).messaging.syncNow();

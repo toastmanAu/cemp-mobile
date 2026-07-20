@@ -12,6 +12,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import type { SqlParams, SqlRow, SqlRunResult, SqliteAdapter } from "./adapter.js";
+import { AsyncMutex } from "./async-mutex.js";
 import { DatabaseError } from "./errors.js";
 
 export interface NodeSqliteOptions {
@@ -34,8 +35,8 @@ function toRunResult(raw: {
 
 export class NodeSqliteAdapter implements SqliteAdapter {
   readonly #db: DatabaseSync;
+  readonly #txMutex = new AsyncMutex();
   #closed = false;
-  #inTransaction = false;
 
   constructor(options: NodeSqliteOptions = {}) {
     this.#db = new DatabaseSync(options.path ?? ":memory:");
@@ -75,23 +76,21 @@ export class NodeSqliteAdapter implements SqliteAdapter {
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     this.#assertOpen();
-    if (this.#inTransaction) {
-      // Join the outer transaction (current callers never nest; documented
-      // on the interface).
-      return await fn();
-    }
-    this.#db.exec("BEGIN IMMEDIATE");
-    this.#inTransaction = true;
-    try {
-      const result = await fn();
-      this.#db.exec("COMMIT");
-      return result;
-    } catch (e) {
-      this.#db.exec("ROLLBACK");
-      throw e;
-    } finally {
-      this.#inTransaction = false;
-    }
+    // Serialize concurrent callers on the mutex instead of racing on
+    // #inTransaction: two callers evaluating a flag before either sets it
+    // could both issue BEGIN IMMEDIATE on the same connection. Each queued
+    // call still gets its own independent BEGIN/COMMIT — see adapter.ts.
+    return await this.#txMutex.runExclusive(async () => {
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        const result = await fn();
+        this.#db.exec("COMMIT");
+        return result;
+      } catch (e) {
+        this.#db.exec("ROLLBACK");
+        throw e;
+      }
+    });
   }
 
   close(): Promise<void> {

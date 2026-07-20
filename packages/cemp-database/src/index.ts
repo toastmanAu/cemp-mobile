@@ -1,6 +1,7 @@
 export * from "./schema.js";
 export * from "./errors.js";
 export * from "./adapter.js";
+export * from "./async-mutex.js";
 export * from "./migrate.js";
 export * from "./message-states.js";
 export * from "./repositories/contacts.js";

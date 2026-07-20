@@ -14,7 +14,7 @@
 
 import { open, type DB, type QueryResult, type Scalar } from "@op-engineering/op-sqlite";
 import type { SqlParams, SqlRow, SqlRunResult, SqliteAdapter } from "@cemp/database";
-import { DatabaseError } from "@cemp/database";
+import { AsyncMutex, DatabaseError } from "@cemp/database";
 
 export interface OpSqlCipherOptions {
   /** Database file name inside the app's database directory. */
@@ -44,8 +44,8 @@ function toRunResult(result: QueryResult): SqlRunResult {
 
 export class OpSqlCipherAdapter implements SqliteAdapter {
   readonly #db: DB;
+  readonly #txMutex = new AsyncMutex();
   #closed = false;
-  #inTransaction = false;
 
   private constructor(db: DB) {
     this.#db = db;
@@ -86,21 +86,23 @@ export class OpSqlCipherAdapter implements SqliteAdapter {
 
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
     this.#assertOpen();
-    if (this.#inTransaction) {
-      return await fn();
-    }
-    await this.#db.execute("BEGIN IMMEDIATE");
-    this.#inTransaction = true;
-    try {
-      const result = await fn();
-      await this.#db.execute("COMMIT");
-      return result;
-    } catch (e) {
-      await this.#db.execute("ROLLBACK");
-      throw e;
-    } finally {
-      this.#inTransaction = false;
-    }
+    // Serialize concurrent callers on the mutex instead of racing on a
+    // boolean flag: two callers evaluating the flag before either set it
+    // could both issue BEGIN IMMEDIATE on the same connection (the bug that
+    // surfaced as "cannot start a transaction within a transaction" once
+    // the Phase 9 WorkManager tick and the Chats-screen sync could overlap).
+    // Each queued call still gets its own independent BEGIN/COMMIT.
+    return await this.#txMutex.runExclusive(async () => {
+      await this.#db.execute("BEGIN IMMEDIATE");
+      try {
+        const result = await fn();
+        await this.#db.execute("COMMIT");
+        return result;
+      } catch (e) {
+        await this.#db.execute("ROLLBACK");
+        throw e;
+      }
+    });
   }
 
   close(): Promise<void> {

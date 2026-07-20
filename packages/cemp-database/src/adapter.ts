@@ -45,8 +45,16 @@ export interface SqliteAdapter {
 
   /**
    * Run `fn` inside BEGIN IMMEDIATE … COMMIT, rolling back on any throw.
-   * Nested calls must join the outer transaction (savepoints are a driver
-   * detail; current callers never nest).
+   *
+   * Concurrent calls on the same adapter are serialized (queued on an
+   * internal mutex) rather than merged: each call still gets its own
+   * independent BEGIN/COMMIT, so a failing call rolls back only its own
+   * work, never another caller's. NOT reentrant — calling `transaction()`
+   * again from within a `transaction()` callback on the same adapter
+   * deadlocks. No current caller nests (verified across every `.transaction(`
+   * call site in this package); if a future caller needs reentrant nesting,
+   * that is a new requirement to design for explicitly, not something this
+   * method supports implicitly.
    */
   transaction<T>(fn: () => Promise<T>): Promise<T>;
 

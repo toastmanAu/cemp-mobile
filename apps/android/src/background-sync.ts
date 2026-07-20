@@ -23,15 +23,16 @@ import { createRouteTagCache } from "./platform/route-tag-cache";
  * from resolving as if a degraded tick had done real work. It is NOT a retry
  * mechanism, though, and must not be described as one:
  *
- * - `CempSyncWorker.doWork()` (android/app/.../background/CempSyncWorker.kt)
- *   returns `Result.success()` as soon as `startService` succeeds, before the
- *   headless JS task has even run. This rejection never reaches WorkManager,
- *   so there is no WorkManager retry-with-backoff behind this path.
  * - React Native 0.83's `AppRegistryImpl.startHeadlessTask` (in
  *   `node_modules`) only calls `notifyTaskRetry`/`notifyTaskFinished` when
  *   the rejection is `instanceof HeadlessJsTaskError`; a plain `Error` is
- *   just `console.error`'d, and `CempSyncTaskService` is left running until
- *   `TASK_TIMEOUT_MS` (120s) times it out.
+ *   just `console.error`'d and the task is never marked finished.
+ * - `CempSyncWorker.doWork()` (android/app/.../background/CempSyncWorker.kt)
+ *   waits for that finish notification, so an uncaught rejection here would
+ *   leave the worker suspended until `TASK_TIMEOUT_MS` (120s) expires. That
+ *   does eventually surface as `Result.retry()`, but only after burning the
+ *   full timeout — it is a wedged-runtime backstop, not a retry mechanism to
+ *   design against.
  *
  * `backgroundSyncTask` below catches this itself precisely so the task ends
  * promptly instead of lingering for that 120s — see the comment there.

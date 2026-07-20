@@ -8,6 +8,8 @@
 import { AppContainer } from "./app-container";
 import { runBackgroundSync } from "./background-sync-core";
 import { AndroidNotifier } from "./platform/android-notifier";
+import { notifyTaskFinished } from "./platform/headless-task";
+import { tickIdFrom } from "./platform/headless-task-id";
 import { outpointsForTag } from "./platform/locked-probe";
 import { createRouteTagCache } from "./platform/route-tag-cache";
 
@@ -54,21 +56,13 @@ function describeError(error: unknown): string {
  *
  * Throwing is still the right shape: it is what stops `runBackgroundSync`
  * from resolving as if a degraded tick had done real work. It is NOT a retry
- * mechanism, though, and must not be described as one:
+ * mechanism, though, and must not be described as one — React Native 0.83's
+ * `AppRegistryImpl.startHeadlessTask` only reaches `notifyTaskRetry` when the
+ * rejection is `instanceof HeadlessJsTaskError`, and RN does not export one
+ * publicly.
  *
- * - React Native 0.83's `AppRegistryImpl.startHeadlessTask` (in
- *   `node_modules`) only calls `notifyTaskRetry`/`notifyTaskFinished` when
- *   the rejection is `instanceof HeadlessJsTaskError`; a plain `Error` is
- *   just `console.error`'d and the task is never marked finished.
- * - `CempSyncWorker.doWork()` (android/app/.../background/CempSyncWorker.kt)
- *   waits for that finish notification, so an uncaught rejection here would
- *   leave the worker suspended until `TASK_TIMEOUT_MS` (120s) expires. That
- *   does eventually surface as `Result.retry()`, but only after burning the
- *   full timeout — it is a wedged-runtime backstop, not a retry mechanism to
- *   design against.
- *
- * `backgroundSyncTask` below catches this itself precisely so the task ends
- * promptly instead of lingering for that 120s — see the comment there.
+ * Ending the tick promptly is handled separately and unconditionally, by the
+ * `finally` in `backgroundSyncTask` below.
  */
 function requireMessaging(container: AppContainer | null): AppContainer {
   if (container === null || !container.hasMessaging) {
@@ -80,7 +74,35 @@ function requireMessaging(container: AppContainer | null): AppContainer {
   return container;
 }
 
-export async function backgroundSyncTask(): Promise<void> {
+/**
+ * The HeadlessJS entry point React Native invokes each tick.
+ *
+ * Wraps {@link runTick} solely to guarantee the native side learns the tick is
+ * over — on success and on failure alike — so the JS runtime is released in
+ * seconds instead of being held for the full 120s native task timeout. That
+ * timeout stays in place as a backstop for a genuinely wedged runtime.
+ *
+ * `data` is the payload `CempSyncWorker` built; it carries only a tick id.
+ */
+export async function backgroundSyncTask(data?: unknown): Promise<void> {
+  const tickId = tickIdFrom(data);
+  try {
+    await runTick();
+  } finally {
+    if (tickId === null) {
+      // Nothing to signal against — the tick will linger until the native
+      // timeout. Worth a line: it means the payload contract has drifted.
+      console.warn(
+        `${LOG_TAG} backgroundSyncTask: no tick id in the payload; cannot signal finish`,
+      );
+    } else {
+      notifyTaskFinished(tickId);
+      console.log(`${LOG_TAG} backgroundSyncTask: signalled native task finish`);
+    }
+  }
+}
+
+async function runTick(): Promise<void> {
   console.log(`${LOG_TAG} backgroundSyncTask: entered`);
 
   const cache = createRouteTagCache();

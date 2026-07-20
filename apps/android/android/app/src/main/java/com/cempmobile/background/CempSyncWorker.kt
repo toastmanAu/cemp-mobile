@@ -126,10 +126,19 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
    * `onHeadlessJsTaskFinish`, which `HeadlessJsTaskContext.finishTask` also
    * dispatches to the UI thread; the write is therefore always queued ahead
    * of any finish callback.
+   *
+   * Completion arrives via [CempHeadlessTaskModule]: the JS task signals with
+   * the **tick id** minted here and passed to it in the task payload. React
+   * Native's own `HeadlessJsTaskSupport` module cannot be relied on — it is
+   * not registered under the New Architecture, so before this the only thing
+   * that ever ended a tick was the [TASK_TIMEOUT_MS] safeguard, burning the
+   * full 120s on every run including successful ones. That timeout stays, now
+   * purely as a backstop for a genuinely wedged runtime.
    */
   private suspend fun runTask(reactContext: ReactContext) {
     val taskContext = HeadlessJsTaskContext.getInstance(reactContext)
     val startedTaskId = AtomicInteger(NO_TASK_ID)
+    val tickId = CempHeadlessTaskRegistry.nextTickId()
     val finished = CompletableDeferred<Unit>()
 
     val listener =
@@ -150,8 +159,11 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
       val posted =
         UiThreadUtil.runOnUiThread {
           try {
-            val taskId = taskContext.startTask(taskConfig())
+            val taskId = taskContext.startTask(taskConfig(tickId))
             startedTaskId.set(taskId)
+            // Published before JS can possibly call back: startTask only
+            // *queues* AppRegistry.startHeadlessTask onto the JS thread.
+            CempHeadlessTaskRegistry.register(tickId, reactContext, taskId)
             Log.i(TAG, "runTask: started headless task id=$taskId")
           } catch (error: Exception) {
             // Never let this escape onto the main thread: it would crash the app.
@@ -163,13 +175,20 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
       finished.await()
     } finally {
       taskContext.removeTaskEventListener(listener)
+      // Covers every non-signalled exit (timeout backstop, thrown start) so no
+      // entry leaks and a late signal is treated as an unknown id.
+      CempHeadlessTaskRegistry.forget(tickId)
     }
   }
 
-  private fun taskConfig(): HeadlessJsTaskConfig =
+  /**
+   * [tickId] rides along in the task payload so the JS task can name this
+   * exact run when it signals completion back through [CempHeadlessTaskModule].
+   */
+  private fun taskConfig(tickId: Int): HeadlessJsTaskConfig =
     HeadlessJsTaskConfig(
       TASK_KEY,
-      Arguments.createMap(),
+      Arguments.createMap().apply { putInt("tickId", tickId) },
       TASK_TIMEOUT_MS,
       // Allowed in foreground too: a tick that lands while the app is open is
       // harmless (the engine's leases make concurrent runs safe).

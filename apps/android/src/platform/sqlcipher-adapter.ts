@@ -105,11 +105,34 @@ export class OpSqlCipherAdapter implements SqliteAdapter {
     });
   }
 
-  close(): Promise<void> {
-    if (!this.#closed) {
-      this.#db.close();
-      this.#closed = true;
+  /**
+   * Close the connection, WAITING for any in-flight transaction first.
+   *
+   * Teardown takes the same mutex `transaction()` uses, so a close racing an
+   * in-flight unit of work queues behind it instead of cutting it off. This is
+   * the auto-lock case observed on device: the vault locked while a background
+   * full sync was mid-transaction, the handle closed underneath it, and the
+   * COMMIT failed with "the database connection is closed" — losing the work
+   * and stranding a freshly discovered message part-way through its states.
+   *
+   * NOT reentrant (see {@link AsyncMutex}): `close()` must never be called
+   * from inside a `transaction()` callback or it deadlocks. The only
+   * production caller is AppContainer#closeDatabase, which runs at teardown
+   * and holds no transaction.
+   *
+   * Behaviourally identical to the node adapter's `close()` (node.ts).
+   */
+  async close(): Promise<void> {
+    if (this.#closed) {
+      return;
     }
-    return Promise.resolve();
+    await this.#txMutex.runExclusive(() => {
+      // Re-check under the lock: a concurrent close() may have won the queue.
+      if (!this.#closed) {
+        this.#db.close();
+        this.#closed = true;
+      }
+      return Promise.resolve();
+    });
   }
 }

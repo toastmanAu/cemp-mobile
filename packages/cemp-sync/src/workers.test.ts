@@ -885,3 +885,116 @@ describe("hardening: spam, replay, blocked senders, rate limits (Phase 11 tasks 
     }
   });
 });
+
+/**
+ * Regression coverage for the auto-lock strand (final review fix 1b).
+ *
+ * `processDiscoveredCell` advances a newly discovered message through THREE
+ * SEPARATE transactions (discovered → downloading → decrypting → received)
+ * before it notifies and queues the auto-ack. If the database goes away
+ * between them — the observed auto-lock case — the row is left at
+ * `downloading` or `decrypting`, and that used to be PERMANENT: `insert()` is
+ * ON CONFLICT DO NOTHING + re-read, so a later discovery pass sees the
+ * EXISTING row's state, the `=== "discovered"` guard fails, and the whole
+ * advance/notify/ack block is skipped. The message is never shown and never
+ * acked — so the SENDER also hangs at "sent" forever.
+ *
+ * Two independent recoveries are covered here: re-discovery of the same cell
+ * must re-drive the row, and the pending-transactions healer must re-drive it
+ * even if the cell is never seen again (process death after the strand).
+ */
+describe("stranded incoming messages are healed (final review fix 1b)", () => {
+  /** Leave a row exactly where an interrupted processDiscoveredCell would. */
+  async function strandIncoming(
+    stack: Stack,
+    messageId: Uint8Array,
+    at: "downloading" | "decrypting",
+    body = "stranded hello",
+  ): Promise<number> {
+    const contact = await stack.contacts.create({
+      displayName: "unknown-stranded",
+      profileIdHex: bytesToHex(ALICE_PROFILE_ID),
+    });
+    const conversation = await stack.conversations.getOrCreateForContact(contact.id);
+    const row = await stack.messages.insert({
+      conversationId: conversation.id,
+      direction: "incoming",
+      body,
+      logicalMessageId: incomingLogicalMessageId(messageId),
+    });
+    await stack.messages.setEnvelopeMessageId(row.id, bytesToHex(messageId));
+    await stack.messages.setChainRef(row.id, {
+      txHash: fillHex(0xd1, 32),
+      outpointIndex: 0,
+    });
+    await stack.messages.transitionState(row.id, "downloading");
+    if (at === "decrypting") {
+      await stack.messages.transitionState(row.id, "decrypting");
+    }
+    return row.id;
+  }
+
+  for (const at of ["downloading", "decrypting"] as const) {
+    it(`heals a row stranded at ${at} via the pending-transactions worker, then notifies and acks`, async () => {
+      const stack = await makeStack({ cells: [] });
+      try {
+        const messageId = hexToBytes("ab".repeat(16));
+        const id = await strandIncoming(stack, messageId, at);
+        expect((await stack.messages.getById(id))?.state).toBe(at);
+
+        expect(await stack.engine.runWorker("pending-transactions")).toBe("success");
+
+        // Re-driven to received through the normal path — NOT forced to a
+        // terminal state.
+        expect((await stack.messages.getById(id))?.state).toBe("received");
+
+        // Notified (generic copy only — no sender identity, no content).
+        expect(stack.notifier.posted).toHaveLength(1);
+        expect(stack.notifier.posted[0]!.title).toBe("CellSend");
+        expect(stack.notifier.posted[0]!.body).toBe("New message. Unlock to view.");
+        expect(stack.notifier.posted[0]!.body).not.toContain("stranded hello");
+
+        // Auto-acked, so the SENDER can advance past "sent".
+        const ack = await stack.messages.getByLogicalId(
+          `response:${incomingLogicalMessageId(messageId)}`,
+        );
+        expect(ack).toBeDefined();
+        expect(ack?.direction).toBe("outgoing");
+        expect(ack?.state).toBe("queued");
+        const ackRef = await stack.messages.getChainRef(ack!.id);
+        expect(ackRef?.replyToTxHash).toBe(fillHex(0xd1, 32));
+        expect(ackRef?.replyToOutpointIndex).toBe(0);
+
+        // Idempotent: a second heal pass must not re-notify or double-ack.
+        expect(await stack.engine.runWorker("pending-transactions")).toBe("success");
+        expect(stack.notifier.posted).toHaveLength(1);
+        expect(await stack.messages.listByState(["queued"])).toHaveLength(1);
+      } finally {
+        await stack.db.close();
+      }
+    });
+  }
+
+  it("re-drives a row stranded at downloading when the same cell is discovered again", async () => {
+    // The exact reported failure: the cell is still on chain, discovery finds
+    // it again, and the existing row is at `downloading` rather than
+    // `discovered`. It must be advanced, notified and acked — not skipped.
+    const messageId = hexToBytes("cd".repeat(16));
+    const { json } = discoveryCellJson("re-discovered hello", messageId);
+    const stack = await makeStack({ cells: [json] });
+    try {
+      const id = await strandIncoming(stack, messageId, "downloading", "re-discovered hello");
+      expect((await stack.messages.getById(id))?.state).toBe("downloading");
+
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+
+      expect((await stack.messages.getById(id))?.state).toBe("received");
+      expect(stack.notifier.posted).toHaveLength(1);
+      expect(
+        await stack.messages.getByLogicalId(`response:${incomingLogicalMessageId(messageId)}`),
+      ).toBeDefined();
+    } finally {
+      await stack.db.close();
+    }
+  });
+});

@@ -224,36 +224,105 @@ async function processDiscoveredCell(
   // Idempotent insert collapses duplicates: an already-received row needs no
   // transition, but its receipts are processed EVERY time (review E8 — a
   // swallowed ack must not strand the sender's capacity).
-  if (inserted.state === "discovered") {
+  //
+  // The guard admits the two MID-ADVANCE states as well as `discovered`. The
+  // advance below spans three separate transactions, so an interruption
+  // (auto-lock closing the database, process death) can leave the row at
+  // `downloading`/`decrypting`; because `insert()` is ON CONFLICT DO NOTHING
+  // + re-read, a later pass sees that state, and a `=== "discovered"` guard
+  // would skip the block FOREVER — never notified, never acked, with the
+  // sender hung at "sent". `advanceIncomingToReceived` walks from wherever
+  // the row actually is.
+  if (STRANDABLE_INCOMING_STATES.has(inserted.state)) {
     await deps.messages.setEnvelopeMessageId(inserted.id, bytesToHex(incoming.messageId));
-    await deps.messages.transitionState(inserted.id, "downloading");
-    await deps.messages.transitionState(inserted.id, "decrypting");
-    await deps.messages.transitionState(inserted.id, "received");
-    // Notification (task 8; hardened per security review — no sender identity
-    // or message content ever leaves the app, regardless of the device's
-    // "hide sensitive content" setting, which the app cannot verify or trust
-    // as a default). Copy matches the locked-probe notification in
-    // background-sync-core.ts: generic, always — detail is shown only in-app
-    // after unlock.
-    await deps.notifier.post({
-      id: `message:${String(inserted.id)}`,
-      channel: "messages",
-      title: "CellSend",
-      body: "New message. Unlock to view.",
-    });
-    // Auto-ack on receive (§7.3, ADR 0005): queue a receipt-only response so the
-    // sender advances to delivered/read without any action here. Idempotent on
-    // the `response:` logical id; the response-sender worker publishes it.
-    await queueAcknowledgement(deps, {
+    // Record the source cell BEFORE the advance: the healer (runPendingTransactions)
+    // rebuilds the auto-ack from this chain ref when the cell itself is never
+    // discovered again.
+    await deps.messages.setChainRef(inserted.id, { txHash, outpointIndex });
+    await advanceIncomingToReceived(deps, inserted.id, inserted.state, {
       conversationId: conversation.id,
-      originalLogicalId: inserted.logicalMessageId,
-      originalCell: { txHash, outpointIndex },
+      logicalMessageId: inserted.logicalMessageId,
+      cell: { txHash, outpointIndex },
     });
   }
   // A reply that ALSO carries receipts (content + ack) still advances OUR
   // outgoing messages — processAcknowledgements is idempotent.
   if (incoming.receipts.length > 0) {
     await deps.lifecycle.processAcknowledgements(incoming);
+  }
+}
+
+/**
+ * Incoming states from which the advance-to-`received` path can still be
+ * driven: the initial state plus the two the multi-transaction advance can be
+ * interrupted in. See the guard in {@link processDiscoveredCell}.
+ */
+const STRANDABLE_INCOMING_STATES: ReadonlySet<string> = new Set([
+  "discovered",
+  "downloading",
+  "decrypting",
+]);
+
+/** The incoming advance path, in order (§11 state machine). */
+const INCOMING_ADVANCE_ORDER = ["discovered", "downloading", "decrypting", "received"] as const;
+
+/**
+ * Drive an incoming message from wherever it currently sits up to `received`,
+ * then notify and queue the auto-ack.
+ *
+ * Shared by first discovery and by the stranded-message healer so both take
+ * the SAME path: only the transitions still outstanding are applied (the §11
+ * machine is strict and forward-only, so replaying an already-applied one
+ * would throw). Notify and ack run once the row is at `received`; both are
+ * idempotent on the row id / `response:` logical id, so healing a row that
+ * was already notified cannot double-notify or double-ack.
+ */
+async function advanceIncomingToReceived(
+  deps: SyncWorkerDeps,
+  messageId: number,
+  fromState: string,
+  context: {
+    conversationId: number;
+    logicalMessageId: string;
+    /**
+     * The message's source outpoint, which the auto-ack must name. Absent only
+     * when healing a row whose chain ref was never written (an interruption
+     * before that write): the message is still advanced and shown, but no
+     * unaddressed ack is queued.
+     */
+    cell?: { txHash: string; outpointIndex: number };
+  },
+): Promise<void> {
+  const startIndex = INCOMING_ADVANCE_ORDER.indexOf(
+    fromState as (typeof INCOMING_ADVANCE_ORDER)[number],
+  );
+  if (startIndex < 0) {
+    return; // already past `received` (or invalid) — nothing to drive
+  }
+  for (const next of INCOMING_ADVANCE_ORDER.slice(startIndex + 1)) {
+    await deps.messages.transitionState(messageId, next);
+  }
+  // Notification (task 8; hardened per security review — no sender identity
+  // or message content ever leaves the app, regardless of the device's
+  // "hide sensitive content" setting, which the app cannot verify or trust
+  // as a default). Copy matches the locked-probe notification in
+  // background-sync-core.ts: generic, always — detail is shown only in-app
+  // after unlock.
+  await deps.notifier.post({
+    id: `message:${String(messageId)}`,
+    channel: "messages",
+    title: "CellSend",
+    body: "New message. Unlock to view.",
+  });
+  // Auto-ack on receive (§7.3, ADR 0005): queue a receipt-only response so the
+  // sender advances to delivered/read without any action here. Idempotent on
+  // the `response:` logical id; the response-sender worker publishes it.
+  if (context.cell !== undefined) {
+    await queueAcknowledgement(deps, {
+      conversationId: context.conversationId,
+      originalLogicalId: context.logicalMessageId,
+      originalCell: context.cell,
+    });
   }
 }
 
@@ -404,6 +473,48 @@ async function runPendingTransactions(deps: SyncWorkerDeps): Promise<void> {
       await deps.messages.transitionState(message.id, "committed");
     }
     await deps.messages.transitionState(message.id, "available_on_chain");
+  }
+
+  await healStrandedIncoming(deps);
+}
+
+/**
+ * Heal INCOMING messages stranded mid-advance at `downloading`/`decrypting`.
+ *
+ * The counterpart of the outgoing heal above, for the receive side. Discovery
+ * advances a new message through three separate transactions before notifying
+ * and acking; an auto-lock closing the database (or process death) between
+ * them leaves the row part-way. Serializing `close()` behind the transaction
+ * mutex closes the auto-lock window, but NOT process death — so the row still
+ * has to be recoverable after the fact, and re-discovery alone cannot be
+ * relied on (the cell may be reclaimed, or the scan may never see it again).
+ *
+ * Rows are re-driven through the NORMAL path (`advanceIncomingToReceived`),
+ * never forced to a terminal state: the message is intact, only its bookkeeping
+ * was interrupted. Healing makes it visible AND acked, which is what releases
+ * the sender from "sent".
+ */
+async function healStrandedIncoming(deps: SyncWorkerDeps): Promise<void> {
+  // `downloading`/`decrypting` are incoming-only states (§11), but filter on
+  // direction anyway rather than trusting that invariant from here.
+  const stranded = (await deps.messages.listByState(["downloading", "decrypting"])).filter(
+    (message) => message.direction === "incoming",
+  );
+  for (const message of stranded) {
+    // The source cell is recorded before the advance begins, so the auto-ack
+    // can name the original outpoint. Without it the ack has nothing to
+    // reference — advance and notify anyway (the user still sees the message),
+    // but skip the ack rather than queue an unaddressed one.
+    const ref = await deps.messages.getChainRef(message.id);
+    const cell =
+      ref?.txHash != null && ref.outpointIndex !== null
+        ? { txHash: ref.txHash, outpointIndex: ref.outpointIndex }
+        : undefined;
+    await advanceIncomingToReceived(deps, message.id, message.state, {
+      conversationId: message.conversationId,
+      logicalMessageId: message.logicalMessageId,
+      ...(cell === undefined ? {} : { cell }),
+    });
   }
 }
 

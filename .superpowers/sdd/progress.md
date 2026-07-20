@@ -179,3 +179,58 @@ TESTING NOTE FOR FUTURE RUNS: verify every UI step against `uiautomator dump`
 bounds rather than firing fixed coordinates. Blind taps cost three cycles this
 session (keyboard swallowed SEND; password typed into a stale field; a
 "Settings" tap that launched the Clock app and invalidated a locked test).
+
+FINAL REVIEW + POST-REVIEW FIXES (commits 95d0292..3db150c)
+Opus whole-branch review: no Criticals, "merge after fixes". All applied:
+
+- 8108f9e auto-lock could PERMANENTLY strand an incoming message.
+  processDiscoveredCell walks 3 separate transactions; a DB close between them
+  left the row at downloading/decrypting, and insert()'s ON CONFLICT DO NOTHING
+  - re-read meant the `state === "discovered"` guard then skipped it forever —
+    never notified, never auto-acked, so the SENDER hung at "sent" too. Fixed
+    both ways: close() waits on the tx mutex; healer extended to incoming states.
+- 3072a3a debug logs could emit an outpoint via error.message (CempCkbError is
+  built from an 80-char preview of RPC data; a tx hash is 66 chars).
+- 16b10cb console stripping for release. NEARLY SHIPPED BROKEN: the RN-documented
+  env:{production} block is INERT because Metro loads babel.config.js via
+  Babel's `extends`, and minification independently strips most console calls,
+  so a minified bundle looks correct either way. Working form is the function
+  config gated on api.env("production"), proven by diffing UNMINIFIED bundles.
+- ac78418 tick no longer resets its own period on every unlock (KEEP, with
+  UPDATE only when interval/network actually change). Verified on device:
+  Minimum latency identical to the ms across 3 unlocks incl. one running
+  engine.start(), and the WorkSpec id never changed all session.
+- 173ffe1 lock() now locks the vault BEFORE closing the DB — the one path where
+  the new unbounded close() wait could hold the vault open on a driver hang.
+
+TWO MORE DEVICE-ONLY BUGS FOUND AND FIXED AFTER THE REVIEW:
+
+- 908f5f2 EVERY tick held the RN runtime for the full 120s timeout, not just
+  degraded ones (measured on a SUCCESSFUL tick: 6s of work, finish at +120.0s).
+  Root cause: HeadlessJsTaskSupportModule is NOT registered in RN 0.83.10's
+  bridgeless CoreReactPackage — nothing instantiates it — so
+  TurboModuleRegistry.get returns null, both guards in AppRegistryImpl fall
+  through, notifyTaskFinished is never called, and only the timeout ends a
+  tick. Fixed with our own JS->native finish signal; timeout kept as backstop.
+  VERIFIED: 19ms instead of 113.955s.
+- 3db150c the tick branched on AppContainer's CACHED state, which is maintained
+  by a 1s setInterval that RN freezes while backgrounded — so a tick took the
+  full-sync branch on a vault locked 7 minutes earlier, then died on a DB the
+  resumed poll closed mid-sync. NOTE the correction to the first diagnosis:
+  the vault's OWN auto-lock is also a setTimeout and is frozen too, so
+  consulting vault.state alone would NOT have fixed it. Fix gates on a
+  wall-clock autoLockDeadlineMs. touch() deliberately avoided — it restarts the
+  inactivity window and would keep a backgrounded vault unlocked forever.
+  VERIFIED: tick 10min after auto-lock took the locked-probe branch, whole
+  tick 1.55s end to end.
+
+FINAL STATE: 30 commits, 556 tests + 1 skipped, Kotlin compiles, APK assembles.
+All three Phase 9 exit criteria proven on hardware.
+
+FOLLOW-UPS TO FILE (not done):
+
+- Version the unique work name (cemp-sync-tick-v2) or cancelPeriodic() once on
+  upgrade: KEEP will otherwise preserve a stale intervalMs forever if a future
+  release changes it. Unreachable today (tick is invariantly 15min+network).
+- healStrandedIncoming has no per-row try/catch (discovery's equivalent does).
+- Retroid wallet is capacity-bound: 9,999 CKB total, only ~4,512 available.

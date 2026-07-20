@@ -12,6 +12,23 @@ import { outpointsForTag } from "./platform/locked-probe";
 import { createRouteTagCache } from "./platform/route-tag-cache";
 
 /**
+ * Diagnostics only (see task instructions this instrumentation was added
+ * for). Every line below is prefixed so it can be grepped out of logcat
+ * (`adb logcat | grep CempSync`) alongside the native `CempSync` tag.
+ *
+ * SECURITY: these lines must never carry message content, contact names,
+ * profile ids, route tags, outpoints, or any other identifier — counts and
+ * outcomes only. Logcat is world-readable to anyone with adb and ends up in
+ * bug reports.
+ */
+const LOG_TAG = "[CempSync]";
+
+/** Safe to log: our own errors carry static messages, never user data. */
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
  * `afterVaultUnlock` deliberately tolerates a `MessagingService.init` failure,
  * so `state === "ready"` with no messaging service is reachable. In that
  * degraded state the full-sync branch must FAIL LOUDLY rather than return
@@ -48,34 +65,88 @@ function requireMessaging(container: AppContainer | null): AppContainer {
 }
 
 export async function backgroundSyncTask(): Promise<void> {
+  console.log(`${LOG_TAG} backgroundSyncTask: entered`);
+
   const cache = createRouteTagCache();
   const notifier = new AndroidNotifier();
   const container = AppContainer.current();
+  const unlocked = container?.state === "ready";
+  console.log(
+    `${LOG_TAG} backgroundSyncTask: vault seen as ${unlocked ? "unlocked" : "locked"}; ` +
+      `taking the ${unlocked ? "full-sync" : "locked-probe"} branch`,
+  );
+
+  // Counts only, accumulated across the locked-probe loop below — see the
+  // SECURITY note on LOG_TAG above.
+  let tagsRead = 0;
+  let tagsAnswered = 0;
+  let outpointsSeen = 0;
 
   try {
-    await runBackgroundSync({
+    const outcome = await runBackgroundSync({
       isVaultUnlocked: () => container?.state === "ready",
       runFullSync: async () => {
+        console.log(`${LOG_TAG} full sync: starting`);
         await requireMessaging(container).messaging.syncNow();
+        console.log(`${LOG_TAG} full sync: completed`);
       },
       refreshTagCache: async () => {
         const ready = requireMessaging(container);
-        await cache.writeTags(await ready.messaging.routeTagsHex());
+        const tags = await ready.messaging.routeTagsHex();
+        await cache.writeTags(tags);
+        console.log(`${LOG_TAG} full sync: route-tag cache refreshed (${tags.length} tag(s))`);
       },
-      readTagCache: () => cache.read(),
+      readTagCache: async () => {
+        const result = await cache.read();
+        tagsRead = result?.tags.length ?? 0;
+        console.log(`${LOG_TAG} locked probe: read ${tagsRead} cached route tag(s)`);
+        return result;
+      },
       writeTagCache: (next) => cache.write(next),
       // Standalone by design: on a cold start there is no container, so this
       // must not depend on one (see Step 2b).
-      listOutpointsForTag: (tagHex) => outpointsForTag(tagHex),
+      listOutpointsForTag: async (tagHex) => {
+        try {
+          const outpoints = await outpointsForTag(tagHex);
+          tagsAnswered += 1;
+          outpointsSeen += outpoints.length;
+          console.log(
+            `${LOG_TAG} locked probe: tag ${tagsAnswered}/${tagsRead} answered with ` +
+              `${outpoints.length} outpoint(s)`,
+          );
+          return outpoints;
+        } catch (error) {
+          // Rethrown unchanged — background-sync-core.ts owns per-tag
+          // isolation (one failing tag must not suppress the others). This
+          // only logs before letting that catch run.
+          console.warn(`${LOG_TAG} locked probe: tag query failed — ${describeError(error)}`);
+          throw error;
+        }
+      },
       notify: async (count) => {
-        await notifier.post({
-          id: "locked-inbox",
-          channel: "messages",
-          title: "CellSend",
-          body: `${String(count)} new message${count === 1 ? "" : "s"} — unlock to read`,
-        });
+        console.log(`${LOG_TAG} locked probe: posting notification for ${count} new message(s)`);
+        try {
+          await notifier.post({
+            id: "locked-inbox",
+            channel: "messages",
+            title: "CellSend",
+            body: `${String(count)} new message${count === 1 ? "" : "s"} — unlock to read`,
+          });
+          console.log(`${LOG_TAG} locked probe: notification posted`);
+        } catch (error) {
+          // Rethrown unchanged — background-sync-core.ts treats a failed
+          // notify as "quiet" so the same outpoints are retried next tick.
+          console.warn(`${LOG_TAG} locked probe: notify failed — ${describeError(error)}`);
+          throw error;
+        }
       },
     });
+    console.log(
+      `${LOG_TAG} backgroundSyncTask: outcome=${outcome}` +
+        (unlocked
+          ? ""
+          : ` tagsRead=${tagsRead} tagsAnswered=${tagsAnswered} outpointsSeen=${outpointsSeen}`),
+    );
   } catch (error) {
     // `requireMessaging` above already did its job by this point: the
     // degraded tick never ran a real sync or wrote fresh tags, so it cannot
@@ -84,6 +155,6 @@ export async function backgroundSyncTask(): Promise<void> {
     // is no `HeadlessJsTaskError` import available here (React Native does
     // not export one publicly), so swallowing after logging is the boundary
     // fix rather than rethrowing a typed error the native side would notice.
-    console.error("backgroundSyncTask: degraded tick", error);
+    console.error(`${LOG_TAG} backgroundSyncTask: degraded tick — ${describeError(error)}`);
   }
 }

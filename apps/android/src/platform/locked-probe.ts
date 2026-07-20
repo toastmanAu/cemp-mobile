@@ -19,6 +19,10 @@ import { bytesFrom } from "@ckb-ccc/core";
 
 const RPC_TIMEOUT_MS = 15_000;
 
+// Diagnostics only — counts, never a tag, cursor, or outpoint. See the
+// SECURITY note in background-sync.ts, which this module's caller carries.
+const LOG_TAG = "[CempSync]";
+
 /** Outpoints (`txHash:index`) currently on-chain for one hex route tag. */
 export async function outpointsForTag(
   tagHex: string,
@@ -26,6 +30,7 @@ export async function outpointsForTag(
 ): Promise<string[]> {
   const cempType = CKB_TESTNET.deployments.cempMessageType;
   if (cempType === null) {
+    console.log(`${LOG_TAG} locked probe: no cempMessageType deployment configured`);
     return [];
   }
   const client = new CempClient({ transport, endpoints: CKB_TESTNET.endpoints[0]! });
@@ -44,15 +49,31 @@ export async function outpointsForTag(
   // once new cells arrive.
   const outpoints: string[] = [];
   let cursor: string | undefined = undefined;
+  let page = 0;
+  console.log(`${LOG_TAG} locked probe: chain query starting`);
   for (;;) {
-    const page = await findMessageCells(client, messageType, routeTag, cursor);
-    for (const cell of page.cells) {
+    page += 1;
+    let result: Awaited<ReturnType<typeof findMessageCells>>;
+    try {
+      result = await findMessageCells(client, messageType, routeTag, cursor);
+    } catch (error) {
+      console.warn(
+        `${LOG_TAG} locked probe: chain query page ${page} failed — ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      throw error;
+    }
+    console.log(
+      `${LOG_TAG} locked probe: chain query page ${page} returned ${result.cells.length} cell(s)`,
+    );
+    for (const cell of result.cells) {
       outpoints.push(`${cell.outPoint.txHash}:${Number(cell.outPoint.index)}`);
     }
-    if (page.cells.length === 0 || page.lastCursor === "0x" || page.lastCursor === "") {
+    if (result.cells.length === 0 || result.lastCursor === "0x" || result.lastCursor === "") {
       break;
     }
-    cursor = page.lastCursor;
+    cursor = result.lastCursor;
   }
+  console.log(`${LOG_TAG} locked probe: chain query finished, ${outpoints.length} outpoint(s)`);
   return outpoints;
 }

@@ -37,6 +37,7 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
   CoroutineWorker(context, params) {
 
   override suspend fun doWork(): Result {
+    Log.i(TAG, "doWork: entered")
     val application = applicationContext
     // `ReactApplication.reactHost` is declared `ReactHost?` and defaults to
     // null; MainApplication overrides it, so null here means a broken build
@@ -46,6 +47,7 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
       Log.e(TAG, "No ReactHost on the Application; cannot run the background sync task")
       return Result.failure()
     }
+    Log.i(TAG, "doWork: ReactHost obtained")
 
     return try {
       val reactContext = withTimeoutOrNull(CONTEXT_START_TIMEOUT_MS) { awaitReactContext(host) }
@@ -53,6 +55,7 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
         Log.w(TAG, "React context did not start within ${CONTEXT_START_TIMEOUT_MS}ms; retrying")
         return Result.retry()
       }
+      Log.i(TAG, "doWork: React context ready")
 
       val finished = withTimeoutOrNull(TASK_TIMEOUT_MS + TIMEOUT_GRACE_MS) { runTask(reactContext) }
       if (finished == null) {
@@ -61,13 +64,14 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
         Log.w(TAG, "Background sync task did not finish within the timeout; retrying")
         Result.retry()
       } else {
+        Log.i(TAG, "doWork: task finished; returning Result.success()")
         Result.success()
       }
     } catch (error: Exception) {
       // Surface the failure rather than reporting a tick that never ran as a
       // success. Starting the runtime or the task is inherently racy against
       // process teardown, so a retry is the right shape here.
-      Log.e(TAG, "Background sync tick failed", error)
+      Log.e(TAG, "doWork: background sync tick failed; returning Result.retry()", error)
       Result.retry()
     }
   }
@@ -83,8 +87,12 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
    * between the two.
    */
   private suspend fun awaitReactContext(host: ReactHost): ReactContext {
-    host.currentReactContext?.let { return it }
+    host.currentReactContext?.let {
+      Log.i(TAG, "awaitReactContext: context already existed")
+      return it
+    }
 
+    Log.i(TAG, "awaitReactContext: no context yet; awaiting instance-ready listener")
     val ready = CompletableDeferred<ReactContext>()
     val listener =
       object : ReactInstanceEventListener {
@@ -97,6 +105,7 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
     return try {
       host.currentReactContext?.let { ready.complete(it) }
       if (!ready.isCompleted) {
+        Log.i(TAG, "awaitReactContext: starting ReactHost")
         // ReactHostImpl.start() dispatches onto its own background executor
         // and is safe to call from this (non-main) worker thread.
         host.start()
@@ -130,6 +139,7 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
         override fun onHeadlessJsTaskFinish(taskId: Int) {
           // Another task may be running concurrently; only ours ends this tick.
           if (taskId == startedTaskId.get()) {
+            Log.i(TAG, "runTask: headless task id=$taskId finished")
             finished.complete(Unit)
           }
         }
@@ -140,9 +150,12 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
       val posted =
         UiThreadUtil.runOnUiThread {
           try {
-            startedTaskId.set(taskContext.startTask(taskConfig()))
+            val taskId = taskContext.startTask(taskConfig())
+            startedTaskId.set(taskId)
+            Log.i(TAG, "runTask: started headless task id=$taskId")
           } catch (error: Exception) {
             // Never let this escape onto the main thread: it would crash the app.
+            Log.e(TAG, "runTask: startTask threw", error)
             finished.completeExceptionally(error)
           }
         }
@@ -164,7 +177,7 @@ class CempSyncWorker(context: Context, params: WorkerParameters) :
     )
 
   private companion object {
-    const val TAG = "CempSyncWorker"
+    const val TAG = "CempSync"
     const val TASK_KEY = "CempBackgroundSync"
     const val TASK_TIMEOUT_MS = 120_000L
 

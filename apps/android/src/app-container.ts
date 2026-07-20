@@ -152,8 +152,15 @@ export class AppContainer {
 
   async lock(): Promise<void> {
     this.#stopPoll();
-    await this.#closeDatabase();
+    // Lock the vault BEFORE closing the database. `close()` now waits on the
+    // transaction mutex so teardown cannot cut off an in-flight background
+    // tick, and that wait is unbounded — if a native op-sqlite call ever
+    // wedged, closing first would leave the vault unlocked with the key still
+    // in memory. Locking first turns a driver hang into a stuck handle rather
+    // than a security failure; in-flight work still drains against the handle,
+    // which is already open and needs no key to close.
     await this.vault.lock();
+    await this.#closeDatabase();
     this.#setState("locked");
   }
 

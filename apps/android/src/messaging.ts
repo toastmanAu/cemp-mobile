@@ -191,6 +191,17 @@ export class MessagingService {
       backoff: new BackoffPolicy({ jitter: 0 }),
       engineId,
     });
+    // Register every worker with the scheduler (Phase 9 exit criterion: a
+    // WorkManager job must be enqueued once the app is unlocked). `start()`
+    // is deliberately called here, inside composition, rather than left for
+    // a caller to remember: `init()` runs exactly once per unlock (see
+    // AppContainer#afterVaultUnlock's `#messaging === null` guard), so this
+    // fires on every unlock, matching `start()`'s documented idempotent
+    // re-registration contract. Folding it into construction — instead of a
+    // separate public `start()` step on MessagingService — is what closes
+    // the gap that shipped Phase 9 without it: an engine that is
+    // constructed-but-not-started can no longer exist as a distinct state.
+    engine.start();
 
     return new MessagingService({
       signer,

@@ -28,15 +28,32 @@ class CempSchedulerModule(reactContext: ReactApplicationContext) :
       .setRequiredNetworkType(if (requiresNetwork) NetworkType.CONNECTED else NetworkType.NOT_REQUIRED)
       .build()
 
+  /**
+   * Enqueue the single coalesced tick.
+   *
+   * [replaceExisting] is decided entirely on the TypeScript side, which owns
+   * the coalescing state and therefore knows whether the tick's parameters
+   * actually changed. KEEP lets an already-running tick retain its period
+   * across the re-registration that happens on every vault unlock; UPDATE is
+   * used only when the interval or network constraint genuinely differs, so
+   * the change takes effect instead of being silently ignored.
+   */
   @ReactMethod
-  fun schedulePeriodic(intervalMs: Double, requiresNetwork: Boolean, promise: Promise) {
+  fun schedulePeriodic(
+    intervalMs: Double,
+    requiresNetwork: Boolean,
+    replaceExisting: Boolean,
+    promise: Promise
+  ) {
     try {
       val request =
         PeriodicWorkRequestBuilder<CempSyncWorker>(intervalMs.toLong(), TimeUnit.MILLISECONDS)
           .setConstraints(constraints(requiresNetwork))
           .build()
+      val policy =
+        if (replaceExisting) ExistingPeriodicWorkPolicy.UPDATE else ExistingPeriodicWorkPolicy.KEEP
       WorkManager.getInstance(reactApplicationContext)
-        .enqueueUniquePeriodicWork(PERIODIC_WORK, ExistingPeriodicWorkPolicy.UPDATE, request)
+        .enqueueUniquePeriodicWork(PERIODIC_WORK, policy, request)
       promise.resolve(null)
     } catch (error: Exception) {
       promise.reject("scheduler_error", error.message, error)

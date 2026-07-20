@@ -13,7 +13,11 @@ import { bestEffort } from "./best-effort";
 import { SpecRegistry } from "./scheduler-coalesce";
 
 interface CempSchedulerNativeModule {
-  schedulePeriodic(intervalMs: number, requiresNetwork: boolean): Promise<void>;
+  schedulePeriodic(
+    intervalMs: number,
+    requiresNetwork: boolean,
+    replaceExisting: boolean,
+  ): Promise<void>;
   scheduleOneShot(id: string, delayMs: number): Promise<void>;
   cancel(id: string): Promise<void>;
   cancelPeriodic(): Promise<void>;
@@ -30,12 +34,23 @@ export class WorkManagerScheduler implements Scheduler {
     return module;
   }
 
+  /**
+   * `SyncEngine.start()` calls this once per worker, and runs on every vault
+   * unlock — so most calls here are re-registrations of a tick WorkManager is
+   * already running. The registry returns `undefined` for those, and we make
+   * no native call at all: re-enqueueing would restart the 15-minute period
+   * and a frequently-unlocking user would never receive a background tick.
+   */
   schedulePeriodic(spec: { id: string; intervalMs: number; requiresNetwork: boolean }): void {
-    const tick = this.#registry.add(spec);
-    if (tick === undefined) {
+    const update = this.#registry.add(spec);
+    if (update === undefined) {
       return;
     }
-    void this.#module().schedulePeriodic(tick.intervalMs, tick.requiresNetwork);
+    void this.#module().schedulePeriodic(
+      update.tick.intervalMs,
+      update.tick.requiresNetwork,
+      update.replaceExisting,
+    );
   }
 
   scheduleOneShot(id: string, delayMs: number): void {
@@ -54,7 +69,18 @@ export class WorkManagerScheduler implements Scheduler {
    * the registry lookup below still drops it from future coalescing).
    */
   cancel(id: string): void {
-    this.#registry.remove(id);
+    const update = this.#registry.remove(id);
+    if (update !== undefined) {
+      // Dropping the shortest spec promotes the next-shortest, which is a real
+      // parameter change and so must replace the running tick, not defer to it.
+      void bestEffort(() =>
+        this.#module().schedulePeriodic(
+          update.tick.intervalMs,
+          update.tick.requiresNetwork,
+          update.replaceExisting,
+        ),
+      );
+    }
     // Best-effort: a missing native module or a rejected native promise here
     // must not become an unhandled rejection (see `bestEffort`).
     void bestEffort(() => this.#module().cancel(id));

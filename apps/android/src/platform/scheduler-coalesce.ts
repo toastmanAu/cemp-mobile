@@ -37,6 +37,25 @@ export function coalesce(specs: readonly PeriodicSpec[]): CoalescedTick | undefi
   };
 }
 
+/** A tick the caller must actually push to WorkManager, and how. */
+export interface TickUpdate {
+  readonly tick: CoalescedTick;
+  /**
+   * Whether the enqueue must REPLACE what is already scheduled
+   * (ExistingPeriodicWorkPolicy.UPDATE) rather than defer to it (KEEP).
+   *
+   * `true` only when this registry previously handed the adapter a different
+   * tick, so the change genuinely has to take effect. `false` for the first
+   * tick of a process, where any already-scheduled work is by assumption the
+   * same one a previous process enqueued and must keep its running period.
+   */
+  readonly replaceExisting: boolean;
+}
+
+function sameTick(a: CoalescedTick, b: CoalescedTick): boolean {
+  return a.intervalMs === b.intervalMs && a.requiresNetwork === b.requiresNetwork;
+}
+
 /**
  * Bookkeeping for the specs behind a coalesced tick: which worker asked for
  * what, so the tick can be recomputed as workers come and go.
@@ -47,22 +66,54 @@ export function coalesce(specs: readonly PeriodicSpec[]): CoalescedTick | undefi
  * insert/delete/recompute logic is exercised directly; the RN adapter
  * becomes a thin pass-through that just forwards the result to the native
  * module.
+ *
+ * The registry also owns the re-enqueue decision, because it is the only
+ * thing that knows the previously-scheduled tick. `SyncEngine.start()` runs
+ * on every vault unlock and re-adds all ~8 workers, which would otherwise be
+ * ~8 native `enqueueUniquePeriodicWork` calls that each reset WorkManager's
+ * 15-minute period — a user who unlocks more often than that would never see
+ * a background tick fire at all. Returning `undefined` for "nothing changed"
+ * collapses those 8 calls to 0 after the first unlock.
  */
 export class SpecRegistry {
   readonly #specs = new Map<string, PeriodicSpec>();
+  /** The last tick handed to the caller to enqueue, if any. */
+  #scheduled: CoalescedTick | undefined;
 
-  /** Registers or replaces `spec`, returning the tick to schedule now. */
-  add(spec: PeriodicSpec): CoalescedTick | undefined {
+  /**
+   * Registers or replaces `spec`, returning the tick to enqueue now, or
+   * `undefined` when the native scheduler needs no call at all — either
+   * nothing is scheduled, or the coalesced tick is unchanged.
+   */
+  add(spec: PeriodicSpec): TickUpdate | undefined {
     this.#specs.set(spec.id, spec);
-    return coalesce([...this.#specs.values()]);
+    return this.#recompute();
   }
 
   /**
-   * Removes `id`, returning the tick to schedule now (or `undefined` if
-   * nothing remains). Removing an id that was never added is a no-op.
+   * Removes `id`, returning the tick to enqueue now under the same rules as
+   * {@link add}. Removing an id that was never added is a no-op.
+   *
+   * Emptying the registry does not cancel anything (that is
+   * `WorkManagerScheduler.cancelPeriodic`), so `#scheduled` deliberately
+   * keeps its last value: it tracks what WorkManager holds, not what the
+   * specs currently coalesce to.
    */
-  remove(id: string): CoalescedTick | undefined {
+  remove(id: string): TickUpdate | undefined {
     this.#specs.delete(id);
-    return coalesce([...this.#specs.values()]);
+    return this.#recompute();
+  }
+
+  #recompute(): TickUpdate | undefined {
+    const tick = coalesce([...this.#specs.values()]);
+    if (tick === undefined) {
+      return undefined;
+    }
+    const previous = this.#scheduled;
+    if (previous !== undefined && sameTick(previous, tick)) {
+      return undefined;
+    }
+    this.#scheduled = tick;
+    return { tick, replaceExisting: previous !== undefined };
   }
 }

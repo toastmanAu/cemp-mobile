@@ -227,10 +227,17 @@ TWO MORE DEVICE-ONLY BUGS FOUND AND FIXED AFTER THE REVIEW:
 FINAL STATE: 30 commits, 556 tests + 1 skipped, Kotlin compiles, APK assembles.
 All three Phase 9 exit criteria proven on hardware.
 
-FOLLOW-UPS TO FILE (not done):
+FOLLOW-UPS (2026-07-22):
 
-- Version the unique work name (cemp-sync-tick-v2) or cancelPeriodic() once on
-  upgrade: KEEP will otherwise preserve a stale intervalMs forever if a future
-  release changes it. Unreachable today (tick is invariantly 15min+network).
-- healStrandedIncoming has no per-row try/catch (discovery's equivalent does).
-- Retroid wallet is capacity-bound: 9,999 CKB total, only ~4,512 available.
+- DONE (bf88a5e): stale intervalMs across upgrade. Instead of versioning the
+  unique work name (which would orphan the old WorkSpec unless separately
+  cancelled), CempSchedulerModule now persists a SCHEDULE_VERSION in
+  SharedPreferences; a mismatch forces ExistingPeriodicWorkPolicy.UPDATE once
+  after an upgrade, then KEEP-across-unlock resumes. Bump SCHEDULE_VERSION when
+  a release changes the tick interval/constraint. Kotlin compiles.
+- DONE (161d196): healStrandedIncoming now wraps each row in try/catch, matching
+  the discovery loop. Regression test: first-of-two stranded rows throws at the
+  notification post, second still heals+acks, worker still succeeds.
+- OPEN (env, not code): Retroid wallet is capacity-bound — 9,999 CKB total, only
+  ~4,512 available (rest locked in CEMP protocol cells). Top up via faucet, swap
+  a fresh test wallet, or keep on-device send amounts within available balance.

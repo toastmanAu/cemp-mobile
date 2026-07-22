@@ -501,20 +501,27 @@ async function healStrandedIncoming(deps: SyncWorkerDeps): Promise<void> {
     (message) => message.direction === "incoming",
   );
   for (const message of stranded) {
-    // The source cell is recorded before the advance begins, so the auto-ack
-    // can name the original outpoint. Without it the ack has nothing to
-    // reference — advance and notify anyway (the user still sees the message),
-    // but skip the ack rather than queue an unaddressed one.
-    const ref = await deps.messages.getChainRef(message.id);
-    const cell =
-      ref?.txHash != null && ref.outpointIndex !== null
-        ? { txHash: ref.txHash, outpointIndex: ref.outpointIndex }
-        : undefined;
-    await advanceIncomingToReceived(deps, message.id, message.state, {
-      conversationId: message.conversationId,
-      logicalMessageId: message.logicalMessageId,
-      ...(cell === undefined ? {} : { cell }),
-    });
+    try {
+      // The source cell is recorded before the advance begins, so the auto-ack
+      // can name the original outpoint. Without it the ack has nothing to
+      // reference — advance and notify anyway (the user still sees the message),
+      // but skip the ack rather than queue an unaddressed one.
+      const ref = await deps.messages.getChainRef(message.id);
+      const cell =
+        ref?.txHash != null && ref.outpointIndex !== null
+          ? { txHash: ref.txHash, outpointIndex: ref.outpointIndex }
+          : undefined;
+      await advanceIncomingToReceived(deps, message.id, message.state, {
+        conversationId: message.conversationId,
+        logicalMessageId: message.logicalMessageId,
+        ...(cell === undefined ? {} : { cell }),
+      });
+    } catch {
+      // One row that fails to re-drive (a transient DB/notifier error) must not
+      // strand every row queued behind it — the same per-item isolation the
+      // discovery loop uses. The row stays at its interrupted state and is
+      // retried on the next tick.
+    }
   }
 }
 

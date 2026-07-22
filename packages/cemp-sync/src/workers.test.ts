@@ -911,9 +911,11 @@ describe("stranded incoming messages are healed (final review fix 1b)", () => {
     at: "downloading" | "decrypting",
     body = "stranded hello",
   ): Promise<number> {
+    // Derive a distinct contact per messageId so a test can strand several
+    // rows in one stack without colliding on the UNIQUE profile_id_hex.
     const contact = await stack.contacts.create({
       displayName: "unknown-stranded",
-      profileIdHex: bytesToHex(ALICE_PROFILE_ID),
+      profileIdHex: bytesToHex(new Uint8Array([...messageId, ...messageId])),
     });
     const conversation = await stack.conversations.getOrCreateForContact(contact.id);
     const row = await stack.messages.insert({
@@ -992,6 +994,45 @@ describe("stranded incoming messages are healed (final review fix 1b)", () => {
       expect(stack.notifier.posted).toHaveLength(1);
       expect(
         await stack.messages.getByLogicalId(`response:${incomingLogicalMessageId(messageId)}`),
+      ).toBeDefined();
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("heals later stranded rows even when an earlier row throws mid-advance", async () => {
+    // Per-row isolation (discovery already has it; the receive-side healer must
+    // too): one row that throws while being re-driven must not strand every
+    // row queued behind it. `listByState` is ORDER BY id, so the row stranded
+    // first is processed first — make ONLY that one fail and assert the later
+    // row still reaches `received` and gets acked.
+    const stack = await makeStack({ cells: [] });
+    try {
+      const idA = hexToBytes("a1".repeat(16));
+      const idB = hexToBytes("b2".repeat(16));
+      const rowA = await strandIncoming(stack, idA, "downloading", "row A");
+      const rowB = await strandIncoming(stack, idB, "downloading", "row B");
+      expect(rowA).toBeLessThan(rowB); // A is processed first
+
+      // Fail row A at the notification post — a faithful transient platform
+      // error — while every other post still records.
+      const recorder = stack.notifier;
+      const throwingNotifier: Notifier = {
+        post: (content) =>
+          content.id === `message:${String(rowA)}`
+            ? Promise.reject(new Error("notifier boom (row A)"))
+            : recorder.post(content),
+        cancel: (_id) => recorder.cancel(),
+      };
+      (stack.deps as { notifier: Notifier }).notifier = throwingNotifier;
+
+      // One bad row does not crash the worker...
+      expect(await stack.engine.runWorker("pending-transactions")).toBe("success");
+
+      // ...and row B is fully healed despite row A throwing first.
+      expect((await stack.messages.getById(rowB))?.state).toBe("received");
+      expect(
+        await stack.messages.getByLogicalId(`response:${incomingLogicalMessageId(idB)}`),
       ).toBeDefined();
     } finally {
       await stack.db.close();

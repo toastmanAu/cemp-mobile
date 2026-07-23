@@ -241,3 +241,31 @@ FOLLOW-UPS (2026-07-22):
 - OPEN (env, not code): Retroid wallet is capacity-bound — 9,999 CKB total, only
   ~4,512 available (rest locked in CEMP protocol cells). Top up via faucet, swap
   a fresh test wallet, or keep on-device send amounts within available balance.
+
+ON-DEVICE E2E ON HEAD (2026-07-23): Samsung → Retroid, HEAD-vs-HEAD.
+Both devices reinstalled with the HEAD debug APK (carries the Kotlin WorkManager
+schedule-version gate bf88a5e); JS served by Metro from the current dist (carries
+the healStrandedIncoming fix 161d196). Metro ran on :8082 — host :8081 is held by
+an unrelated service — with `adb reverse tcp:8081 tcp:8082` on each device, so no
+app-side dev-server config change was needed.
+
+Samsung (unlocked) sent `head-e2e-164337` into the Retroid thread → UI "sent".
+Retroid (LOCKED) tick force-run via `cmd jobscheduler run -f com.cempmobile.debug
+256`:
+vault seen as locked; taking the locked-probe branch <- 3db150c authoritative-state fix
+read 3 cached route tag(s) <- prev/current/next epoch
+tag 2/3 answered with 8 outpoint(s) <- I1 pagination fix
+posting notification for 1 new message(s) <- lastSeen dedup (7 seen + 1 new)
+outcome=notified tagsRead=3 tagsAnswered=3 outpointsSeen=8
+Tick 16:55:32.283 -> 33.907 = ~1.6s end to end (908f5f2 bridgeless finish signal,
+NOT the old 120s linger). No DB open, no decrypt. dumpsys notification confirmed
+the LOCKED copy: title "CellSend", text "1 new message — unlock to read",
+vis=PRIVATE with a redacted publicVersion — distinct from the unlocked
+"New message. Unlock to view." So a HEAD sender's on-chain publish was discovered
+and correctly notify-only surfaced by a LOCKED HEAD receiver: every Phase 9 exit
+criterion, live, on the current build.
+
+TESTING NOTE: the vault auto-locks on an inactivity deadline, and host-side
+parsing gaps between adb taps are enough to trip it (re-locked mid-nav once).
+Drive unlock -> navigate -> send as ONE uninterrupted adb burst; do host-side
+uiautomator parsing only after the interactive step completes.

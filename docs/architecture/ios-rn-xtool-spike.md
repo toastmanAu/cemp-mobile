@@ -1,6 +1,44 @@
 # iOS Phase 12 — Task 0: React-Native-in-xtool de-risk spike
 
-**Status:** not started · **Blocks:** all of `ios-prep.md` Tasks 1–7 · **Owner:** —
+**Status:** DONE 2026-07-23 — **verdict AMBER** · **Blocks:** all of `ios-prep.md` Tasks 1–7 · **Owner:** —
+
+## Result (2026-07-23)
+
+**AMBER: RN iOS builds & ships on the macOS runner, but NOT via xtool-on-Linux.**
+
+Evidence (driveThree, healthy toolchain — Swift 6.3.3 via swiftly, Darwin SDK at
+`~/.swiftpm/swift-sdks/darwin.artifactbundle`, xtool 1.17.0):
+- `xtool --help` / `xtool dev --help`: xtool is a "Cross-platform Xcode replacement"
+  whose `new`/`dev build`/`dev run` operate on **SwiftPM projects only**. The only
+  adjacent mode is `dev generate-xcode-project` (SwiftPM → Xcode), still SwiftPM-rooted.
+  There is **no** path to ingest an existing RN `.xcodeproj` + CocoaPods.
+- `xtool dev build` in the RN app dir → `error: Could not find Package.swift`. RN core
+  is distributed as CocoaPods with a large ObjC/C++ native graph (React, Hermes, Folly)
+  built by Xcode's build system + script phases; there is no supported SwiftPM
+  distribution of react-native core. **Architectural mismatch, not a config gap.**
+
+**So the Linux `xtool dev build/run --usb` fast loop is unavailable for RN (RED for
+that specific capability), but the overall path is workable (AMBER):**
+
+1. **Build/ship on the macOS runner** — `pod install` + `xcodebuild archive` on
+   `macos-26`, reusing HTMLocal's `ios-release.yml` signing/upload workflow verbatim.
+   This is standard, well-trodden RN iOS CI (unlike xtool-on-Linux). *(Not executed in
+   this spike — it's the conventional path; stand it up when the native modules exist.)*
+2. **Iterate on Linux via a hybrid loop** — xtool's DEVICE subcommands (`install`,
+   `launch`, `devices`) are independent of its build system, so a macOS-CI-built `.ipa`
+   can be installed to a USB iPhone **from Linux** with `xtool install`, then **Metro
+   serves the JS** exactly like Android. JS/UI work stays fast on Linux; only NATIVE
+   changes (the 5 modules) require a macOS-runner rebuild.
+
+**Consequence for `ios-prep.md`:** proceed with Tasks 1–7, but the CempKdf / SQLCipher /
+BGTaskScheduler / Core Image native modules must be developed against macOS-runner
+builds (slower iterate), not `xtool dev`. Budget for that. Everything JS/TS-side
+(protocol, crypto, DB, sync, UI) iterates fast via the hybrid loop.
+
+---
+
+## Original plan (for reference)
+
 
 ## Why this exists
 

@@ -1,8 +1,7 @@
 # Android image messaging (send + receive round-trip) — design
 
-**Status:** DRAFT / in-progress (brainstorming paused 2026-07-24 to resume). Sections
-1–3 approved by user; error-handling + testing sections still to write; then finalize
-+ user spec review + writing-plans.
+**Status:** COMPLETE DRAFT — all sections (1–5) approved by user 2026-07-24. Pending:
+user review of the finalized spec, then writing-plans → implementation plan.
 
 ## Goal
 
@@ -97,25 +96,106 @@ publish/journal/state-machine machinery.
 Receive reuses discovery + reclaim wholesale; new code = the message-kind branch
 (text vs image manifest), thumbnail rendering, tap-to-download handler.
 
-## Section 4 — Error handling (TODO — not yet written)
+## Section 4 — Error handling (APPROVED)
 
-To cover next session: `ImageTooLargeError` surfaced in the composer (jargon-free, rule
-15); picker cancel = no-op; decode failure on a corrupt pick; download failure / manifest
-mismatch / bomb-guard rejection on receive; bitmap handle-registry leak safety (release on
-error paths); capacity/insufficient-CKB on a chunk-heavy send.
+The `@cemp/images` receive pipeline is already fully defensive — `downloadAttachment`
+throws on every failure (bomb-guard via `checkManifest`, chunk-not-live, oversized chunk,
+ciphertext/plaintext hash mismatch, sniff-vs-declared-mime mismatch). So receive-side
+handling is purely a UX question; the genuinely new error handling is on the send side
+(new native codec + picker).
 
-## Section 5 — Testing & on-device verification (TODO — not yet written)
+**Send side (new code → new handling):**
 
-To cover next session: unit tests for the JS adapters against the existing image test
-vectors; codec metadata-stripping assertion (decode→encode carries no EXIF); native module
-compile gate (`compileDebugKotlin`); on-device round-trip Samsung→Retroid mirroring the
-text e2e (send image from Samsung, thumbnail + tap-download on Retroid); wallet capacity
-note.
+1. **Image too large** — `ImageTooLargeError` from `compressToLimits` (dimension→quality
+   retreat exhausted, still >1 MB). Expected, not a crash: caught at the composer, surfaced
+   jargon-free (rule 15) — *"This photo's too large to send. Try a smaller one."* No stranded
+   outgoing row — we fail before any tx is built.
+2. **Picker cancel** — user dismisses the Photo Picker → adapter resolves `null` → pure
+   no-op (no bubble, no error).
+3. **Decode failure** — corrupt/unsupported bytes → `BitmapFactory.decodeByteArray` returns
+   null → native `decode` throws → adapter surfaces *"Couldn't read that image."* Composer
+   stays put.
+4. **Handle-registry leak safety** — the JS codec adapter wraps `prepareImage` in
+   `try/finally` and `release()`s every bitmap handle it created, including on the
+   decode/resize/encode throw path; native side recycles defensively too. This is the one
+   memory-correctness invariant unique to the handle-registry seam.
+5. **Insufficient CKB (chunk-heavy send) — DECISION 5A (pre-flight, defer adaptive):**
+   compress to the fixed protocol budget, then pre-flight a capacity estimate
+   (`chunks × per-chunk CKB + fee`) BEFORE building the tx and block with a jargon-free
+   message if the wallet can't cover it. Fails fast → no stranded pending row, no confusing
+   partial-send.
+
+   Reuse: `@cemp/images` already exports `estimateAttachmentCapacity(prepared, chunkBytes)`
+   → `{encryptedBytes, chunkCount}` (the byte/chunk-count half). The pre-flight layers the
+   per-chunk cell capacity (~1 CKB/byte + cell overhead) + fee on top of `chunkCount` and
+   compares to the wallet balance — do NOT re-derive the chunk math.
+
+   Rationale/context: on-chain storage is ~1 CKB per byte, so an image send locks roughly
+   its own byte-size in CKB (a 32 KiB chunk cell ≈ ~32,800 CKB; a 512 KB image ≈ 16 chunks
+   ≈ ~525k CKB; 1 MB ≈ 32 chunks). Capacity — not the 1 MB cap — is the dominant cost, and
+   why the capacity-bound Retroid (~4,512 CKB) can only RECEIVE, and the test send comes
+   from the better-funded Samsung.
+
+   **Deferred future lever (NOT this milestone):** `compressToLimits` and `checkManifest`
+   both take an injectable `ImageLimits`, so a capacity-ADAPTIVE send (derive a tighter
+   byte budget from available balance and feed it to the retreat ladder so it auto-fits the
+   wallet) is buildable with no pipeline change. Deferred because it adds a UX question
+   (silently degrade quality vs. tell the user) + estimation-accuracy risk beyond the
+   round-trip proof. The seam is ready when we want it.
+6. **Publish crash mid-send** — no new handling; rides the existing pre-broadcast journal +
+   `runPendingTransactions` + reclaim, identical to text.
+
+**Receive side (pipeline already throws → UX only):**
+
+7. **Any `downloadAttachment` throw — DECISION 7A (keep thumbnail + tap-to-retry):** the
+   thumbnail is always safe (it never left the manifest cell), so on any thrown error keep
+   the thumbnail visible and swap the affordance to *"Couldn't load full image — tap to
+   retry."* Download is idempotent and the common failure (chunk not yet indexed) is
+   transient, so retry is the honest default. A reclaimed/pruned chunk (`not live`) also
+   lands here — retry keeps failing gracefully, which is acceptable.
+8. **Malformed image message at discovery** — a message whose payload claims an attachment
+   but fails manifest decode is logged and stored as a normal received message with no
+   image bubble; never crashes the sync worker.
+
+## Section 5 — Testing & on-device verification (APPROVED)
+
+Layered cheapest → ground-truth. The app has no instrumented (`androidTest`) harness today;
+its established automated layer is vitest JS-adapter tests (`src/platform/*.test.ts`) plus
+the Kotlin compile gate. Native modules have never had JVM/Kotlin unit tests, and we keep
+that precedent.
+
+1. **JS adapter unit tests** (vitest, matching `src/platform/*.test.ts`):
+   - **Codec adapter** — handle lifecycle + the release-on-error invariant (fake native
+     bridge that throws inside `encode`; assert the `try/finally` released every handle
+     created during `prepareImage`); byte-marshalling round-trip.
+   - **Picker adapter** — resolves `null` on cancel, bytes on pick.
+2. **Pipeline coverage — reuse, don't duplicate.** `packages/cemp-images/src/images.test.ts`
+   already drives the full `prepare → chunk → manifest → receive` round-trip against the
+   deterministic mock codec. We're wiring, not changing the pipeline — so no new pipeline
+   tests, only a shape/conformance check that the real adapter satisfies the exact
+   `ImageCodec` TS interface the mock does.
+3. **Kotlin compile gate** — `compileDebugKotlin` stays green (the cheap CI gate proving the
+   two native modules build). No JVM Kotlin unit tests (matching precedent).
+4. **Metadata-stripping proof — DECISION 5A (on-device, defer instrumented):** the security
+   guarantee (EXIF/GPS never crosses decode→encode; orientation baked into pixels) needs the
+   real codec, so it is asserted ON-DEVICE during the e2e — pull the received full-res image,
+   run an EXIF check, confirm no EXIF/GPS and correct baked orientation. No new infra;
+   matches the "on-device is ground truth" lesson.
+
+   **Deferred alternative (5B, NOT this milestone):** the app's first instrumented
+   (`androidTest`) test — decode a known GPS-laden JPEG through the real `CempImageCodec`,
+   re-parse the output, assert no EXIF — for a permanent CI guarantee. Deferred to avoid
+   standing up (and maintaining) a new harness for the round-trip milestone.
+5. **On-device round-trip (ground truth)** — Samsung→Retroid, mirroring the 2026-07-23 text
+   e2e: send the image from the Samsung → Retroid shows the thumbnail immediately →
+   tap-download renders full-res with content-hash verified → sender reclaims chunk cells
+   after ack. Capacity: fund the Samsung (faucet top-up if a chunk-heavy send needs it);
+   Retroid stays receive-only (~4,512 CKB, cannot fund a send).
 
 ## Resume checklist
 
-- [ ] Finish Section 4 (error handling) — present, get approval
-- [ ] Finish Section 5 (testing) — present, get approval
-- [ ] Spec self-review (placeholders/consistency/scope/ambiguity), fix inline
+- [x] Finish Section 4 (error handling) — approved (5A pre-flight capacity; 7A keep-thumbnail+retry)
+- [x] Finish Section 5 (testing) — approved (5A on-device metadata proof; instrumented deferred)
+- [x] Spec self-review (placeholders/consistency/scope/ambiguity), fix inline
 - [ ] User reviews finalized spec
 - [ ] Invoke writing-plans skill → implementation plan

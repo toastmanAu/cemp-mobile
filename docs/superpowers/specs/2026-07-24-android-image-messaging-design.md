@@ -1,7 +1,8 @@
 # Android image messaging (send + receive round-trip) — design
 
-**Status:** COMPLETE DRAFT — all sections (1–5) approved by user 2026-07-24. Pending:
-user review of the finalized spec, then writing-plans → implementation plan.
+**Status:** COMPLETE DRAFT — sections 1–5 approved 2026-07-24; Section 6 (attachment-key
+coordination, C-on-A) added + approved 2026-07-25 after tracing revealed a missing send-side
+seam. Next: writing-plans → implementation plan.
 
 ## Goal
 
@@ -192,10 +193,63 @@ that precedent.
    after ack. Capacity: fund the Samsung (faucet top-up if a chunk-heavy send needs it);
    Retroid stays receive-only (~4,512 CKB, cannot fund a send).
 
+## Section 6 — Outgoing attachment-key coordination (APPROVED — added 2026-07-25)
+
+**Why this section exists:** the spec originally framed the work as "wire the *completed*
+`@cemp/images` backend." Tracing the send path showed the backend is complete on the
+receive side but has a MISSING SEAM on the send side that was never exercised end-to-end
+(the package's own e2e test hard-codes `new Uint8Array(32).fill(11)` as the attachment key
+on both sides, so it never derives a real one).
+
+**The chicken-and-egg.** Attachment chunks are AES-encrypted under a 32-byte `attachmentKey`
+derived from the message envelope's ML-KEM shared secret
+(`deriveMessageKey(sharedSecret, nonce, senderProfileId, recipientProfileId,
+"CEMP-ATTACHMENT-KEY-V1")` — spec §9.2, no key material is transported; the recipient
+re-derives it in `decryptEnvelope`). But chunks must be encrypted and published BEFORE the
+message tx (the manifest needs their outpoints), while the key is produced INSIDE
+`assembleTextMessage`/`encryptEnvelope`, which do a fresh random ML-KEM encapsulation on
+every call. Publish chunks under key A, then let the message do its own encapsulation → the
+recipient derives key B ≠ A → every `downloadAttachment` fails its hash check.
+
+**Decision: C-on-A** (chosen with user 2026-07-25).
+
+- **A — thread one shared encapsulation (crypto seam):** `encryptEnvelope` already accepts
+  `kemMessage` (32-byte FIPS-203 encapsulation message) + `nonce` overrides — currently
+  labelled test-only. Fixing both makes the encapsulation deterministic, so the sender can
+  derive `attachmentKey` up front and later seal the message under the SAME encapsulation.
+  - New tested helper in `@cemp/crypto`: `deriveSendAttachmentKey({ recipientKemPublicKey,
+    kemMessage, nonce, senderProfileId, recipientProfileId }) → Uint8Array` — encapsulate
+    with the given `kemMessage`, then `deriveMessageKey(sharedSecret, nonce, sender,
+    recipient, "CEMP-ATTACHMENT-KEY-V1")`.
+  - Thread an optional `attachmentEnvelope?: { kemMessage; nonce }` through
+    `AssembleTextMessageParams` → `PublishTextInput`, forwarded to `encryptEnvelope`'s
+    overrides. Documented as a REAL production seam (not "test override").
+  - **SAFETY INVARIANT (non-negotiable):** the override warning is about *reuse*. C-on-A is
+    sound ONLY because the orchestration generates FRESH CSPRNG `kemMessage`+`nonce` per
+    message and uses them for exactly one published envelope. The seam is shaped so the app
+    never hand-supplies these — the orchestration owns their generation. Reusing a
+    `(kemMessage, nonce)` pair across two envelopes breaks per-envelope key uniqueness and
+    is forbidden.
+- **C — orchestration home:** a new `publishImageMessage(deps, input)` in `@cemp/images`
+  (which already depends on `@cemp/ckb`; the reverse dependency would be a cycle, so this
+  canNOT live in the publisher). It: (1) generates fresh `kemMessage`+`nonce`, (2)
+  `deriveSendAttachmentKey`, (3) `prepareAttachmentChunks` + `publishAttachmentChunks` under
+  that key, (4) `buildManifestForCommittedChunks`, (5) publishes the `0x03` manifest-carrying
+  message via the injected `MessagePublisher.publishText({ contentType: 0x03,
+  attachmentManifests: [manifest], attachmentEnvelope: { kemMessage, nonce } })` — reusing
+  publishText's journal / monitor / crash-resume wholesale. The app's
+  `MessagingService.publishImage` just calls it with the native codec + app deps.
+
+This keeps `publishText` (text path) untouched, reuses the proven publish machinery, adds no
+new molecule/tx code, and confines the new crypto surface to one tested helper + one
+documented, safety-constrained override seam. On-device round-trip (Section 5) is the
+ground-truth proof that the two sides derive byte-identical keys.
+
 ## Resume checklist
 
 - [x] Finish Section 4 (error handling) — approved (5A pre-flight capacity; 7A keep-thumbnail+retry)
 - [x] Finish Section 5 (testing) — approved (5A on-device metadata proof; instrumented deferred)
 - [x] Spec self-review (placeholders/consistency/scope/ambiguity), fix inline
-- [ ] User reviews finalized spec
-- [ ] Invoke writing-plans skill → implementation plan
+- [x] User reviews finalized spec — approved 2026-07-24
+- [x] Section 6 added (attachment-key coordination, C-on-A) — approved 2026-07-25
+- [ ] Invoke writing-plans skill → implementation plan (IN PROGRESS)

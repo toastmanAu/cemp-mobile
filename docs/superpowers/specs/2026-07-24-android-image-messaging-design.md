@@ -252,4 +252,4 @@ ground-truth proof that the two sides derive byte-identical keys.
 - [x] Spec self-review (placeholders/consistency/scope/ambiguity), fix inline
 - [x] User reviews finalized spec — approved 2026-07-24
 - [x] Section 6 added (attachment-key coordination, C-on-A) — approved 2026-07-25
-- [ ] Invoke writing-plans skill → implementation plan (IN PROGRESS)
+- [x] Invoke writing-plans skill → implementation plan — `docs/superpowers/plans/2026-07-25-android-image-messaging.md` (2026-07-25)

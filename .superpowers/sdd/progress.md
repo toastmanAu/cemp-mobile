@@ -188,3 +188,37 @@ BRANCH CODE-READY. Remaining: Task 17 on-device acceptance gate (user-run; runbo
 MERGED to main (--no-ff, merge commit e0bf787) 2026-07-25. Tests green on merged result
 (594 passed/1 skipped). Feature branch deleted (was d744d58). Normal repo, no worktree cleanup.
 NOT pushed (user did not request). Remaining: Task 17 on-device acceptance gate (user-run).
+
+Task 17: on-device acceptance gate — PASSED WITH FINDINGS (2026-07-25, Kimi session).
+Devices: Samsung R5CTC07MPYD (sender, ~95.5k CKB avail), Retroid JY202406200301173 (receiver).
+- 1-2. APK (6c1a179 + Metro import fix 1955ee4) installed both; profiles confirmed:
+  Samsung b6d36766…f73331, Retroid b2cf960…05e019.
+- 3. Probe image: synthetic 640x480 JPEG, 18,554 B, EXIF Make/Model/Orientation=6/GPS(S 34°55'30"
+  E 138°36')/UserComment marker. First send FAILED (see F-1); fresh send succeeded:
+  chunk tx 0xd14baec7…864b (6,184 B ciphertext cell, 1 chunk) committed; message tx
+  0x9dc840d5…24d5 (4,169 B envelope+manifest, CEMP type) committed 3 blocks later.
+  Bubble: thumbnail immediate, queued → sent.
+- 4. Retroid: thumbnail rendered immediately from manifest; tap → spinner → full-res renders,
+  orientation baked into pixels (EXIF-6 source displays rotated correctly).
+- 5. EXIF-strip proof: on-chain chunk cell + message cell scanned — ZERO EXIF/GPS/JPEG/WebP/
+  string markers, entropy ~7.95 bits/byte (pure ciphertext). Receiver persists no plaintext
+  (rule 3): Fresco disk cache held only app icons; runbook's "pull rendered file" step is N/A
+  by design — proof is on-chain ciphertext + pixels-only reconstruction.
+- 6. Reclaim: Retroid auto-acked (bubble → read); message cell 0x9dc840d5:0 RECLAIMED (spent).
+  CHUNK CELL NOT RECLAIMED — see F-2.
+FINDINGS (pre-ship):
+- F-1 (Important): stale cell selection built the chunk tx over an already-spent input
+  (0x821ee3be…:0) → node rejected "Resolve failed Unknown(OutPoint)". Worse: the retry path
+  republishes the SAME attachmentId → same journal purpose → resumeJournaledBroadcast keeps
+  rebroadcasting the permanently-invalid tx (JournaledAbandonedError propagates, no abandon+
+  requeue in publishAttachmentChunks, unlike the message/reclaim paths). The failed row is
+  wedged; only a fresh send recovers. Fix: abandon+requeue (fresh attachmentId/inputs) on
+  JournaledAbandonedError in the attachment-chunk path + investigate why a spent cell was
+  selected (indexer lag vs trackBroadcastSpend gap).
+- F-2 (Important): reclaimAttachmentGroup has NO production caller (only tests) — chunk cells
+  are never reclaimed; 6,263 CKB from this send remains locked on-chain. Spec §4 item 4
+  assumed it was wired. Fix: call it from the reclaim lifecycle for rows with attachments.
+- F-3 (Minor, fixed in-session): Metro 0.83 doesn't resolve NodeNext ".js"-suffixed relative
+  imports used by the image-branch files; T16 gates (tsc/vitest/assembleDebug) never exercised
+  a Metro bundle. Fixed extensionless (1955ee4); on-device bundle gate now part of T16-lessons.
+- F-4 (UX note): dev-mode LogBox overlay surfaces any console.error full-screen on device.

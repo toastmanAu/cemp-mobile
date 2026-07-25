@@ -50,6 +50,9 @@ importers:
       '@cemp/database':
         specifier: workspace:*
         version: link:../../packages/cemp-database
+      '@cemp/images':
+        specifier: workspace:*
+        version: link:../../packages/cemp-images
       '@cemp/secure-vault':
         specifier: workspace:*
         version: link:../../packages/cemp-secure-vault

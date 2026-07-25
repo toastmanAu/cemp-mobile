@@ -243,3 +243,9 @@ JournaledAbandonedError in publishText AND publishAttachmentChunks (fresh build,
 logical id/purpose; newest journal record wins). 600 vitest green (+1 chunk abandon, +1
 publisher abandon-with-resume-of-fresh-tx). On-device: the wedged row retried → sent in
 24s; chunk tx 0x3dfd9090… + message tx 0x5bcf7dd6… both committed (blocks 21866022/25).
+
+Retroid pulled the recovered image (2026-07-26 local): discovered on unlock, thumbnail from
+manifest, tap → full-res renders with orientation baked — the F-1 recovery is a clean
+end-to-end delivery (message tx 0x5bcf7dd6…). The older T17 image bubble correctly shows
+"Tap to load" still (its chunks were reclaimed in the F-2 proof; a tap would exercise the
+documented 7A graceful-failure path).

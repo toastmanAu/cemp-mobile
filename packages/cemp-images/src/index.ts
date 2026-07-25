@@ -7,3 +7,4 @@ export * from "./manifest.js";
 export * from "./send.js";
 export * from "./receive.js";
 export * from "./reclaim.js";
+export * from "./send-message.js";

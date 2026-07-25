@@ -22,6 +22,7 @@
     "@cemp/crypto": "workspace:*"
   },
   "devDependencies": {
-    "@ckb-ccc/core": "1.12.5"
+    "@ckb-ccc/core": "1.12.5",
+    "@noble/post-quantum": "0.6.1"
   }
 }

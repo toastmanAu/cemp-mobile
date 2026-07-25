@@ -50,11 +50,21 @@ export async function prepareAttachmentChunks(
     ...(options.format === undefined ? {} : { format: options.format }),
     ...(options.limits === undefined ? {} : { limits: options.limits }),
   });
-  const encrypted = encryptAttachment(
-    prepared.bytes,
-    attachmentKey,
-    options.attachmentId ?? undefined,
-  );
+  return encryptPreparedChunks(prepared, attachmentKey, options.attachmentId ?? undefined);
+}
+
+/**
+ * Encrypt + chunk an ALREADY-prepared image. The send orchestration's
+ * capacity pre-flight (runImageSend) prepares the image once to size the
+ * send off the real compressed bytes; the publish step reuses that result
+ * through here instead of compressing the same source a second time.
+ */
+export function encryptPreparedChunks(
+  prepared: PreparedImage,
+  attachmentKey: Uint8Array,
+  attachmentId?: Uint8Array,
+): PreparedChunks {
+  const encrypted = encryptAttachment(prepared.bytes, attachmentKey, attachmentId);
   return { prepared, encrypted, chunks: splitIntoChunks(encrypted.ciphertext) };
 }
 

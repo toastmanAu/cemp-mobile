@@ -401,10 +401,10 @@ export class MessagingService {
    * profile the same way the text publish path does (rule 4: re-resolve +
    * binding-check on every send) to derive the KEM public key and raw
    * profile id, then hands off to `runImageSend`, which owns the capacity
-   * pre-flight and the `ImageTooLargeError` → jargon-free mapping. The
-   * `HandleTracker` wraps BOTH the pre-flight's dry `prepareImage` call
-   * (inside `runImageSend`) and `publishImageMessage`'s real one — one
-   * `releaseAll()` here covers every native handle either prepare created.
+   * pre-flight and the `ImageTooLargeError` → jargon-free mapping. The image
+   * is prepared exactly once (inside `runImageSend`, through the tracker) and
+   * the result is threaded into `publishImageMessage` — one `releaseAll()`
+   * here covers every native handle that single prepare created.
    */
   async publishImage(input: {
     messageRowId: number;

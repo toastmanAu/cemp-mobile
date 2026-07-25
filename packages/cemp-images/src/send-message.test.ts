@@ -5,6 +5,7 @@ import { codec } from "@cemp/core";
 import { describe, expect, it } from "vitest";
 import { decryptAttachment, joinChunks } from "./encrypt.js";
 import { checkManifest } from "./manifest.js";
+import { prepareImage } from "./prepare.js";
 import { publishImageMessage, type PublishImageMessageDeps } from "./send-message.js";
 import {
   FakeCodec,
@@ -151,5 +152,60 @@ describe("publishImageMessage", () => {
         manifest.attachment_id,
       ),
     ).toThrow();
+  });
+
+  it("reuses a provided preparedImage instead of re-preparing the source bytes", async () => {
+    // Review follow-up: runImageSend's capacity pre-flight already ran
+    // prepareImage; publishImageMessage must skip its own prepare when handed
+    // the result. A codec that throws on decode proves it is never touched.
+    const { publicKey } = ml_kem768.keygen();
+    const explodingCodec = {
+      decode: () => Promise.reject(new Error("decode must not be called")),
+      resize: () => Promise.reject(new Error("resize must not be called")),
+      encode: () => Promise.reject(new Error("encode must not be called")),
+    };
+    const source = fakeSourceImage(64, 48);
+    const preparedImage = await prepareImage(new FakeCodec(), source);
+
+    const { client, signer } = makeChain();
+    const result = await publishImageMessage(
+      {
+        codec: explodingCodec,
+        client,
+        signer,
+        messageType: MESSAGE_TYPE_REF,
+        journal: new FakeJournal(),
+        publisher: {
+          publishText: () =>
+            Promise.resolve({
+              txHash: "0xmsg",
+              outPoint: { txHash: "0xmsg", index: 0 },
+              committed: true,
+              resumed: false,
+            }),
+        },
+        senderProfileId: new Uint8Array(32).fill(1),
+        senderDeviceId: new Uint8Array(16).fill(7),
+        randomBytes: (n) => new Uint8Array(n).fill(3),
+      },
+      {
+        messageRowId: 1,
+        logicalMessageId: "l1",
+        recipientProfileIdHex: `0x${"02".repeat(32)}`,
+        recipientKemPublicKey: publicKey,
+        recipientProfileId: new Uint8Array(32).fill(2),
+        sourceBytes: source,
+        preparedImage,
+      },
+    );
+
+    // The manifest is built from the PROVIDED prepared image.
+    expect(result.plaintextSize).toBe(preparedImage.bytes.length);
+    expect(result.chunkCount).toBeGreaterThan(0);
+    expect(
+      checkManifest(
+        codec.decodeAttachmentManifestV1(codec.encodeAttachmentManifestV1(result.manifest)),
+      ).ok,
+    ).toBe(true);
   });
 });

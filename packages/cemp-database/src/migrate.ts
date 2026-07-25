@@ -226,6 +226,11 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "crash-safe journals: signed tx bytes for rebroadcast resume (review E1)",
     statements: ["ALTER TABLE outgoing_transactions ADD COLUMN tx_hex TEXT"],
   },
+  {
+    version: 7,
+    description: "attachments: one row per message — UNIQUE(message_id) (review follow-up)",
+    statements: ["CREATE UNIQUE INDEX attachments_message_id ON attachments(message_id)"],
+  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

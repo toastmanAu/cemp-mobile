@@ -83,16 +83,14 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
       limit: 100,
     });
     setMessages(list);
-    // One image attachment per message (spec: single attachment per message).
-    const perMessage = await Promise.all(
-      list.map(async (m) => {
-        const found = await container.repositories.attachments.listForMessage(m.id);
-        return [m.id, found.find((a) => a.kind === "image")] as const;
-      }),
-    );
+    // One image attachment per message (spec: single attachment per
+    // message) — batched into ONE query, not a per-message loop.
+    const found = await container.repositories.attachments.listForMessages(list.map((m) => m.id));
     const nextAttachments = new Map<number, Attachment>();
-    for (const [messageId, attachment] of perMessage) {
-      if (attachment !== undefined) nextAttachments.set(messageId, attachment);
+    for (const attachment of found) {
+      if (attachment.kind === "image" && !nextAttachments.has(attachment.messageId)) {
+        nextAttachments.set(attachment.messageId, attachment);
+      }
     }
     setAttachmentsByMessage(nextAttachments);
   }

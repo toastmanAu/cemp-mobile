@@ -8,9 +8,11 @@ import type { CempClient, CempMessageTypeRef, MessagePublisher, MlDsaV2TxSigner 
 import { codec } from "@cemp/core";
 import { deriveSendAttachmentKey } from "@cemp/crypto";
 import type { ImageCodec, ImageEncodeFormat } from "./codec.js";
+import type { PreparedImage } from "./prepare.js";
 import {
   type AttachmentChunkJournal,
   buildManifestForCommittedChunks,
+  encryptPreparedChunks,
   prepareAttachmentChunks,
   publishAttachmentChunks,
 } from "./send.js";
@@ -36,6 +38,12 @@ export interface PublishImageMessageInput {
   readonly recipientKemPublicKey: Uint8Array;
   readonly recipientProfileId: Uint8Array;
   readonly sourceBytes: Uint8Array;
+  /**
+   * Optional pre-flight result (review follow-up): when the caller already
+   * ran `prepareImage` on these exact sourceBytes/format — e.g. runImageSend's
+   * capacity gate — it is reused instead of preparing the same image twice.
+   */
+  readonly preparedImage?: PreparedImage;
   readonly caption?: string;
   readonly format?: ImageEncodeFormat;
   readonly timeoutMs?: number;
@@ -65,12 +73,17 @@ export async function publishImageMessage(
   });
 
   try {
-    const prepared = await prepareAttachmentChunks(
-      deps.codec,
-      input.sourceBytes,
-      attachmentKey,
-      input.format === undefined ? {} : { format: input.format },
-    );
+    const prepared =
+      input.preparedImage === undefined
+        ? await prepareAttachmentChunks(
+            deps.codec,
+            input.sourceBytes,
+            attachmentKey,
+            input.format === undefined ? {} : { format: input.format },
+          )
+        : // The §6 key coordination is untouched: the attachment key is still
+          // derived here and only the (already done) prepare is skipped.
+          encryptPreparedChunks(input.preparedImage, attachmentKey);
     const published = await publishAttachmentChunks(
       {
         client: deps.client,

@@ -254,6 +254,9 @@ importers:
       '@cemp/database':
         specifier: workspace:*
         version: link:../cemp-database
+      '@cemp/images':
+        specifier: workspace:*
+        version: link:../cemp-images
       '@cemp/ui':
         specifier: workspace:*
         version: link:../cemp-ui

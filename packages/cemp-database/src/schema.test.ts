@@ -7,8 +7,8 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v6: crash-safe journals (review E1 signed-tx bytes).
-    expect(SCHEMA_VERSION).toBe(6);
+    // v7: one attachment per message (UNIQUE attachments.message_id).
+    expect(SCHEMA_VERSION).toBe(7);
   });
 
   it("covers the spec §11 core tables", () => {

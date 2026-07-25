@@ -20,9 +20,11 @@
  *   rate_limits (token buckets for per-contact + global rate limits).
  * - 6: crash-safe journals (review E1) — outgoing_transactions.tx_hex holds
  *   the signed wire transaction so a resume can rebroadcast, never wedge.
+ * - 7: one attachment per message (review follow-up) — UNIQUE INDEX on
+ *   attachments(message_id) enforces the spec's single-attachment rule.
  */
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [

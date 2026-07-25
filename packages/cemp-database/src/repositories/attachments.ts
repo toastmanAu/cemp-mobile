@@ -66,6 +66,12 @@ export class AttachmentRepository {
     this.#db = db;
   }
 
+  /**
+   * Create the attachment row for a message. Idempotent per message (schema
+   * v7 enforces one attachment per message, spec §3): re-creating for the
+   * same message updates kind/size/manifest in place — the state and the
+   * original creation time are preserved — and returns the existing row.
+   */
   async create(input: {
     messageId: number;
     kind: string;
@@ -74,8 +80,13 @@ export class AttachmentRepository {
     manifest?: Uint8Array;
   }): Promise<Attachment> {
     const now = Date.now();
-    const result = await this.#db.run(
-      "INSERT INTO attachments (message_id, kind, byte_length, state, manifest, created_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
+    await this.#db.run(
+      `INSERT INTO attachments (message_id, kind, byte_length, state, manifest, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (message_id) DO UPDATE SET
+         kind = excluded.kind,
+         byte_length = excluded.byte_length,
+         manifest = excluded.manifest`,
       [
         input.messageId,
         input.kind,
@@ -85,15 +96,13 @@ export class AttachmentRepository {
         now,
       ],
     );
-    return {
-      id: result.lastInsertRowid,
-      messageId: input.messageId,
-      kind: input.kind,
-      byteLength: input.byteLength,
-      state: input.state ?? "pending",
-      manifest: input.manifest ?? null,
-      createdAtMs: now,
-    };
+    const row = await this.#db.get("SELECT * FROM attachments WHERE message_id = ?", [
+      input.messageId,
+    ]);
+    if (row === undefined) {
+      throw new DatabaseError("adapter-error", "attachment create did not produce a readable row");
+    }
+    return rowToAttachment(row);
   }
 
   async getById(id: number): Promise<Attachment | undefined> {
@@ -105,6 +114,19 @@ export class AttachmentRepository {
     const rows = await this.#db.all("SELECT * FROM attachments WHERE message_id = ? ORDER BY id", [
       messageId,
     ]);
+    return rows.map(rowToAttachment);
+  }
+
+  /** Batch lookup (chat screen reload): one query for many messages, no N+1. */
+  async listForMessages(messageIds: readonly number[]): Promise<Attachment[]> {
+    if (messageIds.length === 0) {
+      return [];
+    }
+    const placeholders = messageIds.map(() => "?").join(", ");
+    const rows = await this.#db.all(
+      `SELECT * FROM attachments WHERE message_id IN (${placeholders}) ORDER BY message_id, id`,
+      [...messageIds],
+    );
     return rows.map(rowToAttachment);
   }
 

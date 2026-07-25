@@ -28,6 +28,7 @@ import {
   type RateLimiter,
 } from "@cemp/ckb";
 import { codec, deriveRouteTag } from "@cemp/core";
+import { checkManifest } from "@cemp/images";
 import type {
   AttachmentRepository,
   BalanceRepository,
@@ -99,9 +100,9 @@ export interface SyncWorkerDeps {
   readonly ownKemSecretKey: Uint8Array;
   /**
    * Reclaim one attachment group on-chain (spec §9.5). Injected by the
-   * composition root (cemp-sync must not depend on @cemp/images): a closure
-   * over signer/client/journal that runs the real `reclaimAttachmentGroup`.
-   * The worker owns the scan + skip logic; this owns the chain work.
+   * composition root as a closure over signer/client/journal that runs the
+   * real `reclaimAttachmentGroup` (the worker package holds no signer): the
+   * worker owns the scan + skip logic; this owns the chain work.
    */
   readonly reclaimAttachmentGroup: (input: {
     reclaimGroupId: Uint8Array;
@@ -248,6 +249,14 @@ async function processDiscoveredCell(
     (await deps.attachments.listForMessage(inserted.id)).length === 0
   ) {
     for (const manifest of incoming.attachmentManifests) {
+      // Rule 4 receive-side hardening: the manifest is validated BEFORE it is
+      // persisted (the same checkManifest the download path runs). A hostile
+      // manifest — decompression-bomb sizes, a chunk count that doesn't match
+      // the declared ciphertext — never reaches the attachments table: the
+      // message stays a plain row and the worker carries on.
+      if (!checkManifest(manifest).ok) {
+        continue;
+      }
       await deps.attachments.create({
         messageId: inserted.id,
         kind: "image",

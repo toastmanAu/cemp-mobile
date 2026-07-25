@@ -282,6 +282,60 @@ describe("repositories", () => {
     expect(await attachments.listForMessage(m.id)).toHaveLength(1);
   });
 
+  it("attachment create is idempotent per message (UNIQUE message_id, schema v7)", async () => {
+    const alice = await makeContact();
+    const conv = await conversations.getOrCreateForContact(alice.id);
+    const m = await messages.insert({
+      conversationId: conv.id,
+      direction: "outgoing",
+      body: "img",
+      logicalMessageId: "att-idem",
+    });
+    const first = await attachments.create({
+      messageId: m.id,
+      kind: "image",
+      byteLength: 100,
+      manifest: new Uint8Array([1]),
+    });
+    // A retry (e.g. the image-send republish path reusing the same row)
+    // updates the manifest/size in place instead of erroring or duplicating.
+    const second = await attachments.create({
+      messageId: m.id,
+      kind: "image",
+      byteLength: 200,
+      state: "downloaded",
+      manifest: new Uint8Array([2]),
+    });
+    expect(second.id).toBe(first.id);
+    expect(second.byteLength).toBe(200);
+    expect(second.manifest).toEqual(new Uint8Array([2]));
+    // State and creation time belong to the lifecycle, not the retry.
+    expect(second.state).toBe("pending");
+    expect(second.createdAtMs).toBe(first.createdAtMs);
+    expect(await attachments.listForMessage(m.id)).toHaveLength(1);
+  });
+
+  it("listForMessages batches the per-message lookup (chat reload, no N+1)", async () => {
+    const alice = await makeContact();
+    const conv = await conversations.getOrCreateForContact(alice.id);
+    const insert = (logicalMessageId: string) =>
+      messages.insert({
+        conversationId: conv.id,
+        direction: "incoming",
+        body: "x",
+        logicalMessageId,
+      });
+    const m1 = await insert("batch-1");
+    const m2 = await insert("batch-2");
+    const m3 = await insert("batch-3");
+    await attachments.create({ messageId: m1.id, kind: "image", byteLength: 10 });
+    await attachments.create({ messageId: m3.id, kind: "image", byteLength: 30 });
+
+    const found = await attachments.listForMessages([m1.id, m2.id, m3.id]);
+    expect(found.map((a) => a.messageId)).toEqual([m1.id, m3.id]);
+    expect(await attachments.listForMessages([])).toEqual([]);
+  });
+
   it("watched outpoints: register idempotent, mark-spent idempotent + conflict throws", async () => {
     const watch = await outpoints.register({
       txHash: "0xdead",

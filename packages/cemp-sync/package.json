@@ -21,6 +21,7 @@
     "@cemp/core": "workspace:*",
     "@cemp/crypto": "workspace:*",
     "@cemp/database": "workspace:*",
+    "@cemp/images": "workspace:*",
     "@cemp/ui": "workspace:*"
   },
   "devDependencies": {

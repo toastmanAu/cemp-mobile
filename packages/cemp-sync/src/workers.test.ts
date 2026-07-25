@@ -179,6 +179,23 @@ function receiptOnlyCellJson(receipts: readonly { messageId: Uint8Array; status:
   );
 }
 
+/**
+ * A discovered manifest that passes `checkManifest` (the §9.4 receiver-side
+ * validation the discovery worker now runs before persisting). The codec
+ * fixture builder's sizes are deliberately arbitrary — encrypted size must
+ * equal plaintext + 16-byte GCM tag and fill exactly `chunkCount` 32 KiB
+ * chunks — so the consistent sizes are filled in here.
+ */
+function validDiscoveryManifest(
+  seed: number,
+  withThumbnail: boolean,
+  chunkCount: number,
+): codec.AttachmentManifestV1 {
+  const base = codec.buildAttachmentManifest({ seed, withThumbnail, chunkCount });
+  const encryptedSize = BigInt(chunkCount) * 32_768n;
+  return { ...base, plaintext_size: encryptedSize - 16n, encrypted_size: encryptedSize };
+}
+
 function makeTransport(cells: unknown[]): JsonRpcTransport {
   return {
     call(_url, method, params) {
@@ -626,11 +643,7 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
 
 describe("processDiscoveredCell image branch (Task 12)", () => {
   it("persists an image attachment row when the payload carries a manifest", async () => {
-    const manifest = codec.buildAttachmentManifest({
-      seed: 7,
-      withThumbnail: true,
-      chunkCount: 2,
-    });
+    const manifest = validDiscoveryManifest(7, true, 2);
     const { json } = discoveryAttachmentCellJson(manifest);
     const stack = await makeStack({ cells: [json] });
     try {
@@ -660,11 +673,7 @@ describe("processDiscoveredCell image branch (Task 12)", () => {
     // Mirrors the plain-message dedup test above: discovery persists no
     // cursor (see the sorts-BEFORE tests), so the same cell is re-scanned on
     // every worker tick and relies on idempotent handling to collapse repeats.
-    const manifest = codec.buildAttachmentManifest({
-      seed: 9,
-      withThumbnail: false,
-      chunkCount: 1,
-    });
+    const manifest = validDiscoveryManifest(9, false, 1);
     const { json } = discoveryAttachmentCellJson(manifest);
     const stack = await makeStack({ cells: [json] });
     try {
@@ -683,6 +692,27 @@ describe("processDiscoveredCell image branch (Task 12)", () => {
 
   it("does not create an attachment row for a plain text message", async () => {
     const { json } = discoveryCellJson("no attachments here");
+    const stack = await makeStack({ cells: [json] });
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const received = await stack.messages.listByState(["received"]);
+      expect(received).toHaveLength(1);
+      expect(await stack.deps.attachments.listForMessage(received[0]!.id)).toHaveLength(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a manifest that fails validation is stored as a plain message with no attachment row", async () => {
+    // Rule 4 receive-side hardening: the codec fixture's manifest is INVALID
+    // under checkManifest (encrypted size ≠ plaintext + GCM tag). It must
+    // never reach the attachments table, and the worker must not crash on it.
+    const manifest = codec.buildAttachmentManifest({
+      seed: 11,
+      withThumbnail: false,
+      chunkCount: 1,
+    });
+    const { json } = discoveryAttachmentCellJson(manifest);
     const stack = await makeStack({ cells: [json] });
     try {
       expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");

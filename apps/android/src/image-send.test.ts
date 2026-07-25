@@ -14,6 +14,7 @@ import {
   type DecodedImage,
   type ImageCodec,
   type ImageEncodeFormat,
+  type PublishImageMessageInput,
 } from "@cemp/images";
 import { runImageSend, type RunImageSendDeps } from "./image-send.js";
 
@@ -142,7 +143,12 @@ describe("runImageSend capacity pre-flight (5A)", () => {
     const result = await runImageSend(deps, input);
 
     expect(publish).toHaveBeenCalledTimes(1);
-    expect(publish).toHaveBeenCalledWith(input);
+    // The pre-flight's prepared image is threaded into the publish input, so
+    // publishImageMessage skips its own prepareImage (single compression).
+    const publishInput = publish.mock.calls[0]![0] as PublishImageMessageInput;
+    expect(publishInput).toMatchObject(input);
+    expect(publishInput.preparedImage).toBeDefined();
+    expect(publishInput.preparedImage!.bytes.length).toBeGreaterThan(0);
     expect(result).toEqual({ messageTxHash: "0xmessage", chunksTxHash: "0xchunks" });
 
     expect(attachmentsCreate).toHaveBeenCalledTimes(1);

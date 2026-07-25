@@ -50,7 +50,16 @@ class CempImageCodecModule(reactContext: ReactApplicationContext) :
       try {
         val src = bitmaps[handle] ?: throw IllegalStateException("resize: unknown handle $handle")
         val scaled = Bitmap.createScaledBitmap(src, width, height, true)
-        promise.resolve(store(scaled))
+        // createScaledBitmap returns the SAME object (no copy) when width/height match the
+        // source's dimensions. Storing that alias under a new handle would let two handles
+        // share one bitmap; recycling either one leaves the other a use-after-recycle crash.
+        // Defensive copy so each handle owns a distinct bitmap.
+        val result = if (scaled === src) {
+          scaled.copy(scaled.config ?: Bitmap.Config.ARGB_8888, false)
+        } else {
+          scaled
+        }
+        promise.resolve(store(result))
       } catch (e: Throwable) {
         promise.reject("image-resize-error", "could not resize image", asException(e))
       }
@@ -79,6 +88,8 @@ class CempImageCodecModule(reactContext: ReactApplicationContext) :
 
   @ReactMethod
   fun release(handle: Int, promise: Promise) {
+    // Deliberately synchronous (no Thread{}): Bitmap.recycle() is cheap, unlike
+    // decode/resize/encode which do real pixel work off the UI thread.
     try {
       bitmaps.remove(handle)?.recycle()
       promise.resolve(null)
@@ -109,6 +120,8 @@ class CempImageCodecModule(reactContext: ReactApplicationContext) :
       ExifInterface.ORIENTATION_ROTATE_270 -> m.postRotate(270f)
       ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> m.postScale(-1f, 1f)
       ExifInterface.ORIENTATION_FLIP_VERTICAL -> m.postScale(1f, -1f)
+      ExifInterface.ORIENTATION_TRANSPOSE -> { m.postRotate(90f); m.postScale(-1f, 1f) }
+      ExifInterface.ORIENTATION_TRANSVERSE -> { m.postRotate(270f); m.postScale(-1f, 1f) }
       else -> return bitmap
     }
     val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, m, true)
@@ -122,7 +135,9 @@ class CempImageCodecModule(reactContext: ReactApplicationContext) :
     fun hexToBytes(hex: String): ByteArray {
       val out = ByteArray(hex.length / 2)
       for (i in out.indices) {
-        out[i] = ((Character.digit(hex[2 * i], 16) shl 4) + Character.digit(hex[2 * i + 1], 16)).toByte()
+        // substring(...).toInt(16) throws NumberFormatException on non-hex input instead of
+        // Character.digit's silent -1-on-garbage (matches CempKdfModule's hexToBytes idiom).
+        out[i] = hex.substring(2 * i, 2 * i + 2).toInt(16).toByte()
       }
       return out
     }

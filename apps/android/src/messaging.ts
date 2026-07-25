@@ -27,7 +27,9 @@ import {
   CONSERVATIVE_MESSAGE_CELL_SHANNON,
   CONSERVATIVE_PER_CHUNK_SHANNON,
   SEND_FEE_RESERVE_SHANNONS,
+  downloadAttachment,
   publishImageMessage,
+  type DownloadedAttachment,
   type ImageEncodeFormat,
 } from "@cemp/images";
 import { CKB_TESTNET, codec, deriveRouteTag, formatFingerprint } from "@cemp/core";
@@ -487,6 +489,25 @@ export class MessagingService {
       ownProfileId: this.#senderProfileId,
     });
     return decrypted.attachmentKey;
+  }
+
+  /**
+   * Download + decrypt one incoming image attachment (Task 15b; spec §9.4
+   * tap-to-download). Centralizes the two secrets the screen must never
+   * touch directly: the `CempClient` used to fetch chunk cells, and the
+   * per-message attachment key derived from the stored envelope. The key is
+   * wiped as soon as `downloadAttachment` returns, success or failure.
+   */
+  async downloadImageAttachment(
+    messageId: number,
+    manifest: codec.AttachmentManifestV1,
+  ): Promise<DownloadedAttachment> {
+    const key = await this.deriveIncomingAttachmentKey(messageId);
+    try {
+      return await downloadAttachment(this.#client, manifest, key);
+    } finally {
+      key.fill(0);
+    }
   }
 
   /** Wallet balances for the wallet tab (spec §5.5 categories). */

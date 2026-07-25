@@ -138,4 +138,23 @@ export class ChatComposerViewModel {
       return undefined;
     }
   }
+
+  /**
+   * Insert an outgoing image message row (Task 15b): `body: null` (the
+   * bubble renders the attachment, not text), a fresh `logicalMessageId`
+   * (same generation as `send()`, keeping publish idempotent across
+   * retries), immediately transitioned `draft -> queued` so the screen has a
+   * durable row before it calls `MessagingService.publishImage`. Unlike
+   * `send()`, this does not touch `#text`/`#status` — encryption/publication
+   * happens out-of-band, driven by the caller.
+   */
+  async insertImageDraft(): Promise<Message> {
+    const message = await this.#messages.insert({
+      conversationId: this.#conversationId,
+      direction: "outgoing",
+      body: null,
+      logicalMessageId: bytesToHex(randomBytes(16)),
+    });
+    return await this.#messages.transitionState(message.id, "queued");
+  }
 }

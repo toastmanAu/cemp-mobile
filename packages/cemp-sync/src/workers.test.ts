@@ -1,5 +1,5 @@
 import { Script, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
-import { CKB_TESTNET } from "@cemp/core";
+import { CKB_TESTNET, codec } from "@cemp/core";
 import {
   MessagePublisher,
   ResponseLifecycle,
@@ -134,6 +134,29 @@ function discoveryCellJson(
       receiptRequest: 0,
       ...(messageId === undefined ? {} : { messageId }),
     }),
+  );
+}
+
+/**
+ * A discovered attachment-manifest cell (content_type 0x03, empty caption)
+ * addressed to Bob, carrying one manifest — Task 12.
+ */
+function discoveryAttachmentCellJson(manifest: codec.AttachmentManifestV1): {
+  json: unknown;
+  messageId: Uint8Array;
+} {
+  return assembledCellJson(
+    assembleTextMessage({
+      text: "",
+      contentType: 0x03,
+      attachmentManifests: [manifest],
+      senderProfileId: ALICE_PROFILE_ID,
+      recipientProfileId: BOB_PROFILE_ID,
+      recipientKemPublicKey: BOB.mlKem.publicKey,
+      senderDeviceId: hexToBytes("01".repeat(16)),
+      receiptRequest: 0,
+    }),
+    0xd3,
   );
 }
 
@@ -586,6 +609,77 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
           m.logicalMessageId.startsWith("response:"),
         ),
       ).toHaveLength(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+});
+
+describe("processDiscoveredCell image branch (Task 12)", () => {
+  it("persists an image attachment row when the payload carries a manifest", async () => {
+    const manifest = codec.buildAttachmentManifest({
+      seed: 7,
+      withThumbnail: true,
+      chunkCount: 2,
+    });
+    const { json } = discoveryAttachmentCellJson(manifest);
+    const stack = await makeStack({ cells: [json] });
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const received = await stack.messages.listByState(["received"]);
+      expect(received).toHaveLength(1);
+
+      const rows = await stack.deps.attachments.listForMessage(received[0]!.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.kind).toBe("image");
+      expect(rows[0]!.manifest).not.toBeNull();
+      expect(rows[0]!.byteLength).toBe(Number(manifest.plaintext_size));
+
+      // Round-trip: the stored blob decodes back to the original manifest.
+      const decoded = codec.decodeAttachmentManifestV1(rows[0]!.manifest!);
+      expect(decoded.attachment_id).toEqual(manifest.attachment_id);
+      expect(decoded.mime_type).toEqual(manifest.mime_type);
+      expect(decoded.plaintext_size).toBe(manifest.plaintext_size);
+      expect(decoded.width).toBe(manifest.width);
+      expect(decoded.height).toBe(manifest.height);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a second discovery run of the same cell does not duplicate the attachment row", async () => {
+    // Mirrors the plain-message dedup test above: discovery persists no
+    // cursor (see the sorts-BEFORE tests), so the same cell is re-scanned on
+    // every worker tick and relies on idempotent handling to collapse repeats.
+    const manifest = codec.buildAttachmentManifest({
+      seed: 9,
+      withThumbnail: false,
+      chunkCount: 1,
+    });
+    const { json } = discoveryAttachmentCellJson(manifest);
+    const stack = await makeStack({ cells: [json] });
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const received = await stack.messages.listByState(["received"]);
+      expect(received).toHaveLength(1);
+      expect(await stack.deps.attachments.listForMessage(received[0]!.id)).toHaveLength(1);
+
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await stack.messages.listByState(["received"])).toHaveLength(1);
+      expect(await stack.deps.attachments.listForMessage(received[0]!.id)).toHaveLength(1);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("does not create an attachment row for a plain text message", async () => {
+    const { json } = discoveryCellJson("no attachments here");
+    const stack = await makeStack({ cells: [json] });
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const received = await stack.messages.listByState(["received"]);
+      expect(received).toHaveLength(1);
+      expect(await stack.deps.attachments.listForMessage(received[0]!.id)).toHaveLength(0);
     } finally {
       await stack.db.close();
     }

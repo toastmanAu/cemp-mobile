@@ -26,7 +26,7 @@ import {
   type MessagePublisher,
   type RateLimiter,
 } from "@cemp/ckb";
-import { deriveRouteTag } from "@cemp/core";
+import { codec, deriveRouteTag } from "@cemp/core";
 import type {
   AttachmentRepository,
   BalanceRepository,
@@ -223,6 +223,28 @@ async function processDiscoveredCell(
     body: incoming.text,
     logicalMessageId: incomingLogicalMessageId(incoming.messageId),
   });
+  // Image branch (design §3 step 1): an attachment message stores its manifest
+  // (thumbnail embedded) so the bubble renders immediately with no fetch. The
+  // full-res chunk download is deferred to a user tap (downloadAttachment).
+  //
+  // Discovery persists no cursor (see the comment in runIncomingDiscovery), so
+  // the same cell is re-scanned on every worker tick, and a healed/stranded
+  // row can also re-enter this function — guard on existing rows (the same
+  // check-before-create idempotency pattern queueAcknowledgement uses) so a
+  // manifest is persisted exactly once per message.
+  if (
+    incoming.attachmentManifests.length > 0 &&
+    (await deps.attachments.listForMessage(inserted.id)).length === 0
+  ) {
+    for (const manifest of incoming.attachmentManifests) {
+      await deps.attachments.create({
+        messageId: inserted.id,
+        kind: "image",
+        byteLength: Number(manifest.plaintext_size),
+        manifest: codec.encodeAttachmentManifestV1(manifest),
+      });
+    }
+  }
   // Idempotent insert collapses duplicates: an already-received row needs no
   // transition, but its receipts are processed EVERY time (review E8 — a
   // swallowed ack must not strand the sender's capacity).

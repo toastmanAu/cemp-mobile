@@ -24,6 +24,7 @@ import {
   type CempClient,
   type CempMessageTypeRef,
   type MessagePublisher,
+  type OutPoint,
   type RateLimiter,
 } from "@cemp/ckb";
 import { codec, deriveRouteTag } from "@cemp/core";
@@ -96,6 +97,16 @@ export interface SyncWorkerDeps {
   readonly engineId: string;
   readonly ownProfileId: Uint8Array;
   readonly ownKemSecretKey: Uint8Array;
+  /**
+   * Reclaim one attachment group on-chain (spec §9.5). Injected by the
+   * composition root (cemp-sync must not depend on @cemp/images): a closure
+   * over signer/client/journal that runs the real `reclaimAttachmentGroup`.
+   * The worker owns the scan + skip logic; this owns the chain work.
+   */
+  readonly reclaimAttachmentGroup: (input: {
+    reclaimGroupId: Uint8Array;
+    outpoints: readonly OutPoint[];
+  }) => Promise<unknown>;
 }
 
 function spec(id: WorkerId, requiresNetwork: boolean, run: () => Promise<void>): WorkerSpec {
@@ -579,7 +590,59 @@ async function runReclaimBatch(deps: SyncWorkerDeps): Promise<void> {
   }
   try {
     await deps.lifecycle.executeReclaimBatch();
+    await reclaimAttachmentGroups(deps);
   } finally {
     await deps.leases.release("reclaim:batch", deps.engineId);
+  }
+}
+
+/**
+ * Attachment group reclaim (spec §9.5; T17 finding F-2): the batch reclaim
+ * above only spends the MESSAGE cell — without this pass the chunk cells stay
+ * locked forever. For every outgoing `reclaimed` row with an attachment
+ * manifest, reclaim its chunk cells through the (injected) journaled group
+ * path. Idempotent: a committed `reclaim-attachment:<groupId>` journal entry
+ * suppresses re-attempts, and the group call itself resumes a submitted one
+ * or no-ops when every cell is already spent. Per-group failures are isolated
+ * (the healStrandedIncoming precedent) and retried on the next pass.
+ */
+async function reclaimAttachmentGroups(deps: SyncWorkerDeps): Promise<void> {
+  const reclaimed = (await deps.messages.listByState(["reclaimed"])).filter(
+    (message) => message.direction === "outgoing",
+  );
+  for (const message of reclaimed) {
+    try {
+      const withManifest = (await deps.attachments.listForMessage(message.id)).find(
+        (a) => a.manifest !== null,
+      );
+      if (withManifest?.manifest == null) {
+        continue;
+      }
+      const manifest = codec.decodeAttachmentManifestV1(withManifest.manifest);
+      const purpose = `reclaim-attachment:${bytesToHex(manifest.reclaim_group_id)}`;
+      const journaled = await deps.outgoingTxs.findLatestByPurposePrefix(purpose);
+      if (journaled !== undefined && journaled.state === "committed") {
+        continue;
+      }
+      // Message cell first (already spent by the batch reclaim — the group
+      // call filters non-live cells), then every chunk cell in order.
+      const ref = await deps.messages.getChainRef(message.id);
+      const outpoints: OutPoint[] = [
+        ...(ref?.txHash != null && ref.outpointIndex !== null
+          ? [{ txHash: ref.txHash, index: `0x${ref.outpointIndex.toString(16)}` }]
+          : []),
+        ...manifest.chunk_outpoints.map((o) => ({
+          txHash: `0x${bytesToHex(o.tx_hash)}`,
+          index: `0x${o.index.toString(16)}`,
+        })),
+      ];
+      await deps.reclaimAttachmentGroup({
+        reclaimGroupId: manifest.reclaim_group_id,
+        outpoints,
+      });
+    } catch {
+      // One bad group (transient chain/DB error) must not block the rest —
+      // the row is retried on the next reclaim pass.
+    }
   }
 }

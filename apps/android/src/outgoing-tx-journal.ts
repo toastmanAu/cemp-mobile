@@ -1,5 +1,5 @@
-import type { OutgoingTransactionRepository } from "@cemp/database";
-import type { AttachmentChunkJournal } from "@cemp/images";
+import type { BalanceRepository, OutgoingTransactionRepository } from "@cemp/database";
+import type { AttachmentChunkJournal, AttachmentReclaimStore } from "@cemp/images";
 
 /**
  * Adapts the app's OutgoingTransactionRepository to the AttachmentChunkJournal
@@ -33,5 +33,29 @@ export class OutgoingTxJournalAdapter implements AttachmentChunkJournal {
     prefix: string,
   ): Promise<{ txHash: string; state: string; purpose: string; txHex?: string | null } | undefined> {
     return await this.#repo.findLatestByPurposePrefix(prefix);
+  }
+}
+
+/**
+ * The full AttachmentReclaimStore the group reclaim expects: the journal half
+ * plus capacity release back to the operational wallet (spec §9.5). Wired in
+ * the composition root for the sync worker's attachment-group reclaim pass
+ * (T17 finding F-2).
+ */
+export class AttachmentReclaimStoreAdapter
+  extends OutgoingTxJournalAdapter
+  implements AttachmentReclaimStore
+{
+  readonly #balances: BalanceRepository;
+  readonly #walletId: number;
+
+  constructor(repo: OutgoingTransactionRepository, balances: BalanceRepository, walletId: number) {
+    super(repo);
+    this.#balances = balances;
+    this.#walletId = walletId;
+  }
+
+  async releaseReclaimedCapacity(amountShannon: string): Promise<void> {
+    await this.#balances.releaseReclaimedCapacity(this.#walletId, BigInt(amountShannon));
   }
 }

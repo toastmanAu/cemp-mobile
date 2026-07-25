@@ -29,6 +29,7 @@ import {
   SEND_FEE_RESERVE_SHANNONS,
   downloadAttachment,
   publishImageMessage,
+  reclaimAttachmentGroup,
   type DownloadedAttachment,
   type ImageEncodeFormat,
 } from "@cemp/images";
@@ -63,7 +64,7 @@ import {
 } from "@cemp/database";
 import { ClientPublicTestnet, Script, bytesFrom, hexFrom } from "@ckb-ccc/core";
 import { runImageSend } from "./image-send";
-import { OutgoingTxJournalAdapter } from "./outgoing-tx-journal";
+import { OutgoingTxJournalAdapter, AttachmentReclaimStoreAdapter } from "./outgoing-tx-journal";
 import { bytesToHex } from "./platform/hex";
 // RN-free half of the image-codec seam only (Task 6's split): the concrete,
 // react-native-backed `NativeImageCodec` must NEVER be imported here.
@@ -240,6 +241,19 @@ export class MessagingService {
         engineId,
         ownProfileId: senderProfileId,
         ownKemSecretKey: bundle.mlKem.secretKey,
+        // T17 finding F-2: the batch reclaim only spends message cells — this
+        // injected closure reclaims each group's chunk cells (spec §9.5).
+        reclaimAttachmentGroup: ({ reclaimGroupId, outpoints }) =>
+          reclaimAttachmentGroup(
+            {
+              client,
+              signer,
+              messageType,
+              store: new AttachmentReclaimStoreAdapter(outgoingTxs, balances, walletId),
+            },
+            reclaimGroupId,
+            outpoints,
+          ),
       }),
       backoff: new BackoffPolicy({ jitter: 0 }),
       engineId,

@@ -91,8 +91,13 @@ publish/journal/state-machine machinery.
 3. **Tap → download** — `downloadAttachment(...)`: pull chunk cells, `checkManifest`
    (pre-download bomb guard on declared size/count), decrypt, verify content hash,
    `sniffImageFormat` on the plaintext (untrusted mime), display full-res.
-4. **Reclaim** — sender's chunk cells reclaim via the existing `reclaimAttachmentGroup`
-   path after ack, same as text.
+4. **Reclaim** — sender's chunk cells reclaim via `reclaimAttachmentGroup` after ack,
+   same as text. **Amended 2026-07-25 (T17 finding F-2):** "existing path" was wrong —
+   the function had no production caller and chunk cells were never reclaimed (proven
+   on-device: message cell reclaimed, 6,263 CKB chunk cell left locked). It is now wired:
+   the reclaim-batch worker scans outgoing `reclaimed` rows for attachment manifests and
+   invokes the group reclaim (injected by the composition root) for any group without a
+   committed `reclaim-attachment:<groupId>` journal entry.
 
 Receive reuses discovery + reclaim wholesale; new code = the message-kind branch
 (text vs image manifest), thumbnail rendering, tap-to-download handler.

@@ -221,8 +221,10 @@ interface Stack {
   contacts: ContactRepository;
   conversations: ConversationRepository;
   outgoingTxs: OutgoingTransactionRepository;
+  attachments: AttachmentRepository;
   leases: WorkerLeaseRepository;
   cursors: SyncCursorRepository;
+  reclaimGroupCalls: { reclaimGroupId: Uint8Array; outpoints: readonly unknown[] }[];
 }
 
 async function makeStack(
@@ -271,6 +273,7 @@ async function makeStack(
   const notifier = new RecordingNotifier();
   const engineId = opts.engineId ?? "engine-test";
   const walletLockScript = signer.lockScript();
+  const reclaimGroupCalls: { reclaimGroupId: Uint8Array; outpoints: readonly unknown[] }[] = [];
   const deps: SyncWorkerDeps = {
     client,
     messageType: MESSAGE_TYPE_REF,
@@ -295,6 +298,10 @@ async function makeStack(
     engineId,
     ownProfileId: opts.ownProfileId ?? BOB_PROFILE_ID,
     ownKemSecretKey: BOB.mlKem.secretKey,
+    reclaimAttachmentGroup: (input) => {
+      reclaimGroupCalls.push(input);
+      return Promise.resolve(null);
+    },
   };
   const engine = new SyncEngine({
     scheduler: new InMemoryScheduler(),
@@ -313,8 +320,10 @@ async function makeStack(
     contacts,
     conversations,
     outgoingTxs,
+    attachments,
     leases,
     cursors,
+    reclaimGroupCalls,
   };
 }
 
@@ -818,6 +827,128 @@ describe("reclaim-batch worker (task 10)", () => {
       await stack.leases.acquire("reclaim:batch", "engine-rival", 60_000);
       expect(await stack.engine.runWorker("reclaim-batch")).toBe("success"); // lease skip = clean no-op
       expect(await stack.outgoingTxs.listByState("submitted")).toHaveLength(0); // nothing built/journaled
+    } finally {
+      await stack.db.close();
+    }
+  });
+});
+
+describe("attachment group reclaim (T17 finding F-2)", () => {
+  const RECLAIM_GROUP_ID = new Uint8Array(16).fill(0x26);
+  const MSG_TX_HASH = `0x${"aa".repeat(32)}`;
+
+  function testManifest(): codec.AttachmentManifestV1Encodable {
+    return {
+      attachment_id: new Uint8Array(16).fill(0x11),
+      ckbfs_root: { tx_hash: new Uint8Array(32).fill(0x22), index: 0 },
+      chunk_outpoints: [
+        { tx_hash: new Uint8Array(32).fill(0x22), index: 0 },
+        { tx_hash: new Uint8Array(32).fill(0x22), index: 1 },
+      ],
+      encrypted_size: 4096n,
+      plaintext_size: 3800n,
+      mime_type: new TextEncoder().encode("image/webp"),
+      width: 640,
+      height: 480,
+      thumbnail: undefined,
+      content_hash: new Uint8Array(32).fill(0xc1),
+      cipher_hash: new Uint8Array(32).fill(0xc2),
+      encryption_nonce: new Uint8Array(12).fill(0x0c),
+      encryption_algorithm: { family: 0x03, parameter: 1 },
+      reclaim_group_id: RECLAIM_GROUP_ID,
+    };
+  }
+
+  /** Insert an outgoing image row and walk it to `reclaimed` via legal edges. */
+  async function insertReclaimedImageMessage(stack: Awaited<ReturnType<typeof makeStack>>) {
+    const alice = await stack.contacts.create({
+      displayName: "alice",
+      profileIdHex: "ab".repeat(32),
+    });
+    const conv = await stack.conversations.getOrCreateForContact(alice.id);
+    const m = await stack.messages.insert({
+      conversationId: conv.id,
+      direction: "outgoing",
+      body: null,
+      logicalMessageId: "img-reclaim-1",
+    });
+    for (const state of [
+      "queued",
+      "encrypting",
+      "building_transaction",
+      "awaiting_signature",
+      "submitting",
+      "pending",
+      "committed",
+      "available_on_chain",
+      "downloaded_by_recipient",
+      "acknowledged",
+      "reclaim_queued",
+      "reclaim_pending",
+      "reclaimed",
+    ] as const) {
+      await stack.messages.transitionState(m.id, state);
+    }
+    await stack.messages.setChainRef(m.id, { txHash: MSG_TX_HASH, outpointIndex: 3 });
+    await stack.attachments.create({
+      messageId: m.id,
+      kind: "image",
+      byteLength: 3800,
+      manifest: codec.encodeAttachmentManifestV1(testManifest()),
+    });
+    return m;
+  }
+
+  it("reclaims chunk cells for a reclaimed image message (message cell + chunks, in order)", async () => {
+    const stack = await makeStack();
+    try {
+      await insertReclaimedImageMessage(stack);
+      expect(await stack.engine.runWorker("reclaim-batch")).toBe("success");
+      expect(stack.reclaimGroupCalls).toHaveLength(1);
+      const call = stack.reclaimGroupCalls[0]!;
+      expect(bytesToHex(call.reclaimGroupId)).toBe(bytesToHex(RECLAIM_GROUP_ID));
+      expect(call.outpoints).toEqual([
+        { txHash: MSG_TX_HASH, index: "0x3" }, // the message cell (chain ref)
+        { txHash: `0x${"22".repeat(32)}`, index: "0x0" }, // chunk 0
+        { txHash: `0x${"22".repeat(32)}`, index: "0x1" }, // chunk 1
+      ]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("skips a group whose reclaim journal already committed", async () => {
+    const stack = await makeStack();
+    try {
+      await insertReclaimedImageMessage(stack);
+      await stack.outgoingTxs.record({
+        txHash: `0x${"cc".repeat(32)}`,
+        purpose: `reclaim-attachment:${bytesToHex(RECLAIM_GROUP_ID)}`,
+        state: "committed",
+      });
+      expect(await stack.engine.runWorker("reclaim-batch")).toBe("success");
+      expect(stack.reclaimGroupCalls).toHaveLength(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a failing group is isolated and retried on the next pass", async () => {
+    const stack = await makeStack();
+    try {
+      await insertReclaimedImageMessage(stack);
+      const writable = stack.deps as {
+        -readonly [K in keyof SyncWorkerDeps]: SyncWorkerDeps[K];
+      };
+      writable.reclaimAttachmentGroup = () => Promise.reject(new Error("chain down"));
+      expect(await stack.engine.runWorker("reclaim-batch")).toBe("success");
+      let calls = 0;
+      writable.reclaimAttachmentGroup = () => {
+        calls += 1;
+        return Promise.resolve(null);
+      };
+      expect(await stack.engine.runWorker("reclaim-batch")).toBe("success");
+      expect(calls).toBe(1); // retried once the group call succeeds again
     } finally {
       await stack.db.close();
     }

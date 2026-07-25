@@ -62,8 +62,8 @@ import {
   type SqliteAdapter,
 } from "@cemp/database";
 import { ClientPublicTestnet, Script, bytesFrom, hexFrom } from "@ckb-ccc/core";
-import { runImageSend } from "./image-send.js";
-import { OutgoingTxJournalAdapter } from "./outgoing-tx-journal.js";
+import { runImageSend } from "./image-send";
+import { OutgoingTxJournalAdapter } from "./outgoing-tx-journal";
 import { bytesToHex } from "./platform/hex";
 // RN-free half of the image-codec seam only (Task 6's split): the concrete,
 // react-native-backed `NativeImageCodec` must NEVER be imported here.
@@ -73,7 +73,7 @@ import { bytesToHex } from "./platform/hex";
 // whole test file before a single test runs. The composition root
 // (app-container.ts, which already pulls in every other RN platform seam and
 // is never loaded under vitest) injects the real codec factory instead.
-import { HandleTracker, type ReleasableImageCodec } from "./platform/handle-tracker.js";
+import { HandleTracker, type ReleasableImageCodec } from "./platform/handle-tracker";
 
 const textEncoder = new TextEncoder();
 

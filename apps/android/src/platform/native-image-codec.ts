@@ -17,10 +17,10 @@
 
 import { NativeModules } from "react-native";
 import type { DecodedImage, ImageCodec, ImageEncodeFormat } from "@cemp/images";
-import { bytesToHex, hexToBytes } from "./hex.js";
+import { bytesToHex, hexToBytes } from "./hex";
 
-export { HandleTracker } from "./handle-tracker.js";
-export type { ReleasableImageCodec } from "./handle-tracker.js";
+export { HandleTracker } from "./handle-tracker";
+export type { ReleasableImageCodec } from "./handle-tracker";
 
 interface DecodeResult {
   handle: number;

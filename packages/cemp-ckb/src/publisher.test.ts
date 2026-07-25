@@ -137,6 +137,7 @@ class FakeStore implements PublicationStore {
 interface FakeChainOptions {
   readonly profileCellJson?: unknown;
   readonly onBroadcast?: () => void;
+  readonly rejectedTxHashes?: ReadonlySet<string>;
 }
 
 function makeFakeChain(options: FakeChainOptions): {
@@ -158,10 +159,17 @@ function makeFakeChain(options: FakeChainOptions): {
           options.onBroadcast?.();
           return Promise.resolve(hashFromRpcBody(body));
         }
-        case "get_transaction":
+        case "get_transaction": {
+          const hash = params[0] as string;
+          if (options.rejectedTxHashes?.has(hash)) {
+            return Promise.resolve({
+              tx_status: { status: "rejected", reason: "Resolve failed Unknown(OutPoint)" },
+            });
+          }
           return Promise.resolve({
             tx_status: { status: "committed", block_hash: fillHex(0x99, 32) },
           });
+        }
         case "get_header":
           return Promise.resolve({
             number: "0x100",
@@ -189,7 +197,10 @@ const MESSAGE_TYPE_REF: CempMessageTypeRef = {
   },
 };
 
-function makeFixture(profileCellJson?: unknown): {
+function makeFixture(
+  profileCellJson?: unknown,
+  opts: { rejectedTxHashes?: ReadonlySet<string> } = {},
+): {
   publisher: MessagePublisher;
   store: FakeStore;
   sentBodies: Record<string, unknown>[];
@@ -198,6 +209,7 @@ function makeFixture(profileCellJson?: unknown): {
   const store = new FakeStore();
   const { transport, sentBodies } = makeFakeChain({
     ...(profileCellJson === undefined ? {} : { profileCellJson }),
+    ...(opts.rejectedTxHashes === undefined ? {} : { rejectedTxHashes: opts.rejectedTxHashes }),
     onBroadcast: () => {
       store.events.push({ kind: "broadcast", detail: "send_transaction" });
     },
@@ -332,6 +344,49 @@ describe("MessagePublisher.publishText", () => {
     expect(sentBodies).toHaveLength(0);
     expect(store.txs.get(crashedTxHash)?.state).toBe("committed");
     expect(store.states).toEqual(["committed", "available_on_chain"]);
+  });
+
+  it("abandons a rejected journaled tx and rebuilds fresh for the same logical message (T17 F-1)", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const rejectedHash = fillHex(0xde, 32);
+    const { publisher, store, sentBodies } = makeFixture(json, {
+      rejectedTxHashes: new Set([rejectedHash]),
+    });
+    // The wedged state T17 hit on-device: a submitted message tx the network
+    // rejected (built over an input its own chunk tx had just spent).
+    store.txs.set(rejectedHash, {
+      txHash: rejectedHash,
+      state: "submitted",
+      purpose: "message:lm-wedged",
+    });
+
+    const result = await publisher.publishText({
+      messageRowId: 11,
+      logicalMessageId: "lm-wedged",
+      text: "wedged retry",
+      recipientProfileIdHex: profileIdHex,
+    });
+
+    expect(result.committed).toBe(true);
+    expect(result.resumed).toBe(false);
+    expect(result.txHash).not.toBe(rejectedHash);
+    // The dead tx is abandoned (never rebroadcast); exactly one NEW tx was
+    // built and broadcast for the same logical message.
+    expect(store.txs.get(rejectedHash)?.state).toBe("abandoned");
+    expect(sentBodies).toHaveLength(1);
+    const journaled = [...store.txs.values()].filter((t) => t.purpose === "message:lm-wedged");
+    expect(journaled).toHaveLength(2);
+    expect(journaled.find((t) => t.txHash !== rejectedHash)?.state).toBe("committed");
+    // And a subsequent call resumes the FRESH tx rather than rebuilding again.
+    const again = await publisher.publishText({
+      messageRowId: 11,
+      logicalMessageId: "lm-wedged",
+      text: "wedged retry",
+      recipientProfileIdHex: profileIdHex,
+    });
+    expect(again.resumed).toBe(true);
+    expect(again.txHash).toBe(result.txHash);
+    expect(sentBodies).toHaveLength(1);
   });
 
   it("a retry after a pre-broadcast failure builds a NEW tx for the SAME logical message", async () => {

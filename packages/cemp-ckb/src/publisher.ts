@@ -24,7 +24,11 @@ import { codec } from "@cemp/core";
 import { assembleTextMessage } from "./assemble.js";
 import { buildSendMessageTx, type CempMessageTypeRef } from "./builders.js";
 import { CempCkbError, type CempClient } from "./client.js";
-import { resumeJournaledBroadcast, waitForTransactionCommit } from "./monitor.js";
+import {
+  JournaledAbandonedError,
+  resumeJournaledBroadcast,
+  waitForTransactionCommit,
+} from "./monitor.js";
 import { checkResolvedProfileBinding, resolveLiveProfile } from "./profiles.js";
 import { trackBroadcastSpend } from "./signing.js";
 import type { MlDsaV2TxSigner } from "./signing.js";
@@ -215,19 +219,37 @@ export class MessagePublisher {
       // the tx; a tx the network never saw is NOT marked broadcast, so the
       // failure path below records it as a normal send failure.
       const existing = await store.findOutgoingTxByPurpose(purpose);
-      if (existing !== undefined) {
-        await resumeJournaledBroadcast(
-          this.#deps.client,
-          { txHash: existing.txHash, txHex: existing.txHex },
-          { ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }) },
-        );
+      let resumable = existing;
+      if (resumable !== undefined) {
+        try {
+          await resumeJournaledBroadcast(
+            this.#deps.client,
+            { txHash: resumable.txHash, txHex: resumable.txHex },
+            { ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }) },
+          );
+        } catch (error) {
+          if (!(error instanceof JournaledAbandonedError)) {
+            throw error;
+          }
+          // T17 finding F-1: the journaled tx can NEVER land (rejected — e.g.
+          // built over an input its own chunk tx had just spent — or signed
+          // bytes missing). Abandon it and fall through to a FRESH build,
+          // mirroring the reclaim lifecycle's abandon+requeue (review E1/E2).
+          // The logical id is unchanged, so the envelope message id every
+          // receipt/reply references is stable; the new journal record becomes
+          // the latest for this purpose. Without this the row wedged forever.
+          await store.markOutgoingTxState(resumable.txHash, "abandoned");
+          resumable = undefined;
+        }
+      }
+      if (resumable !== undefined) {
         broadcast = true;
         return await this.#monitor(
           input.messageRowId,
-          existing.txHash,
+          resumable.txHash,
           true,
           input.timeoutMs,
-          existing.capacityShannon ?? undefined,
+          resumable.capacityShannon ?? undefined,
         );
       }
 

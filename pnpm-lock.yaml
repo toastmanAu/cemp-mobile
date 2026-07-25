@@ -153,6 +153,10 @@ importers:
       '@ckb-ccc/core':
         specifier: 1.12.5
         version: 1.12.5(typescript@5.9.3)
+    devDependencies:
+      '@noble/post-quantum':
+        specifier: 0.6.1
+        version: 0.6.1
 
   packages/cemp-core:
     dependencies:

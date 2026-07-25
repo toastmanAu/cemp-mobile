@@ -26,9 +26,14 @@ repository are marked OPEN with their owner.
 5. **Oversized image declarations** — `checkManifest` rejects declared
    plaintext above the protocol maximum and inconsistent
    encrypted/plaintext/chunk-count triples BEFORE download
-   (`packages/cemp-images/src/manifest.ts` + test). ✅
+   (`packages/cemp-images/src/manifest.ts` + test). Also enforced AT DISCOVERY
+   since 2026-07-26: an invalid incoming manifest degrades to a text row at
+   ingestion, never reaching the bubble (`workers.ts` `processDiscoveredCell`
+   - worker test). ✅
 6. **Decompression bombs** — same guards as (5), plus per-chunk caps (4) and
-   GCM-tag size consistency; a lying manifest is rejected without any fetch. ✅
+   GCM-tag size consistency; a lying manifest is rejected without any fetch.
+   On-device proof (T17, 2026-07-25): manifest-thumbnail renders with zero
+   fetch; full-res download passes bomb-guard + hash + mime-sniff. ✅
 7. **Repeated and replayed messages** — idempotency keys end to end:
    `logical_message_id` UNIQUE, `incoming:<envelope-id>` dedup (replay with a
    NEW outpoint collapses — `workers.test.ts` "replayed message"), journal
@@ -49,7 +54,14 @@ repository are marked OPEN with their owner.
 12. **Crash-safe transaction journals** — journal-before-broadcast (rule 6)
     with resume everywhere: publisher (purpose-embedded ids), lifecycle
     batches, attachment chunk/group publishes; resume paths tested
-    (`publisher.test.ts`, `lifecycle.test.ts`, `send.ts`). ✅
+    (`publisher.test.ts`, `lifecycle.test.ts`, `send.ts`). Hardened 2026-07-26
+    (T17 findings F-1/F-2): every resume path now abandons+requeues a
+    permanently-dead journaled tx (`JournaledAbandonedError` → `abandoned` +
+    fresh build, same logical id) — publisher message tx AND attachment chunk
+    tx — and the chunk/group reclaim is production-wired into the
+    reclaim-batch worker (previously test-only; proven on-device: 6,263 CKB
+    chunk cell reclaimed). All image broadcast paths call
+    `trackBroadcastSpend`. ✅
 13. **Log redaction** — `redactSecrets` (`packages/cemp-crypto/src/redact.ts`):
     ≥128-char hex and ≥6-word BIP39 runs masked; tx hashes/ids preserved. ✅
 14. **Dependency vulnerability scanning** — `pnpm audit:deps`
@@ -117,3 +129,25 @@ the initial checklist. Resolutions:
 449 passed + 1 skipped. Remaining pre-mainnet items: immutable mainnet
 deployment (P2), the re-review of these deltas, and the E9/manual-reclaim
 product follow-up.
+
+## Image-messaging addendum (2026-07-26, post-T17)
+
+Phase 10 (CKBFS images) shipped and passed its on-device acceptance gate (T17,
+Samsung→Retroid round-trip). The gate produced three findings, all fixed and
+device-proven (details in `.superpowers/sdd/progress.md`):
+
+- **F-1 (journal wedge)** — a message tx built over an input its own chunk tx
+  had just spent was rejected; neither resume path could recover. Fixed:
+  abandon+requeue in publisher AND attachment chunk journal paths;
+  `trackBroadcastSpend` on all image broadcasts. Device proof: wedged row
+  recovered, sent in 24 s.
+- **F-2 (chunk reclaim never wired)** — `reclaimAttachmentGroup` had no
+  production caller; chunk cells stranded capacity. Fixed: reclaim-batch
+  worker attachment-group pass. Device proof: 6,263 CKB reclaimed.
+- **F-3 (Metro bundle never gated)** — NodeNext `.js`-suffixed relative
+  imports slipped through tsc/vitest/assembleDebug but failed Metro. Lesson
+  recorded: an actual Metro bundle build is now part of the on-device gate,
+  not just tsc + APK assembly.
+
+Suite at this addendum: 604 passed + 1 skipped. The delta re-review of the
+image surface (task 16 follow-up) is tracked in `.superpowers/sdd/progress.md`.

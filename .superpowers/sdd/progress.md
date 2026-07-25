@@ -222,3 +222,10 @@ FINDINGS (pre-ship):
   imports used by the image-branch files; T16 gates (tsc/vitest/assembleDebug) never exercised
   a Metro bundle. Fixed extensionless (1955ee4); on-device bundle gate now part of T16-lessons.
 - F-4 (UX note): dev-mode LogBox overlay surfaces any console.error full-screen on device.
+
+F-2 FIXED + device-verified (2026-07-25, commit e81922e): reclaim-batch worker now reclaims
+attachment chunk cells (injected group reclaim; scan of outgoing `reclaimed` rows, skip on
+committed reclaim-attachment journal, per-group isolation). 598 vitest green (+3 worker
+tests). On-device proof: the stranded T17 chunk cell 0xd14baec7…:0 was reclaimed by tx
+0xec323840…9860 (committed, block 21864572) on the first unlock after deploying the fix —
+6,262.9999 CKB returned to the Samsung wallet (fee-only cost).

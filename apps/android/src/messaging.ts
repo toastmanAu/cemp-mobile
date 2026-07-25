@@ -21,6 +21,13 @@ import {
   waitForTransactionCommit,
   type CempMessageTypeRef,
 } from "@cemp/ckb";
+import {
+  CONSERVATIVE_MESSAGE_CELL_SHANNON,
+  CONSERVATIVE_PER_CHUNK_SHANNON,
+  SEND_FEE_RESERVE_SHANNONS,
+  publishImageMessage,
+  type ImageEncodeFormat,
+} from "@cemp/images";
 import { CKB_TESTNET, deriveRouteTag, formatFingerprint } from "@cemp/core";
 import {
   deriveIdentityKeys,
@@ -50,7 +57,18 @@ import {
   type SqliteAdapter,
 } from "@cemp/database";
 import { ClientPublicTestnet, Script, bytesFrom, hexFrom } from "@ckb-ccc/core";
+import { runImageSend } from "./image-send.js";
+import { OutgoingTxJournalAdapter } from "./outgoing-tx-journal.js";
 import { bytesToHex } from "./platform/hex";
+// RN-free half of the image-codec seam only (Task 6's split): the concrete,
+// react-native-backed `NativeImageCodec` must NEVER be imported here.
+// messaging.test.ts constructs a real `MessagingService` under vitest, and
+// react-native's own entrypoint uses Flow syntax vitest cannot parse — an
+// import of it anywhere in this module's graph (even unused) crashes the
+// whole test file before a single test runs. The composition root
+// (app-container.ts, which already pulls in every other RN platform seam and
+// is never loaded under vitest) injects the real codec factory instead.
+import { HandleTracker, type ReleasableImageCodec } from "./platform/handle-tracker.js";
 
 const textEncoder = new TextEncoder();
 
@@ -67,10 +85,15 @@ export class MessagingService {
   readonly #engine: SyncEngine;
   readonly #profiles: ProfileRepository;
   readonly #outgoingTxs: OutgoingTransactionRepository;
+  readonly #attachments: AttachmentRepository;
   readonly #bundle: IdentityKeyBundle;
   readonly #accountId: number;
   readonly #balances: BalanceRepository;
   readonly #walletId: number;
+  readonly #messageType: CempMessageTypeRef;
+  readonly #senderProfileId: Uint8Array;
+  readonly #senderDeviceId: Uint8Array;
+  readonly #createImageCodec: (() => ReleasableImageCodec) | undefined;
 
   private constructor(deps: {
     signer: MlDsaV2TxSigner;
@@ -79,10 +102,15 @@ export class MessagingService {
     engine: SyncEngine;
     profiles: ProfileRepository;
     outgoingTxs: OutgoingTransactionRepository;
+    attachments: AttachmentRepository;
     bundle: IdentityKeyBundle;
     accountId: number;
     balances: BalanceRepository;
     walletId: number;
+    messageType: CempMessageTypeRef;
+    senderProfileId: Uint8Array;
+    senderDeviceId: Uint8Array;
+    createImageCodec: (() => ReleasableImageCodec) | undefined;
   }) {
     this.#signer = deps.signer;
     this.#client = deps.client;
@@ -90,10 +118,15 @@ export class MessagingService {
     this.#engine = deps.engine;
     this.#profiles = deps.profiles;
     this.#outgoingTxs = deps.outgoingTxs;
+    this.#attachments = deps.attachments;
     this.#bundle = deps.bundle;
     this.#accountId = deps.accountId;
     this.#balances = deps.balances;
     this.#walletId = deps.walletId;
+    this.#messageType = deps.messageType;
+    this.#senderProfileId = deps.senderProfileId;
+    this.#senderDeviceId = deps.senderDeviceId;
+    this.#createImageCodec = deps.createImageCodec;
   }
 
   /** Build the service from the unlocked vault + opened DB. */
@@ -102,6 +135,15 @@ export class MessagingService {
     db: SqliteAdapter;
     notifier: Notifier;
     scheduler: Scheduler;
+    /**
+     * Factory for the platform image codec (Task 13). Injected — not
+     * imported here — so this module stays react-native-free (see the
+     * import comment above); the composition root supplies
+     * `() => new NativeImageCodec()`. Omitted in contexts that never send
+     * images (e.g. messaging.test.ts's background-scheduling regression
+     * guard): `publishImage` throws a clear error if called without one.
+     */
+    createImageCodec?: () => ReleasableImageCodec;
   }): Promise<MessagingService> {
     const { vault, db, notifier, scheduler } = deps;
     const bundle = await vault.withUnlockedSeed((seed) => deriveIdentityKeys(seed));
@@ -213,10 +255,15 @@ export class MessagingService {
       engine,
       profiles,
       outgoingTxs,
+      attachments,
       bundle,
       accountId,
       balances,
       walletId,
+      messageType,
+      senderProfileId,
+      senderDeviceId: deviceId,
+      createImageCodec: deps.createImageCodec,
     });
   }
 
@@ -322,6 +369,65 @@ export class MessagingService {
       receiptRequest: 1,
     });
     return { txHash: result.txHash };
+  }
+
+  /**
+   * Publish one queued image message (spec §4 decision 5A, Task 13). Thin
+   * wiring shim: assembles the real chain/journal/attachment deps and hands
+   * off to `runImageSend`, which owns the capacity pre-flight and the
+   * `ImageTooLargeError` → jargon-free mapping. The `HandleTracker` wraps
+   * BOTH the pre-flight's dry `prepareImage` call (inside `runImageSend`) and
+   * `publishImageMessage`'s real one — one `releaseAll()` here covers every
+   * native handle either prepare created.
+   */
+  async publishImage(input: {
+    messageRowId: number;
+    logicalMessageId: string;
+    recipientProfileIdHex: string;
+    recipientKemPublicKey: Uint8Array;
+    recipientProfileId: Uint8Array;
+    sourceBytes: Uint8Array;
+    caption?: string;
+    format?: ImageEncodeFormat;
+    timeoutMs?: number;
+  }): Promise<{ messageTxHash: string }> {
+    if (this.#createImageCodec === undefined) {
+      throw new Error("publishImage: no image codec configured for this platform");
+    }
+    const tracker = new HandleTracker(this.#createImageCodec());
+    try {
+      const journal = new OutgoingTxJournalAdapter(this.#outgoingTxs);
+      const balance = await this.#balances.getBalance(this.#walletId);
+      const result = await runImageSend(
+        {
+          codec: tracker,
+          availableShannon: balance.availableShannon,
+          perChunkShannon: CONSERVATIVE_PER_CHUNK_SHANNON,
+          messageCellShannon: CONSERVATIVE_MESSAGE_CELL_SHANNON,
+          feeReserveShannon: SEND_FEE_RESERVE_SHANNONS,
+          publish: (manifestInput) =>
+            publishImageMessage(
+              {
+                codec: tracker,
+                client: this.#client,
+                signer: this.#signer,
+                messageType: this.#messageType,
+                journal,
+                publisher: this.#publisher,
+                senderProfileId: this.#senderProfileId,
+                senderDeviceId: this.#senderDeviceId,
+                randomBytes,
+              },
+              manifestInput,
+            ),
+          attachments: this.#attachments,
+        },
+        input,
+      );
+      return { messageTxHash: result.messageTxHash };
+    } finally {
+      await tracker.releaseAll();
+    }
   }
 
   /** Wallet balances for the wallet tab (spec §5.5 categories). */

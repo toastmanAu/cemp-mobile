@@ -15,14 +15,26 @@ import {
   addressFromLockScript,
   buildCreateProfileTx,
   cccTransactionToWire,
+  checkResolvedProfileBinding,
   trackBroadcastSpend,
   currentRoutingEpoch,
   fetchJsonRpcTransport,
+  resolveLiveProfile,
   waitForTransactionCommit,
   type CempMessageTypeRef,
 } from "@cemp/ckb";
-import { CKB_TESTNET, deriveRouteTag, formatFingerprint } from "@cemp/core";
 import {
+  CONSERVATIVE_MESSAGE_CELL_SHANNON,
+  CONSERVATIVE_PER_CHUNK_SHANNON,
+  SEND_FEE_RESERVE_SHANNONS,
+  downloadAttachment,
+  publishImageMessage,
+  type DownloadedAttachment,
+  type ImageEncodeFormat,
+} from "@cemp/images";
+import { CKB_TESTNET, codec, deriveRouteTag, formatFingerprint } from "@cemp/core";
+import {
+  decryptEnvelope,
   deriveIdentityKeys,
   mldsaV2LockArgs,
   randomBytes,
@@ -34,6 +46,7 @@ import { SyncEngine, BackoffPolicy, buildWorkerSpecs, type Scheduler } from "@ce
 import type { Notifier } from "@cemp/ui";
 import type { SecureVaultImpl } from "@cemp/secure-vault";
 import {
+  AttachmentRepository,
   BalanceRepository,
   ContactRepository,
   ConversationRepository,
@@ -49,7 +62,18 @@ import {
   type SqliteAdapter,
 } from "@cemp/database";
 import { ClientPublicTestnet, Script, bytesFrom, hexFrom } from "@ckb-ccc/core";
+import { runImageSend } from "./image-send.js";
+import { OutgoingTxJournalAdapter } from "./outgoing-tx-journal.js";
 import { bytesToHex } from "./platform/hex";
+// RN-free half of the image-codec seam only (Task 6's split): the concrete,
+// react-native-backed `NativeImageCodec` must NEVER be imported here.
+// messaging.test.ts constructs a real `MessagingService` under vitest, and
+// react-native's own entrypoint uses Flow syntax vitest cannot parse — an
+// import of it anywhere in this module's graph (even unused) crashes the
+// whole test file before a single test runs. The composition root
+// (app-container.ts, which already pulls in every other RN platform seam and
+// is never loaded under vitest) injects the real codec factory instead.
+import { HandleTracker, type ReleasableImageCodec } from "./platform/handle-tracker.js";
 
 const textEncoder = new TextEncoder();
 
@@ -66,10 +90,16 @@ export class MessagingService {
   readonly #engine: SyncEngine;
   readonly #profiles: ProfileRepository;
   readonly #outgoingTxs: OutgoingTransactionRepository;
+  readonly #attachments: AttachmentRepository;
+  readonly #messages: MessageRepository;
   readonly #bundle: IdentityKeyBundle;
   readonly #accountId: number;
   readonly #balances: BalanceRepository;
   readonly #walletId: number;
+  readonly #messageType: CempMessageTypeRef;
+  readonly #senderProfileId: Uint8Array;
+  readonly #senderDeviceId: Uint8Array;
+  readonly #createImageCodec: (() => ReleasableImageCodec) | undefined;
 
   private constructor(deps: {
     signer: MlDsaV2TxSigner;
@@ -78,10 +108,16 @@ export class MessagingService {
     engine: SyncEngine;
     profiles: ProfileRepository;
     outgoingTxs: OutgoingTransactionRepository;
+    attachments: AttachmentRepository;
+    messages: MessageRepository;
     bundle: IdentityKeyBundle;
     accountId: number;
     balances: BalanceRepository;
     walletId: number;
+    messageType: CempMessageTypeRef;
+    senderProfileId: Uint8Array;
+    senderDeviceId: Uint8Array;
+    createImageCodec: (() => ReleasableImageCodec) | undefined;
   }) {
     this.#signer = deps.signer;
     this.#client = deps.client;
@@ -89,10 +125,16 @@ export class MessagingService {
     this.#engine = deps.engine;
     this.#profiles = deps.profiles;
     this.#outgoingTxs = deps.outgoingTxs;
+    this.#attachments = deps.attachments;
+    this.#messages = deps.messages;
     this.#bundle = deps.bundle;
     this.#accountId = deps.accountId;
     this.#balances = deps.balances;
     this.#walletId = deps.walletId;
+    this.#messageType = deps.messageType;
+    this.#senderProfileId = deps.senderProfileId;
+    this.#senderDeviceId = deps.senderDeviceId;
+    this.#createImageCodec = deps.createImageCodec;
   }
 
   /** Build the service from the unlocked vault + opened DB. */
@@ -101,6 +143,15 @@ export class MessagingService {
     db: SqliteAdapter;
     notifier: Notifier;
     scheduler: Scheduler;
+    /**
+     * Factory for the platform image codec (Task 13). Injected — not
+     * imported here — so this module stays react-native-free (see the
+     * import comment above); the composition root supplies
+     * `() => new NativeImageCodec()`. Omitted in contexts that never send
+     * images (e.g. messaging.test.ts's background-scheduling regression
+     * guard): `publishImage` throws a clear error if called without one.
+     */
+    createImageCodec?: () => ReleasableImageCodec;
   }): Promise<MessagingService> {
     const { vault, db, notifier, scheduler } = deps;
     const bundle = await vault.withUnlockedSeed((seed) => deriveIdentityKeys(seed));
@@ -139,6 +190,7 @@ export class MessagingService {
     const conversations = new ConversationRepository(db);
     const messages = new MessageRepository(db);
     const outgoingTxs = new OutgoingTransactionRepository(db);
+    const attachments = new AttachmentRepository(db);
     const watchedOutpoints = new WatchedOutpointRepository(db);
     const store = new DatabasePublicationStore(messages, outgoingTxs, {
       watchedOutpoints,
@@ -177,6 +229,7 @@ export class MessagingService {
         contacts,
         conversations,
         outgoingTxs,
+        attachments,
         cursors,
         leases,
         balances,
@@ -210,10 +263,16 @@ export class MessagingService {
       engine,
       profiles,
       outgoingTxs,
+      attachments,
+      messages,
       bundle,
       accountId,
       balances,
       walletId,
+      messageType,
+      senderProfileId,
+      senderDeviceId: deviceId,
+      createImageCodec: deps.createImageCodec,
     });
   }
 
@@ -319,6 +378,136 @@ export class MessagingService {
       receiptRequest: 1,
     });
     return { txHash: result.txHash };
+  }
+
+  /**
+   * Publish one queued image message (spec §4 decision 5A, Task 13; Task 15a
+   * moved recipient resolution in-band so callers only ever supply a profile
+   * id, matching `publishMessage`'s shape). Resolves the recipient's live
+   * profile the same way the text publish path does (rule 4: re-resolve +
+   * binding-check on every send) to derive the KEM public key and raw
+   * profile id, then hands off to `runImageSend`, which owns the capacity
+   * pre-flight and the `ImageTooLargeError` → jargon-free mapping. The
+   * `HandleTracker` wraps BOTH the pre-flight's dry `prepareImage` call
+   * (inside `runImageSend`) and `publishImageMessage`'s real one — one
+   * `releaseAll()` here covers every native handle either prepare created.
+   */
+  async publishImage(input: {
+    messageRowId: number;
+    logicalMessageId: string;
+    recipientProfileIdHex: string;
+    sourceBytes: Uint8Array;
+    caption?: string;
+    format?: ImageEncodeFormat;
+    timeoutMs?: number;
+  }): Promise<{ messageTxHash: string }> {
+    if (this.#createImageCodec === undefined) {
+      throw new Error("publishImage: no image codec configured for this platform");
+    }
+    const tracker = new HandleTracker(this.#createImageCodec());
+    try {
+      const resolved = await resolveLiveProfile(this.#client, input.recipientProfileIdHex);
+      checkResolvedProfileBinding(resolved, input.recipientProfileIdHex);
+      const recipientProfileId = codec.hexToBytes(
+        input.recipientProfileIdHex.startsWith("0x")
+          ? input.recipientProfileIdHex.slice(2)
+          : input.recipientProfileIdHex,
+      );
+      const journal = new OutgoingTxJournalAdapter(this.#outgoingTxs);
+      const balance = await this.#balances.getBalance(this.#walletId);
+      const result = await runImageSend(
+        {
+          codec: tracker,
+          availableShannon: balance.availableShannon,
+          perChunkShannon: CONSERVATIVE_PER_CHUNK_SHANNON,
+          messageCellShannon: CONSERVATIVE_MESSAGE_CELL_SHANNON,
+          feeReserveShannon: SEND_FEE_RESERVE_SHANNONS,
+          publish: (manifestInput) =>
+            publishImageMessage(
+              {
+                codec: tracker,
+                client: this.#client,
+                signer: this.#signer,
+                messageType: this.#messageType,
+                journal,
+                publisher: this.#publisher,
+                senderProfileId: this.#senderProfileId,
+                senderDeviceId: this.#senderDeviceId,
+                randomBytes,
+              },
+              manifestInput,
+            ),
+          attachments: this.#attachments,
+        },
+        {
+          messageRowId: input.messageRowId,
+          logicalMessageId: input.logicalMessageId,
+          recipientProfileIdHex: input.recipientProfileIdHex,
+          recipientKemPublicKey: resolved.profile.ml_kem_public_key,
+          recipientProfileId,
+          sourceBytes: input.sourceBytes,
+          ...(input.caption === undefined ? {} : { caption: input.caption }),
+          ...(input.format === undefined ? {} : { format: input.format }),
+          ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+        },
+      );
+      return { messageTxHash: result.messageTxHash };
+    } finally {
+      await tracker.releaseAll();
+    }
+  }
+
+  /**
+   * Re-derive the attachment key for one already-received image message
+   * (Task 15a; spec §9.2/§9.4 "attachment key is never stored"). The key is
+   * a decrypt-time secret — it is recomputed on demand from the stored
+   * message cell rather than persisted, so a caller must wipe it after
+   * `downloadAttachment` finishes with it.
+   */
+  async deriveIncomingAttachmentKey(messageId: number): Promise<Uint8Array> {
+    const ref = await this.#messages.getChainRef(messageId);
+    if (ref === undefined || ref.txHash === null || ref.outpointIndex === null) {
+      throw new Error(
+        `deriveIncomingAttachmentKey: message ${String(messageId)} has no recorded chain reference`,
+      );
+    }
+    const status = await this.#client.getLiveCell({
+      txHash: ref.txHash,
+      index: `0x${ref.outpointIndex.toString(16)}`,
+    });
+    if (status.status !== "live") {
+      throw new Error(
+        `deriveIncomingAttachmentKey: message ${String(messageId)}'s cell is not live (${status.status})`,
+      );
+    }
+    const cellDataHex = status.cell.data.startsWith("0x")
+      ? status.cell.data.slice(2)
+      : status.cell.data;
+    const decrypted = decryptEnvelope({
+      envelopeBytes: codec.hexToBytes(cellDataHex),
+      recipientKemSecretKey: this.#bundle.mlKem.secretKey,
+      ownProfileId: this.#senderProfileId,
+    });
+    return decrypted.attachmentKey;
+  }
+
+  /**
+   * Download + decrypt one incoming image attachment (Task 15b; spec §9.4
+   * tap-to-download). Centralizes the two secrets the screen must never
+   * touch directly: the `CempClient` used to fetch chunk cells, and the
+   * per-message attachment key derived from the stored envelope. The key is
+   * wiped as soon as `downloadAttachment` returns, success or failure.
+   */
+  async downloadImageAttachment(
+    messageId: number,
+    manifest: codec.AttachmentManifestV1,
+  ): Promise<DownloadedAttachment> {
+    const key = await this.deriveIncomingAttachmentKey(messageId);
+    try {
+      return await downloadAttachment(this.#client, manifest, key);
+    } finally {
+      key.fill(0);
+    }
   }
 
   /** Wallet balances for the wallet tab (spec §5.5 categories). */

@@ -1,3 +1,4 @@
+export * from "./attachment-key.js";
 export * from "./domains.js";
 export * from "./errors.js";
 export * from "./hkdf.js";

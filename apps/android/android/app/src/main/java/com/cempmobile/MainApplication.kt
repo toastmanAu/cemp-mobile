@@ -2,6 +2,7 @@ package com.cempmobile
 
 import android.app.Application
 import com.cempmobile.background.CempBackgroundPackage
+import com.cempmobile.imaging.CempImagePackage
 import com.cempmobile.kdf.CempKdfPackage
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
@@ -19,6 +20,7 @@ class MainApplication : Application(), ReactApplication {
           // App-local native modules that autolinking cannot see.
           add(CempKdfPackage())
           add(CempBackgroundPackage())
+          add(CempImagePackage())
         },
     )
   }

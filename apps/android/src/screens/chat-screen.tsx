@@ -6,10 +6,13 @@
 
 import React, { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Button,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   TextInput,
@@ -17,9 +20,24 @@ import {
 } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { Contact, Message } from "@cemp/database";
-import { ChatComposerViewModel, messageBubbleState, type BubbleStatus } from "@cemp/ui";
+import type { Attachment, Contact, Message } from "@cemp/database";
+import { codec } from "@cemp/core";
+import {
+  ChatComposerViewModel,
+  imageBubbleState,
+  messageBubbleState,
+  type BubbleStatus,
+  type ImageDownloadState,
+} from "@cemp/ui";
+import { pickImage } from "../platform/native-image-picker";
+import { bytesToBase64 } from "../platform/base64";
 import { useAppContainer, type RootStackParamList } from "../navigation";
+
+/** In-memory record of a downloaded full-resolution image (never persisted). */
+interface FullImage {
+  readonly base64: string;
+  readonly mimeType: string;
+}
 
 const STATUS_LABEL: Record<BubbleStatus, string> = {
   draft: "draft",
@@ -51,11 +69,99 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
   const [draft, setDraft] = useState("");
   const [contact, setContact] = useState<Contact | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
+  const [attachmentsByMessage, setAttachmentsByMessage] = useState<Map<number, Attachment>>(
+    new Map(),
+  );
+  const [downloadStates, setDownloadStates] = useState<Map<number, ImageDownloadState>>(new Map());
+  const [fullImages, setFullImages] = useState<Map<number, FullImage>>(new Map());
 
   async function reload(): Promise<void> {
-    setMessages(
-      await container.repositories.messages.listByConversation(conversationId, { limit: 100 }),
+    const list = await container.repositories.messages.listByConversation(conversationId, {
+      limit: 100,
+    });
+    setMessages(list);
+    // One image attachment per message (spec: single attachment per message).
+    const perMessage = await Promise.all(
+      list.map(async (m) => {
+        const found = await container.repositories.attachments.listForMessage(m.id);
+        return [m.id, found.find((a) => a.kind === "image")] as const;
+      }),
     );
+    const nextAttachments = new Map<number, Attachment>();
+    for (const [messageId, attachment] of perMessage) {
+      if (attachment !== undefined) nextAttachments.set(messageId, attachment);
+    }
+    setAttachmentsByMessage(nextAttachments);
+  }
+
+  function setDownloadState(messageId: number, state: ImageDownloadState): void {
+    setDownloadStates((prev) => {
+      const next = new Map(prev);
+      next.set(messageId, state);
+      return next;
+    });
+  }
+
+  /**
+   * Attach + send an image (spec §4 item 2/5A). Cancel is a silent no-op.
+   *
+   * Preconditions are checked BEFORE the draft row is inserted (final-review
+   * fix I-1): unlike text, a queued image has no persisted body a worker
+   * could resend, so a row created without a usable send path (no messaging
+   * / unresolved recipient) can never self-heal — it would be a permanent
+   * empty "sending" bubble. Once the row IS inserted, any failure from
+   * `publishImage` (too-large, decode, capacity, or a publish/tx crash) is
+   * caught and the row is transitioned to `failed` so the UI honestly shows
+   * a failed bubble instead of stranding it at `queued`/"sending" forever
+   * (spec §4.1 ImageTooLarge, §5A: "no stranded outgoing row").
+   */
+  async function attachImage(): Promise<void> {
+    setPublishError(null);
+    let row: Message | undefined;
+    try {
+      const bytes = await pickImage();
+      if (bytes === null) return; // cancel = no-op
+
+      if (!container.hasMessaging || contact?.profileIdHex == null) {
+        // No row inserted: a locally-saved-but-never-sendable image bubble
+        // is worse than nothing here, since it can't self-heal like text.
+        setPublishError("Can't send an image to this contact right now.");
+        return;
+      }
+
+      row = await composer.insertImageDraft();
+      await container.messaging.publishImage({
+        messageRowId: row.id,
+        logicalMessageId: row.logicalMessageId,
+        recipientProfileIdHex: contact.profileIdHex,
+        sourceBytes: bytes,
+      });
+    } catch (e) {
+      // ImageTooLargeError / decode / capacity all arrive here already
+      // jargon-free. If the row was already inserted, mark it failed —
+      // never leave it stuck at queued/"sending".
+      if (row !== undefined) {
+        await container.repositories.messages.transitionState(row.id, "failed");
+      }
+      setPublishError(e instanceof Error ? e.message : "Couldn't send that image.");
+    }
+    await reload();
+  }
+
+  /** Tap-to-download an incoming image (7A: keep thumbnail, offer retry on failure). */
+  async function loadFull(messageId: number, manifest: codec.AttachmentManifestV1): Promise<void> {
+    setDownloadState(messageId, "loading");
+    try {
+      const full = await container.messaging.downloadImageAttachment(messageId, manifest);
+      setFullImages((prev) => {
+        const next = new Map(prev);
+        next.set(messageId, { base64: bytesToBase64(full.bytes), mimeType: full.mimeType });
+        return next;
+      });
+      setDownloadState(messageId, "loaded");
+    } catch {
+      setDownloadState(messageId, "error");
+    }
   }
 
   useEffect(() => {
@@ -132,6 +238,21 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
           const bubble = messageBubbleState(item);
           const outgoing = item.direction === "outgoing";
           const label = STATUS_LABEL[bubble.status];
+          const attachment = attachmentsByMessage.get(item.id);
+          if (attachment !== undefined && attachment.manifest !== null) {
+            const manifest = codec.decodeAttachmentManifestV1(attachment.manifest);
+            return (
+              <ImageBubble
+                outgoing={outgoing}
+                manifest={manifest}
+                downloadState={downloadStates.get(item.id) ?? "idle"}
+                full={fullImages.get(item.id)}
+                statusLabel={label}
+                canRetry={bubble.canRetry}
+                onTap={() => void loadFull(item.id, manifest)}
+              />
+            );
+          }
           return (
             <View style={[styles.bubble, outgoing ? styles.bubbleOut : styles.bubbleIn]}>
               <Text style={outgoing ? styles.bubbleTextOut : styles.bubbleTextIn}>{item.body}</Text>
@@ -152,6 +273,7 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
           placeholder="Message"
           multiline
         />
+        <Button title="📎" onPress={() => void attachImage()} />
         <Button title="Send" disabled={draft.trim().length === 0} onPress={() => void send()} />
       </View>
       {composer.error !== null ? <Text style={styles.errorText}>{composer.error}</Text> : null}
@@ -160,6 +282,75 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
         {composer.byteLength}/{composer.maxBytes} bytes
       </Text>
     </KeyboardAvoidingView>
+  );
+}
+
+interface ImageBubbleProps {
+  readonly outgoing: boolean;
+  readonly manifest: codec.AttachmentManifestV1;
+  readonly downloadState: ImageDownloadState;
+  readonly full: FullImage | undefined;
+  readonly statusLabel: string;
+  readonly canRetry: boolean;
+  readonly onTap: () => void;
+}
+
+/**
+ * Image message bubble: thumbnail (from the on-chain manifest) vs the
+ * downloaded full image vs a spinner vs a 7A retry affordance, per
+ * {@link imageBubbleState}. `data:` URIs are how RN's `<Image>` renders raw
+ * bytes with no filesystem write.
+ */
+function ImageBubble({
+  outgoing,
+  manifest,
+  downloadState,
+  full,
+  statusLabel,
+  canRetry,
+  onTap,
+}: ImageBubbleProps): React.JSX.Element {
+  const presentation = imageBubbleState({
+    hasThumbnail: manifest.thumbnail != null,
+    download: downloadState,
+  });
+  const declaredMimeType = new TextDecoder().decode(manifest.mime_type);
+  const thumbnailUri =
+    manifest.thumbnail != null
+      ? `data:${declaredMimeType};base64,${bytesToBase64(manifest.thumbnail)}`
+      : null;
+  const fullUri = full !== undefined ? `data:${full.mimeType};base64,${full.base64}` : null;
+
+  return (
+    <View style={[styles.bubble, styles.imageBubble, outgoing ? styles.bubbleOut : styles.bubbleIn]}>
+      <Pressable
+        onPress={onTap}
+        disabled={presentation.affordance === "none"}
+        style={styles.imagePressable}
+      >
+        {presentation.showFull && fullUri !== null ? (
+          <Image source={{ uri: fullUri }} style={styles.fullImage} resizeMode="contain" />
+        ) : presentation.showThumbnail && thumbnailUri !== null ? (
+          <Image source={{ uri: thumbnailUri }} style={styles.thumbnail} resizeMode="cover" />
+        ) : (
+          <View style={styles.thumbnailPlaceholder} />
+        )}
+        {presentation.showSpinner ? (
+          <View style={styles.spinnerOverlay}>
+            <ActivityIndicator color="#fff" />
+          </View>
+        ) : null}
+        {presentation.affordance === "tap-to-load" ? (
+          <Text style={styles.imageAffordance}>Tap to load</Text>
+        ) : null}
+        {presentation.affordance === "tap-to-retry" ? (
+          <Text style={[styles.imageAffordance, styles.statusRetry]}>Tap to retry</Text>
+        ) : null}
+      </Pressable>
+      {statusLabel !== "" ? (
+        <Text style={[styles.status, canRetry ? styles.statusRetry : null]}>{statusLabel}</Text>
+      ) : null}
+    </View>
   );
 }
 
@@ -191,4 +382,27 @@ const styles = StyleSheet.create({
     paddingBottom: 4,
   },
   errorText: { color: "#b00020", paddingHorizontal: 12, paddingBottom: 4 },
+  imageBubble: { padding: 4 },
+  imagePressable: { width: 200, height: 200, borderRadius: 10, overflow: "hidden" },
+  thumbnail: { width: "100%", height: "100%" },
+  fullImage: { width: "100%", height: "100%" },
+  thumbnailPlaceholder: { width: "100%", height: "100%", backgroundColor: "#c9c9c9" },
+  spinnerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.25)",
+  },
+  imageAffordance: {
+    position: "absolute",
+    bottom: 6,
+    left: 6,
+    right: 6,
+    color: "#fff",
+    fontSize: 11,
+    fontWeight: "600",
+    textAlign: "center",
+    textShadowColor: "rgba(0,0,0,0.6)",
+    textShadowRadius: 3,
+  },
 });

@@ -25,6 +25,7 @@ import type { Notifier } from "@cemp/ui";
 import { AndroidKeychainKeyStore } from "./platform/android-keystore";
 import { AndroidNotifier, requestNotificationPermission } from "./platform/android-notifier";
 import { MessagingService } from "./messaging";
+import { NativeImageCodec } from "./platform/native-image-codec";
 import { NativeKdfEngine } from "./platform/native-kdf";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
 import { createRouteTagCache } from "./platform/route-tag-cache";
@@ -178,6 +179,7 @@ export class AppContainer {
         db: this.#db,
         notifier: this.notifier,
         scheduler: new WorkManagerScheduler(),
+        createImageCodec: () => new NativeImageCodec(),
       });
     }
     this.#setState("ready");

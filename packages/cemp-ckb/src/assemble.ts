@@ -39,6 +39,13 @@ export interface AssembleTextMessageParams {
   /** Deterministic message id (tests / idempotent re-assembly); random otherwise. */
   readonly messageId?: Uint8Array;
   readonly nowMs?: number;
+  /**
+   * Attachment-key coordination seam (spec §6): fix the envelope's KEM
+   * encapsulation + nonce so the sender can pre-derive the attachmentKey for
+   * chunk encryption. MUST be fresh CSPRNG per message (no reuse). Supplied
+   * ONLY by the image-send orchestration.
+   */
+  readonly attachmentEnvelope?: { readonly kemMessage: Uint8Array; readonly nonce: Uint8Array };
 }
 
 export interface AssembledMessage {
@@ -116,6 +123,12 @@ export function assembleTextMessage(params: AssembleTextMessageParams): Assemble
     payload,
     recipientKemPublicKey: params.recipientKemPublicKey,
     header,
+    ...(params.attachmentEnvelope === undefined
+      ? {}
+      : {
+          kemMessage: params.attachmentEnvelope.kemMessage,
+          nonce: params.attachmentEnvelope.nonce,
+        }),
   });
   return {
     messageId,

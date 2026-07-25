@@ -44,10 +44,26 @@ export interface EncryptEnvelopeParams {
 }
 
 /**
- * Golden-vector / test-only overrides (spec §14). Production callers MUST NOT
- * pass these: envelope nonces and encapsulation randomness must come from the
- * OS CSPRNG, because reusing them breaks per-envelope key uniqueness
- * (spec §7 "Nonce reuse").
+ * Golden-vector / test-only overrides (spec §14) — AND the sanctioned §6
+ * attachment-key coordination seam for production image sends. Two valid
+ * uses:
+ *
+ * 1. Golden vectors / tests: fixed values reproduce known-answer vectors.
+ * 2. Production, spec §6: the image-send path derives the attachment key
+ *    from a KEM encapsulation (`deriveSendAttachmentKey`) BEFORE the text
+ *    envelope is assembled, then passes that SAME `kemMessage`/`nonce` in
+ *    here so `assembleTextMessage`/`publishText` build the envelope around
+ *    the identical encapsulation the attachment key was derived from — one
+ *    encapsulation, two derivations, byte-identical key. This is the only
+ *    way sender and recipient agree on the attachment key without
+ *    transporting it.
+ *
+ * In BOTH cases the values must be FRESH CSPRNG output generated once per
+ * message and consumed by exactly one published envelope — reusing a
+ * `nonce`/`kemMessage` pair across envelopes breaks per-envelope key
+ * uniqueness (spec §7 "Nonce reuse"). Callers other than the §6
+ * coordination seam MUST NOT pass these; when in doubt, omit both fields and
+ * let this module draw fresh OS CSPRNG randomness itself.
  */
 export interface EncryptEnvelopeTestOverrides {
   /** Fixed 12-byte envelope nonce (otherwise `crypto.getRandomValues`). */

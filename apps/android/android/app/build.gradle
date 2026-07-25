@@ -124,6 +124,14 @@ dependencies {
     // (com.cempmobile.background, work-manager-scheduler.ts).
     implementation("androidx.work:work-runtime-ktx:2.10.0")
 
+    // EXIF metadata reader for the native image codec (com.cempmobile.imaging):
+    // decode() bakes orientation into pixels and drops all metadata.
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
+    // ActivityResultContracts.PickVisualMedia for the system Photo Picker
+    // (com.cempmobile.imaging.CempImagePickerModule).
+    implementation("androidx.activity:activity-ktx:1.9.3")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {

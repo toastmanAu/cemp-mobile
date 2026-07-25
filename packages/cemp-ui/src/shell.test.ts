@@ -161,6 +161,31 @@ describe("ChatComposerViewModel", () => {
     }
   });
 
+  it("insertImageDraft inserts a body-null outgoing row already queued (Task 15b)", async () => {
+    const { db, contacts, conversations, messages } = await makeStack();
+    try {
+      const alice = await contacts.create({ displayName: "alice" });
+      const conv = await conversations.getOrCreateForContact(alice.id);
+      const composer = new ChatComposerViewModel(messages, conv.id);
+
+      const row = await composer.insertImageDraft();
+      expect(row.body).toBeNull();
+      expect(row.state).toBe("queued");
+      expect(row.direction).toBe("outgoing");
+      expect(row.logicalMessageId).toMatch(/^[0-9a-f]{32}$/);
+      // Composer's own text/status are untouched — this path never encrypts here.
+      expect(composer.text).toBe("");
+      expect(composer.status).toBe("editing");
+      expect(await messages.listByConversation(conv.id)).toHaveLength(1);
+
+      // Idempotent logical ids: two drafts never collide.
+      const second = await composer.insertImageDraft();
+      expect(second.logicalMessageId).not.toBe(row.logicalMessageId);
+    } finally {
+      await db.close();
+    }
+  });
+
   it("resumeDraft restores only outgoing drafts", async () => {
     const { db, contacts, conversations, messages } = await makeStack();
     try {

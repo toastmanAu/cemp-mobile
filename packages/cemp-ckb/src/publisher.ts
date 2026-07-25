@@ -171,6 +171,12 @@ export interface PublishTextInput {
   readonly contentType?: 0x01 | 0x03;
   /** Attachment manifests for a 0x03 message (Phase 10; ≤ 4 per payload). */
   readonly attachmentManifests?: readonly codec.AttachmentManifestV1Encodable[];
+  /**
+   * Attachment-key coordination (spec §6). Supply ONLY for 0x03 attachment
+   * messages, and ONLY fresh CSPRNG values per message (no reuse). Forwarded
+   * verbatim to the envelope so the sealed key matches the chunk key.
+   */
+  readonly attachmentEnvelope?: { readonly kemMessage: Uint8Array; readonly nonce: Uint8Array };
   /** Commit deadline (default 180 s). */
   readonly timeoutMs?: number;
 }
@@ -246,6 +252,9 @@ export class MessagePublisher {
         ...(input.attachmentManifests === undefined
           ? {}
           : { attachmentManifests: input.attachmentManifests }),
+        ...(input.attachmentEnvelope === undefined
+          ? {}
+          : { attachmentEnvelope: input.attachmentEnvelope }),
       });
 
       await store.transitionMessage(input.messageRowId, "building_transaction");

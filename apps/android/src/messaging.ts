@@ -15,9 +15,11 @@ import {
   addressFromLockScript,
   buildCreateProfileTx,
   cccTransactionToWire,
+  checkResolvedProfileBinding,
   trackBroadcastSpend,
   currentRoutingEpoch,
   fetchJsonRpcTransport,
+  resolveLiveProfile,
   waitForTransactionCommit,
   type CempMessageTypeRef,
 } from "@cemp/ckb";
@@ -28,8 +30,9 @@ import {
   publishImageMessage,
   type ImageEncodeFormat,
 } from "@cemp/images";
-import { CKB_TESTNET, deriveRouteTag, formatFingerprint } from "@cemp/core";
+import { CKB_TESTNET, codec, deriveRouteTag, formatFingerprint } from "@cemp/core";
 import {
+  decryptEnvelope,
   deriveIdentityKeys,
   mldsaV2LockArgs,
   randomBytes,
@@ -86,6 +89,7 @@ export class MessagingService {
   readonly #profiles: ProfileRepository;
   readonly #outgoingTxs: OutgoingTransactionRepository;
   readonly #attachments: AttachmentRepository;
+  readonly #messages: MessageRepository;
   readonly #bundle: IdentityKeyBundle;
   readonly #accountId: number;
   readonly #balances: BalanceRepository;
@@ -103,6 +107,7 @@ export class MessagingService {
     profiles: ProfileRepository;
     outgoingTxs: OutgoingTransactionRepository;
     attachments: AttachmentRepository;
+    messages: MessageRepository;
     bundle: IdentityKeyBundle;
     accountId: number;
     balances: BalanceRepository;
@@ -119,6 +124,7 @@ export class MessagingService {
     this.#profiles = deps.profiles;
     this.#outgoingTxs = deps.outgoingTxs;
     this.#attachments = deps.attachments;
+    this.#messages = deps.messages;
     this.#bundle = deps.bundle;
     this.#accountId = deps.accountId;
     this.#balances = deps.balances;
@@ -256,6 +262,7 @@ export class MessagingService {
       profiles,
       outgoingTxs,
       attachments,
+      messages,
       bundle,
       accountId,
       balances,
@@ -372,20 +379,21 @@ export class MessagingService {
   }
 
   /**
-   * Publish one queued image message (spec §4 decision 5A, Task 13). Thin
-   * wiring shim: assembles the real chain/journal/attachment deps and hands
-   * off to `runImageSend`, which owns the capacity pre-flight and the
-   * `ImageTooLargeError` → jargon-free mapping. The `HandleTracker` wraps
-   * BOTH the pre-flight's dry `prepareImage` call (inside `runImageSend`) and
-   * `publishImageMessage`'s real one — one `releaseAll()` here covers every
-   * native handle either prepare created.
+   * Publish one queued image message (spec §4 decision 5A, Task 13; Task 15a
+   * moved recipient resolution in-band so callers only ever supply a profile
+   * id, matching `publishMessage`'s shape). Resolves the recipient's live
+   * profile the same way the text publish path does (rule 4: re-resolve +
+   * binding-check on every send) to derive the KEM public key and raw
+   * profile id, then hands off to `runImageSend`, which owns the capacity
+   * pre-flight and the `ImageTooLargeError` → jargon-free mapping. The
+   * `HandleTracker` wraps BOTH the pre-flight's dry `prepareImage` call
+   * (inside `runImageSend`) and `publishImageMessage`'s real one — one
+   * `releaseAll()` here covers every native handle either prepare created.
    */
   async publishImage(input: {
     messageRowId: number;
     logicalMessageId: string;
     recipientProfileIdHex: string;
-    recipientKemPublicKey: Uint8Array;
-    recipientProfileId: Uint8Array;
     sourceBytes: Uint8Array;
     caption?: string;
     format?: ImageEncodeFormat;
@@ -396,6 +404,13 @@ export class MessagingService {
     }
     const tracker = new HandleTracker(this.#createImageCodec());
     try {
+      const resolved = await resolveLiveProfile(this.#client, input.recipientProfileIdHex);
+      checkResolvedProfileBinding(resolved, input.recipientProfileIdHex);
+      const recipientProfileId = codec.hexToBytes(
+        input.recipientProfileIdHex.startsWith("0x")
+          ? input.recipientProfileIdHex.slice(2)
+          : input.recipientProfileIdHex,
+      );
       const journal = new OutgoingTxJournalAdapter(this.#outgoingTxs);
       const balance = await this.#balances.getBalance(this.#walletId);
       const result = await runImageSend(
@@ -422,12 +437,56 @@ export class MessagingService {
             ),
           attachments: this.#attachments,
         },
-        input,
+        {
+          messageRowId: input.messageRowId,
+          logicalMessageId: input.logicalMessageId,
+          recipientProfileIdHex: input.recipientProfileIdHex,
+          recipientKemPublicKey: resolved.profile.ml_kem_public_key,
+          recipientProfileId,
+          sourceBytes: input.sourceBytes,
+          ...(input.caption === undefined ? {} : { caption: input.caption }),
+          ...(input.format === undefined ? {} : { format: input.format }),
+          ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+        },
       );
       return { messageTxHash: result.messageTxHash };
     } finally {
       await tracker.releaseAll();
     }
+  }
+
+  /**
+   * Re-derive the attachment key for one already-received image message
+   * (Task 15a; spec §9.2/§9.4 "attachment key is never stored"). The key is
+   * a decrypt-time secret — it is recomputed on demand from the stored
+   * message cell rather than persisted, so a caller must wipe it after
+   * `downloadAttachment` finishes with it.
+   */
+  async deriveIncomingAttachmentKey(messageId: number): Promise<Uint8Array> {
+    const ref = await this.#messages.getChainRef(messageId);
+    if (ref === undefined || ref.txHash === null || ref.outpointIndex === null) {
+      throw new Error(
+        `deriveIncomingAttachmentKey: message ${String(messageId)} has no recorded chain reference`,
+      );
+    }
+    const status = await this.#client.getLiveCell({
+      txHash: ref.txHash,
+      index: `0x${ref.outpointIndex.toString(16)}`,
+    });
+    if (status.status !== "live") {
+      throw new Error(
+        `deriveIncomingAttachmentKey: message ${String(messageId)}'s cell is not live (${status.status})`,
+      );
+    }
+    const cellDataHex = status.cell.data.startsWith("0x")
+      ? status.cell.data.slice(2)
+      : status.cell.data;
+    const decrypted = decryptEnvelope({
+      envelopeBytes: codec.hexToBytes(cellDataHex),
+      recipientKemSecretKey: this.#bundle.mlKem.secretKey,
+      ownProfileId: this.#senderProfileId,
+    });
+    return decrypted.attachmentKey;
   }
 
   /** Wallet balances for the wallet tab (spec §5.5 categories). */

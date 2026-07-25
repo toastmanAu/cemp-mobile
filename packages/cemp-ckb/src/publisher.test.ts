@@ -1,14 +1,34 @@
 import { Cell, CellOutput, Script, bytesFrom, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
 import { CKB_TESTNET, codec } from "@cemp/core";
 import { deriveIdentityKeys, mldsaV2KeygenFromSeed, wipeIdentityKeyBundle } from "@cemp/crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
+import type { AssembleTextMessageParams } from "./assemble.js";
 import { TYPE_ID_CODE_HASH, type CempMessageTypeRef } from "./builders.js";
 import { CempClient, type JsonRpcTransport } from "./client.js";
-import { MessagePublisher, PublicationError, type PublicationStore } from "./publisher.js";
 import { MlDsaV2TxSigner } from "./signing.js";
 import { MockCkbClient, fillHex, toOutputLike } from "./testing/mock-ccc-client.js";
 import { hashFromRpcBody } from "./testing/rpc-body.js";
+
+// Capture what publishText passes to assembleTextMessage, while still running
+// the real implementation underneath (so the rest of this file's end-to-end
+// pipeline assertions keep exercising real assembly/encryption).
+const mockAssembleSpy = vi.fn();
+vi.mock("./assemble.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./assemble.js")>();
+  return {
+    ...actual,
+    assembleTextMessage: (params: AssembleTextMessageParams) => {
+      mockAssembleSpy(params);
+      return actual.assembleTextMessage(params);
+    },
+  };
+});
+
+// NOTE: MessagePublisher must be imported AFTER vi.mock("./assemble.js") is
+// registered above (Vitest hoists the vi.mock call, but the import ordering
+// here keeps the dependency explicit for readers).
+import { MessagePublisher, PublicationError, type PublicationStore } from "./publisher.js";
 
 /**
  * Phase 7 publisher pipeline tests (offline): state-transition order,
@@ -371,5 +391,56 @@ describe("MessagePublisher.publishText", () => {
     const spent = new Set(inputKeys(sentBodies[0]!));
     const reused = inputKeys(sentBodies[1]!).filter((key) => spent.has(key));
     expect(reused).toEqual([]);
+  });
+});
+
+describe("MessagePublisher.publishText forwards attachmentEnvelope (spec §6)", () => {
+  it("passes the coordination override into assembleTextMessage", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const { publisher } = makeFixture(json);
+    mockAssembleSpy.mockClear();
+
+    // Fresh 32-byte KEM encapsulation seed + 12-byte AEAD nonce (spec §6):
+    // the exact override the image-send orchestration (Task 4) will supply.
+    const kemMessage = hexToBytes("aa".repeat(32));
+    const nonce = hexToBytes("bb".repeat(12));
+
+    await publisher.publishText({
+      messageRowId: 40,
+      logicalMessageId: "lm-attachment-envelope",
+      text: "",
+      recipientProfileIdHex: profileIdHex,
+      contentType: 0x03,
+      attachmentManifests: [],
+      attachmentEnvelope: { kemMessage, nonce },
+    });
+
+    // This is the behavioural assertion: it fails if publishText stops
+    // forwarding input.attachmentEnvelope into the assembleTextMessage call
+    // (e.g. if the conditional spread is removed).
+    expect(mockAssembleSpy).toHaveBeenCalledTimes(1);
+    const passed = mockAssembleSpy.mock.calls[0]?.[0] as {
+      attachmentEnvelope?: { kemMessage: Uint8Array; nonce: Uint8Array };
+    };
+    expect(passed.attachmentEnvelope).toBeDefined();
+    expect(Array.from(passed.attachmentEnvelope!.kemMessage)).toEqual(Array.from(kemMessage));
+    expect(Array.from(passed.attachmentEnvelope!.nonce)).toEqual(Array.from(nonce));
+  });
+
+  it("omits attachmentEnvelope from the assembleTextMessage call when not supplied", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const { publisher } = makeFixture(json);
+    mockAssembleSpy.mockClear();
+
+    await publisher.publishText({
+      messageRowId: 41,
+      logicalMessageId: "lm-no-attachment-envelope",
+      text: "plain text message",
+      recipientProfileIdHex: profileIdHex,
+    });
+
+    expect(mockAssembleSpy).toHaveBeenCalledTimes(1);
+    const passed = mockAssembleSpy.mock.calls[0]?.[0] as { attachmentEnvelope?: unknown };
+    expect(passed.attachmentEnvelope).toBeUndefined();
   });
 });

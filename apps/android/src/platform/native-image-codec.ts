@@ -1,6 +1,6 @@
 /**
  * Native {@link ImageCodec} over the app-local CempImageCodec Kotlin module
- * (android/app/src/main/java/com/cempmobile/images — Task 8 must match this
+ * (android/app/src/main/java/com/cempmobile/imaging — Task 8 must match this
  * bridge contract). `DecodedImage.pixels` carries the native bitmap handle
  * (int); the JS side never touches raw pixels, only the opaque handle.
  *

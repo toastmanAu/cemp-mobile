@@ -102,23 +102,47 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
     });
   }
 
-  /** Attach + send an image (spec §4 item 2/5A). Cancel is a silent no-op. */
+  /**
+   * Attach + send an image (spec §4 item 2/5A). Cancel is a silent no-op.
+   *
+   * Preconditions are checked BEFORE the draft row is inserted (final-review
+   * fix I-1): unlike text, a queued image has no persisted body a worker
+   * could resend, so a row created without a usable send path (no messaging
+   * / unresolved recipient) can never self-heal — it would be a permanent
+   * empty "sending" bubble. Once the row IS inserted, any failure from
+   * `publishImage` (too-large, decode, capacity, or a publish/tx crash) is
+   * caught and the row is transitioned to `failed` so the UI honestly shows
+   * a failed bubble instead of stranding it at `queued`/"sending" forever
+   * (spec §4.1 ImageTooLarge, §5A: "no stranded outgoing row").
+   */
   async function attachImage(): Promise<void> {
     setPublishError(null);
+    let row: Message | undefined;
     try {
       const bytes = await pickImage();
       if (bytes === null) return; // cancel = no-op
-      const row = await composer.insertImageDraft();
-      if (container.hasMessaging && contact?.profileIdHex != null) {
-        await container.messaging.publishImage({
-          messageRowId: row.id,
-          logicalMessageId: row.logicalMessageId,
-          recipientProfileIdHex: contact.profileIdHex,
-          sourceBytes: bytes,
-        });
+
+      if (!container.hasMessaging || contact?.profileIdHex == null) {
+        // No row inserted: a locally-saved-but-never-sendable image bubble
+        // is worse than nothing here, since it can't self-heal like text.
+        setPublishError("Can't send an image to this contact right now.");
+        return;
       }
+
+      row = await composer.insertImageDraft();
+      await container.messaging.publishImage({
+        messageRowId: row.id,
+        logicalMessageId: row.logicalMessageId,
+        recipientProfileIdHex: contact.profileIdHex,
+        sourceBytes: bytes,
+      });
     } catch (e) {
-      // ImageTooLargeError / decode / capacity all arrive here already jargon-free.
+      // ImageTooLargeError / decode / capacity all arrive here already
+      // jargon-free. If the row was already inserted, mark it failed —
+      // never leave it stuck at queued/"sending".
+      if (row !== undefined) {
+        await container.repositories.messages.transitionState(row.id, "failed");
+      }
       setPublishError(e instanceof Error ? e.message : "Couldn't send that image.");
     }
     await reload();

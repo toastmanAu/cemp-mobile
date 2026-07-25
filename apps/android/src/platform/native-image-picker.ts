@@ -1,6 +1,6 @@
 /**
  * Native {@link pickImage} over the app-local CempImagePicker Kotlin module
- * (android/app/src/main/java/com/cempmobile/picker).
+ * (android/app/src/main/java/com/cempmobile/imaging).
  *
  * The picker is the system Photo Picker (Activity Result Contracts), launched
  * by the native bridge and resolved to image bytes by the Kotlin module.

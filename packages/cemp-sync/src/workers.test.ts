@@ -12,6 +12,7 @@ import { CempClient, type JsonRpcTransport } from "@cemp/ckb";
 import { MockCkbClient, fillHex, hashFromRpcBody } from "@cemp/ckb/testing";
 import { deriveIdentityKeys, mldsaV2KeygenFromSeed, mnemonicToSeed } from "@cemp/crypto";
 import {
+  AttachmentRepository,
   BalanceRepository,
   ContactRepository,
   ConversationRepository,
@@ -216,6 +217,7 @@ async function makeStack(
   const conversations = new ConversationRepository(db);
   const messages = new MessageRepository(db);
   const outgoingTxs = new OutgoingTransactionRepository(db);
+  const attachments = new AttachmentRepository(db);
   const watchedOutpoints = new WatchedOutpointRepository(db);
   const balances = new BalanceRepository(db);
   const cursors = new SyncCursorRepository(db);
@@ -255,6 +257,7 @@ async function makeStack(
     contacts,
     conversations,
     outgoingTxs,
+    attachments,
     cursors,
     leases,
     balances,

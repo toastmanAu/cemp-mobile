@@ -28,6 +28,7 @@ import {
 } from "@cemp/ckb";
 import { deriveRouteTag } from "@cemp/core";
 import type {
+  AttachmentRepository,
   BalanceRepository,
   ContactRepository,
   ConversationRepository,
@@ -77,6 +78,7 @@ export interface SyncWorkerDeps {
   readonly contacts: ContactRepository;
   readonly conversations: ConversationRepository;
   readonly outgoingTxs: OutgoingTransactionRepository;
+  readonly attachments: AttachmentRepository;
   readonly cursors: SyncCursorRepository;
   readonly leases: WorkerLeaseRepository;
   readonly balances: BalanceRepository;

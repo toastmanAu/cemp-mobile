@@ -34,6 +34,7 @@ import { SyncEngine, BackoffPolicy, buildWorkerSpecs, type Scheduler } from "@ce
 import type { Notifier } from "@cemp/ui";
 import type { SecureVaultImpl } from "@cemp/secure-vault";
 import {
+  AttachmentRepository,
   BalanceRepository,
   ContactRepository,
   ConversationRepository,
@@ -139,6 +140,7 @@ export class MessagingService {
     const conversations = new ConversationRepository(db);
     const messages = new MessageRepository(db);
     const outgoingTxs = new OutgoingTransactionRepository(db);
+    const attachments = new AttachmentRepository(db);
     const watchedOutpoints = new WatchedOutpointRepository(db);
     const store = new DatabasePublicationStore(messages, outgoingTxs, {
       watchedOutpoints,
@@ -177,6 +179,7 @@ export class MessagingService {
         contacts,
         conversations,
         outgoingTxs,
+        attachments,
         cursors,
         leases,
         balances,

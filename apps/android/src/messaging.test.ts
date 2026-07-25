@@ -17,7 +17,7 @@
  * the scheduler was told to register periodic work. If the `engine.start()`
  * call in `init()` is ever deleted again, this test fails.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { CempClient, type LiveCellStatus } from "@cemp/ckb";
 import { CKB_TESTNET, codec } from "@cemp/core";
 import { EphemeralSoftwareKeyStore, MemoryVaultStorage, SecureVaultImpl } from "@cemp/secure-vault";
@@ -171,22 +171,25 @@ describe("MessagingService.deriveIncomingAttachmentKey (Task 15a receive-side cr
     // FAKE client (task instruction): `CempClient#getLiveCell` is a plain
     // prototype method, and `MessagingService` builds its own `CempClient`
     // internally (not caller-injectable) — so the fake is installed as a
-    // scoped prototype override, restored in `finally`, rather than passed
-    // in as a constructor dependency.
-    const originalGetLiveCell = CempClient.prototype.getLiveCell;
-    CempClient.prototype.getLiveCell = function fakeGetLiveCell(): Promise<LiveCellStatus> {
-      return Promise.resolve({
-        status: "live",
-        cell: { data: envelopeHex } as never,
-      });
-    };
+    // scoped prototype override. `onTestFinished` guarantees the restore even
+    // if the test body dies mid-flight (review follow-up).
+    const spy = vi
+      .spyOn(CempClient.prototype, "getLiveCell")
+      .mockImplementation((): Promise<LiveCellStatus> =>
+        Promise.resolve({
+          status: "live",
+          cell: { data: envelopeHex } as never,
+        }),
+      );
+    onTestFinished(() => {
+      spy.mockRestore();
+    });
 
     try {
       const derivedKey = await service.deriveIncomingAttachmentKey(row.id);
       expect(Array.from(derivedKey)).toEqual(Array.from(sendKey));
       expect(derivedKey.length).toBe(32);
     } finally {
-      CempClient.prototype.getLiveCell = originalGetLiveCell;
       await db.close();
     }
   });

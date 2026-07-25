@@ -4,7 +4,7 @@
  * ({@link ChatComposerViewModel}). No blockchain terminology (rule 15).
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Button,
@@ -74,6 +74,9 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
   );
   const [downloadStates, setDownloadStates] = useState<Map<number, ImageDownloadState>>(new Map());
   const [fullImages, setFullImages] = useState<Map<number, FullImage>>(new Map());
+  // Double-tap guard: attach/send/retry all publish; a second tap while one is
+  // in flight must not start a parallel publish of the same (or a second) row.
+  const publishBusy = useRef(false);
 
   async function reload(): Promise<void> {
     const list = await container.repositories.messages.listByConversation(conversationId, {
@@ -116,6 +119,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
    * (spec §4.1 ImageTooLarge, §5A: "no stranded outgoing row").
    */
   async function attachImage(): Promise<void> {
+    if (publishBusy.current) return;
+    publishBusy.current = true;
     setPublishError(null);
     let row: Message | undefined;
     try {
@@ -144,6 +149,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
         await container.repositories.messages.transitionState(row.id, "failed");
       }
       setPublishError(e instanceof Error ? e.message : "Couldn't send that image.");
+    } finally {
+      publishBusy.current = false;
     }
     await reload();
   }
@@ -176,6 +183,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
    */
   async function retryMessage(item: Message): Promise<void> {
     if (item.direction !== "outgoing" || item.state !== "failed") return;
+    if (publishBusy.current) return;
+    publishBusy.current = true;
     setPublishError(null);
     try {
       const sourceBytes = item.body === null ? await pickImage() : undefined;
@@ -204,6 +213,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
       // Same contract as attachImage: never leave the row stuck at queued.
       await container.repositories.messages.transitionState(item.id, "failed");
       setPublishError(e instanceof Error ? e.message : "Couldn't resend that message.");
+    } finally {
+      publishBusy.current = false;
     }
     await reload();
   }
@@ -232,6 +243,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
   }, [conversationId]);
 
   async function send(): Promise<void> {
+    if (publishBusy.current) return;
+    publishBusy.current = true;
     composer.setText(draft);
     setPublishError(null);
     try {
@@ -263,6 +276,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
       }
     } catch (e) {
       console.error("ChatScreen.send threw:", e);
+    } finally {
+      publishBusy.current = false;
     }
     await reload();
   }
@@ -371,6 +386,11 @@ function ImageBubble({
       ? `data:${declaredMimeType};base64,${bytesToBase64(manifest.thumbnail)}`
       : null;
   const fullUri = full !== undefined ? `data:${full.mimeType};base64,${full.base64}` : null;
+  // Aspect ratio from the manifest — clamped: on-chain declarations are
+  // hostile input (rule 4), so absurd/tiny ratios fall back to sane bounds.
+  const declaredRatio =
+    manifest.width > 0 && manifest.height > 0 ? manifest.height / manifest.width : 1;
+  const ratio = Math.min(2.5, Math.max(0.4, declaredRatio));
 
   return (
     <View
@@ -379,7 +399,7 @@ function ImageBubble({
       <Pressable
         onPress={onTap}
         disabled={presentation.affordance === "none"}
-        style={styles.imagePressable}
+        style={[styles.imagePressable, { height: Math.round(200 * ratio) }]}
       >
         {presentation.showFull && fullUri !== null ? (
           <Image source={{ uri: fullUri }} style={styles.fullImage} resizeMode="contain" />
@@ -436,7 +456,7 @@ const styles = StyleSheet.create({
   },
   errorText: { color: "#b00020", paddingHorizontal: 12, paddingBottom: 4 },
   imageBubble: { padding: 4 },
-  imagePressable: { width: 200, height: 200, borderRadius: 10, overflow: "hidden" },
+  imagePressable: { width: 200, borderRadius: 10, overflow: "hidden" },
   thumbnail: { width: "100%", height: "100%" },
   fullImage: { width: "100%", height: "100%" },
   thumbnailPlaceholder: { width: "100%", height: "100%", backgroundColor: "#c9c9c9" },

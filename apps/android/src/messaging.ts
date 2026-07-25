@@ -65,7 +65,7 @@ import {
 import { ClientPublicTestnet, Script, bytesFrom, hexFrom } from "@ckb-ccc/core";
 import { runImageSend } from "./image-send";
 import { OutgoingTxJournalAdapter, AttachmentReclaimStoreAdapter } from "./outgoing-tx-journal";
-import { bytesToHex } from "./platform/hex";
+import { bytesToHex, hexToBytes } from "./platform/hex";
 // RN-free half of the image-codec seam only (Task 6's split): the concrete,
 // react-native-backed `NativeImageCodec` must NEVER be imported here.
 // messaging.test.ts constructs a real `MessagingService` under vitest, and
@@ -422,11 +422,7 @@ export class MessagingService {
     try {
       const resolved = await resolveLiveProfile(this.#client, input.recipientProfileIdHex);
       checkResolvedProfileBinding(resolved, input.recipientProfileIdHex);
-      const recipientProfileId = codec.hexToBytes(
-        input.recipientProfileIdHex.startsWith("0x")
-          ? input.recipientProfileIdHex.slice(2)
-          : input.recipientProfileIdHex,
-      );
+      const recipientProfileId = hexToBytes(input.recipientProfileIdHex);
       const journal = new OutgoingTxJournalAdapter(this.#outgoingTxs);
       const balance = await this.#balances.getBalance(this.#walletId);
       const result = await runImageSend(
@@ -494,11 +490,8 @@ export class MessagingService {
         `deriveIncomingAttachmentKey: message ${String(messageId)}'s cell is not live (${status.status})`,
       );
     }
-    const cellDataHex = status.cell.data.startsWith("0x")
-      ? status.cell.data.slice(2)
-      : status.cell.data;
     const decrypted = decryptEnvelope({
-      envelopeBytes: codec.hexToBytes(cellDataHex),
+      envelopeBytes: hexToBytes(status.cell.data),
       recipientKemSecretKey: this.#bundle.mlKem.secretKey,
       ownProfileId: this.#senderProfileId,
     });

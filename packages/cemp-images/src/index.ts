@@ -4,6 +4,7 @@ export * from "./compress.js";
 export * from "./encrypt.js";
 export * from "./prepare.js";
 export * from "./manifest.js";
+export * from "./capacity.js";
 export * from "./send.js";
 export * from "./receive.js";
 export * from "./reclaim.js";

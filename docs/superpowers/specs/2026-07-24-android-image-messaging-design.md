@@ -164,6 +164,17 @@ handling is purely a UX question; the genuinely new error handling is on the sen
    `failed → queued` is only ever a PRE-commit edge — a failure after commit belongs to the
    journal/reclaim lifecycle (item 6).
 
+   **Amended 2026-07-25 (T17 finding F-1):** two hardened details. (a) Both journal resume
+   paths (publisher message tx, attachment chunk tx) now abandon+requeue on
+   `JournaledAbandonedError` — a journaled tx the network rejected (e.g. built over an input
+   its own chunk tx had just spent, before `trackBroadcastSpend` covered the chunk path) can
+   never land, so the journal is marked `abandoned` and a fresh tx is built for the SAME
+   logical message. (b) Retry economics: an image retry necessarily re-encrypts and
+   re-uploads chunk cells (the send key is never persisted, §9.2), so a failed-then-retried
+   send orphans its earlier chunk cells. Orphans are plain no-type data cells: they re-enter
+   the wallet's ordinary spendable pool and are consumed by future txs — an accepted cost,
+   not a leak.
+
 **Receive side (pipeline already throws → UX only):**
 
 7. **Any `downloadAttachment` throw — DECISION 7A (keep thumbnail + tap-to-retry):** the

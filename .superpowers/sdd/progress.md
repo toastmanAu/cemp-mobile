@@ -229,3 +229,17 @@ committed reclaim-attachment journal, per-group isolation). 598 vitest green (+3
 tests). On-device proof: the stranded T17 chunk cell 0xd14baec7…:0 was reclaimed by tx
 0xec323840…9860 (committed, block 21864572) on the first unlock after deploying the fix —
 6,262.9999 CKB returned to the Samsung wallet (fee-only cost).
+
+F-1 FIXED + device-verified (2026-07-26 local, commits 92575c6 + bd99a87). Refined root
+cause (on-chain forensics): attempt 1's CHUNK tx (0xf0f862b5…) committed fine; the MESSAGE
+tx build then re-selected an input that chunk tx had just spent — the chunk path never
+called trackBroadcastSpend, and the indexer still offered the cell. Node rejected the
+message tx; every retry then wedged on resumeJournaledBroadcast (JournaledAbandonedError
+propagated; neither the publisher nor the chunk path had abandon+requeue). Retries also
+re-uploaded chunks per attempt (4 orphan 6,184B cells ≈ 25k CKB locked in plain no-type
+cells — they re-enter the ordinary spendable pool, accepted cost, documented in spec 9A).
+Fixes: (1) trackBroadcastSpend on both image broadcast paths; (2) abandon+requeue on
+JournaledAbandonedError in publishText AND publishAttachmentChunks (fresh build, same
+logical id/purpose; newest journal record wins). 600 vitest green (+1 chunk abandon, +1
+publisher abandon-with-resume-of-fresh-tx). On-device: the wedged row retried → sent in
+24s; chunk tx 0x3dfd9090… + message tx 0x5bcf7dd6… both committed (blocks 21866022/25).

@@ -10,6 +10,12 @@
  * reclaim_queued is the requeue path for a reclaim tx that was journaled but
  * never seen by the network (abandoned — a fresh batch rebuilds with live
  * inputs; it is NOT a state regression, the cell was never consumed).
+ * RETRY EDGE (image send): failed → queued is the user-initiated retry path
+ * for a send that failed BEFORE any tx committed (e.g. an image publish that
+ * threw post-draft). The UI republishes on the SAME row/logical id — a retry
+ * may mint a new tx hash but stays the same message in the local UI (spec
+ * §19). A failure after commit is NOT requeued this way: the reclaim
+ * lifecycle already owns the on-chain cells.
  *
  * Incoming (recipient side): discovered → downloading → decrypting → received
  * → displayed → response_queued → response_sent → awaiting_remote_reclaim →
@@ -57,7 +63,6 @@ export type MessageDirection = "outgoing" | "incoming";
 export const TERMINAL_MESSAGE_STATES: ReadonlySet<MessageState> = new Set([
   "reclaimed",
   "expired",
-  "failed",
   "remote_reclaimed",
   "invalid",
 ]);
@@ -72,7 +77,8 @@ const OUTGOING_IN_FLIGHT: readonly OutgoingMessageState[] = [
   "pending",
 ];
 
-/** Legal outgoing transitions (failed reachable from any in-flight state). */
+/** Legal outgoing transitions (failed reachable from any in-flight state;
+ * failed → queued is the user-initiated pre-commit retry edge). */
 const OUTGOING_TRANSITIONS: Readonly<
   Record<OutgoingMessageState, readonly OutgoingMessageState[]>
 > = {
@@ -91,7 +97,7 @@ const OUTGOING_TRANSITIONS: Readonly<
   reclaim_pending: ["reclaimed", "reclaim_queued", "failed"],
   reclaimed: [],
   expired: [],
-  failed: [],
+  failed: ["queued"],
 };
 
 const INCOMING_TRANSITIONS: Readonly<

@@ -146,6 +146,19 @@ handling is purely a UX question; the genuinely new error handling is on the sen
 6. **Publish crash mid-send** — no new handling; rides the existing pre-broadcast journal +
    `runPendingTransactions` + reclaim, identical to text.
 
+**Retry (post-milestone follow-up, decided 2026-07-25):**
+
+9. **Send retry — DECISION 9A (tap-to-retry, re-pick for images):** any send failure lands
+   the row in `failed` (fix I-1), and the failed bubble's *"failed — tap retry"* affordance
+   republishes on the SAME row/logical id (`failed → queued` requeue edge; a retry may mint
+   a new tx hash but stays the same message in the local UI). Text republishes its persisted
+   body; an image re-opens the picker, because its compressed plaintext bytes are never
+   persisted (rule 3) and re-picking is the only honest retry for the dominant failure modes
+   anyway (too-large / capacity). Persisting compressed bytes for picker-free retry was
+   rejected for this milestone: it requires an encrypted-blob store + schema migration, and
+   `failed → queued` is only ever a PRE-commit edge — a failure after commit belongs to the
+   journal/reclaim lifecycle (item 6).
+
 **Receive side (pipeline already throws → UX only):**
 
 7. **Any `downloadAttachment` throw — DECISION 7A (keep thumbnail + tap-to-retry):** the

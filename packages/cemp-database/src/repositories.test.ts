@@ -178,9 +178,13 @@ describe("repositories", () => {
     expect(reapplied.state).toBe("queued");
     await messages.transitionState(m.id, "encrypting");
     await messages.transitionState(m.id, "failed");
-    await expect(messages.transitionState(m.id, "queued")).rejects.toMatchObject({
+    // failed → queued is the user-initiated pre-commit retry edge (image
+    // retry); other edges out of failed stay illegal.
+    await expect(messages.transitionState(m.id, "pending")).rejects.toMatchObject({
       code: "illegal-state-transition",
     });
+    const retried = await messages.transitionState(m.id, "queued");
+    expect(retried.state).toBe("queued");
     await expect(messages.transitionState(999_999, "queued")).rejects.toMatchObject({
       code: "not-found",
     });

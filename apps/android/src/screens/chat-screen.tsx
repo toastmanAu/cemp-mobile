@@ -164,6 +164,50 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
     }
   }
 
+  /**
+   * Retry a failed outgoing message in place — the bubble's "failed — tap
+   * retry" affordance. Text republishes its persisted body; an image has no
+   * persisted plaintext (rule 3 — its bytes were never written anywhere), so
+   * retry re-opens the picker. Either way the republish reuses the SAME
+   * row/logical id: a retry may mint a new tx hash but stays the same
+   * message in the local UI. `failed → queued` is the pre-commit retry edge;
+   * a send that failed AFTER commit is the reclaim lifecycle's business, not
+   * this path's.
+   */
+  async function retryMessage(item: Message): Promise<void> {
+    if (item.direction !== "outgoing" || item.state !== "failed") return;
+    setPublishError(null);
+    try {
+      const sourceBytes = item.body === null ? await pickImage() : undefined;
+      if (item.body === null && sourceBytes === null) return; // cancel = no-op, stays failed
+      if (!container.hasMessaging || contact?.profileIdHex == null) {
+        setPublishError("Can't send to this contact right now.");
+        return;
+      }
+      await container.repositories.messages.transitionState(item.id, "queued");
+      if (sourceBytes != null) {
+        await container.messaging.publishImage({
+          messageRowId: item.id,
+          logicalMessageId: item.logicalMessageId,
+          recipientProfileIdHex: contact.profileIdHex,
+          sourceBytes,
+        });
+      } else {
+        await container.messaging.publishMessage({
+          messageRowId: item.id,
+          logicalMessageId: item.logicalMessageId,
+          text: item.body ?? "",
+          recipientProfileIdHex: contact.profileIdHex,
+        });
+      }
+    } catch (e) {
+      // Same contract as attachImage: never leave the row stuck at queued.
+      await container.repositories.messages.transitionState(item.id, "failed");
+      setPublishError(e instanceof Error ? e.message : "Couldn't resend that message.");
+    }
+    await reload();
+  }
+
   useEffect(() => {
     void reload();
     const interval = setInterval(() => {
@@ -254,14 +298,21 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
             );
           }
           return (
-            <View style={[styles.bubble, outgoing ? styles.bubbleOut : styles.bubbleIn]}>
-              <Text style={outgoing ? styles.bubbleTextOut : styles.bubbleTextIn}>{item.body}</Text>
-              {label !== "" ? (
-                <Text style={[styles.status, bubble.canRetry ? styles.statusRetry : null]}>
-                  {label}
+            <Pressable
+              disabled={!outgoing || !bubble.canRetry}
+              onPress={() => void retryMessage(item)}
+            >
+              <View style={[styles.bubble, outgoing ? styles.bubbleOut : styles.bubbleIn]}>
+                <Text style={outgoing ? styles.bubbleTextOut : styles.bubbleTextIn}>
+                  {item.body ?? "[image]"}
                 </Text>
-              ) : null}
-            </View>
+                {label !== "" ? (
+                  <Text style={[styles.status, bubble.canRetry ? styles.statusRetry : null]}>
+                    {label}
+                  </Text>
+                ) : null}
+              </View>
+            </Pressable>
           );
         }}
       />

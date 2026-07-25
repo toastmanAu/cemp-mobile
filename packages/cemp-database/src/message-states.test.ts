@@ -110,6 +110,16 @@ describe("message state machines (spec §11)", () => {
     expect(canTransitionMessage("outgoing", "committed", "expired")).toBe(false);
   });
 
+  it("failed → queued is the only outbound edge from failed (user retry)", () => {
+    expect(canTransitionMessage("outgoing", "failed", "queued")).toBe(true);
+    for (const target of OUTGOING_MESSAGE_STATES) {
+      if (target === "queued") continue;
+      expect(canTransitionMessage("outgoing", "failed", target), `failed → ${target}`).toBe(false);
+    }
+    // `failed` is outgoing-only; the incoming machine must not requeue it.
+    expect(canTransitionMessage("incoming", "failed", "queued")).toBe(false);
+  });
+
   it("initial states match the direction", () => {
     expect(initialMessageState("outgoing")).toBe("draft");
     expect(initialMessageState("incoming")).toBe("discovered");

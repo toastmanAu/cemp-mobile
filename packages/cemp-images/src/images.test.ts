@@ -28,6 +28,10 @@ import {
 } from "./test-helpers.js";
 import type { DecodedImage, ImageCodec } from "./codec.js";
 
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /**
  * Phase 10 image pipeline (offline): limits/compress policy, encryption +
  * chunking, manifest construction/validation, chunk publish with journal,
@@ -257,6 +261,39 @@ describe("attachment send + receive (e2e offline)", () => {
     );
     const { client: tamperedClient } = makeChain(tamperedCells);
     await expect(downloadAttachment(tamperedClient, manifest, attachmentKey)).rejects.toThrow();
+  });
+
+  it("abandons a rejected journaled chunk tx and rebuilds with fresh inputs (T17 F-1)", async () => {
+    const attachmentKey = new Uint8Array(32).fill(11);
+    const deadHash = fillHex(0xde, 32);
+    const { client, signer, sentBodies } = makeChain(new Map(), {
+      rejectedTxHashes: new Set([deadHash]),
+    });
+    const journal = new FakeJournal();
+    const chunks = await prepareAttachmentChunks(
+      new FakeCodec(),
+      fakeSourceImage(800, 600, 10_000),
+      attachmentKey,
+    );
+
+    // The exact wedged state T17 hit on-device: a submitted chunk tx the
+    // network rejected (built over an already-spent input).
+    const purpose = `attachment-chunks:${bytesToHex(chunks.encrypted.attachmentId)}`;
+    journal.txs.set(deadHash, { txHash: deadHash, state: "submitted", purpose });
+
+    const result = await publishAttachmentChunks(
+      { client, signer, journal, messageType: MESSAGE_TYPE_REF },
+      chunks,
+    );
+    expect(result.resumed).toBe(false);
+    // The dead tx is abandoned (never rebroadcast) and a FRESH tx is built,
+    // journaled under the same purpose and committed.
+    expect(journal.txs.get(deadHash)!.state).toBe("abandoned");
+    expect(sentBodies).toHaveLength(1);
+    const replacement = [...journal.txs.values()].find((t) => t.txHash !== deadHash)!;
+    expect(replacement.purpose).toBe(purpose);
+    expect(replacement.state).toBe("committed");
+    expect(result.chunksTxHash).toBe(replacement.txHash);
   });
 });
 

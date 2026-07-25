@@ -13,7 +13,7 @@
  */
 
 import { buildReclaimTx, type CempMessageTypeRef } from "@cemp/ckb";
-import { resumeJournaledBroadcast, waitForTransactionCommit } from "@cemp/ckb";
+import { resumeJournaledBroadcast, trackBroadcastSpend, waitForTransactionCommit } from "@cemp/ckb";
 import { cccTransactionToWire, type CempClient } from "@cemp/ckb";
 import type { MlDsaV2TxSigner } from "@cemp/ckb";
 import type { Cell, OutPoint } from "@cemp/ckb";
@@ -122,6 +122,8 @@ export async function reclaimAttachmentGroup(
   if (accepted !== txHash) {
     throw new Error("reclaimAttachmentGroup: node returned a different tx hash");
   }
+  // Mark the spend locally so the next build cannot re-select these inputs.
+  await trackBroadcastSpend(signer, signed);
   await waitForTransactionCommit(client, txHash, {
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });

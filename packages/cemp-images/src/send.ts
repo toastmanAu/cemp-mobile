@@ -17,7 +17,12 @@
  */
 
 import { buildDataCellsTx, type CempMessageTypeRef } from "@cemp/ckb";
-import { resumeJournaledBroadcast, waitForTransactionCommit } from "@cemp/ckb";
+import {
+  JournaledAbandonedError,
+  resumeJournaledBroadcast,
+  trackBroadcastSpend,
+  waitForTransactionCommit,
+} from "@cemp/ckb";
 import { cccTransactionToWire, type CempClient } from "@cemp/ckb";
 import type { MlDsaV2TxSigner } from "@cemp/ckb";
 import { codec } from "@cemp/core";
@@ -98,15 +103,29 @@ export async function publishAttachmentChunks(
   if (journaled !== undefined && journaled.state === "submitted") {
     // Review E1: rebroadcast from the journaled signed bytes if the network
     // never saw the chunk tx (never wedge, never double-upload).
-    await resumeJournaledBroadcast(
-      client,
-      { txHash: journaled.txHash, txHex: journaled.txHex ?? null },
-      {
-        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
-      },
-    );
-    await journal.markOutgoingTxState(journaled.txHash, "committed", Date.now());
-    return { chunksTxHash: journaled.txHash, chunkCount: chunks.chunks.length, resumed: true };
+    try {
+      await resumeJournaledBroadcast(
+        client,
+        { txHash: journaled.txHash, txHex: journaled.txHex ?? null },
+        {
+          ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        },
+      );
+      await journal.markOutgoingTxState(journaled.txHash, "committed", Date.now());
+      return { chunksTxHash: journaled.txHash, chunkCount: chunks.chunks.length, resumed: true };
+    } catch (error) {
+      if (!(error instanceof JournaledAbandonedError)) {
+        throw error;
+      }
+      // T17 finding F-1: the journaled tx can NEVER land (rejected outright,
+      // or its inputs were spent elsewhere — e.g. built over a stale indexer
+      // view). Abandon it and fall through to a FRESH build with fresh cell
+      // selection, mirroring the reclaim lifecycle's abandon+requeue (review
+      // E1/E2). The new journal record becomes the latest for this purpose,
+      // so a later crash resumes the new tx — same attachmentId, no chunk
+      // re-upload, no wedge.
+      await journal.markOutgoingTxState(journaled.txHash, "abandoned");
+    }
   }
 
   const built = await buildDataCellsTx({ datasets: chunks.chunks, signer });
@@ -128,6 +147,10 @@ export async function publishAttachmentChunks(
   if (accepted !== txHash) {
     throw new Error("publishAttachmentChunks: node returned a different tx hash");
   }
+  // Mark the spend locally so the NEXT build (the message tx right after
+  // this, or a burst retry) cannot re-select these inputs — the gap that let
+  // a stale-indexer-built chunk tx wedge a send before T17 F-1.
+  await trackBroadcastSpend(signer, signed);
   await waitForTransactionCommit(client, txHash, {
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });

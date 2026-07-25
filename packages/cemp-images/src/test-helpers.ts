@@ -115,7 +115,10 @@ export class FakeJournal implements AttachmentChunkJournal, AttachmentReclaimSto
   }
 }
 
-export function makeChain(liveCells: Map<string, Cell> = new Map()): {
+export function makeChain(
+  liveCells: Map<string, Cell> = new Map(),
+  opts: { rejectedTxHashes?: ReadonlySet<string> } = {},
+): {
   client: CempClient;
   signer: MlDsaV2TxSigner;
   sentBodies: Record<string, unknown>[];
@@ -153,10 +156,17 @@ export function makeChain(liveCells: Map<string, Cell> = new Map()): {
         case "send_transaction":
           sentBodies.push(params[0] as Record<string, unknown>);
           return Promise.resolve(hashFromRpcBody(params[0] as Record<string, unknown>));
-        case "get_transaction":
+        case "get_transaction": {
+          const hash = params[0] as string;
+          if (opts.rejectedTxHashes?.has(hash)) {
+            return Promise.resolve({
+              tx_status: { status: "rejected", reason: "Resolve failed Unknown(OutPoint)" },
+            });
+          }
           return Promise.resolve({
             tx_status: { status: "committed", block_hash: fillHex(0x99, 32) },
           });
+        }
         case "get_header":
           return Promise.resolve({
             number: "0x100",

@@ -30,19 +30,21 @@ If the send is blocked by the pre-flight, that's the 5A gate working — top up 
 ## Steps
 
 - [ ] **1. Install the debug APK on both devices**
+
   ```bash
   adb -s R5CTC07MPYD install -r apps/android/android/app/build/outputs/apk/debug/app-debug.apk
   adb -s JY202406200301173 install -r apps/android/android/app/build/outputs/apk/debug/app-debug.apk
   ```
+
   (Metro: if serving JS from dev, mirror the 2026-07-23 setup — Metro on :8082,
   `adb -s <serial> reverse tcp:8081 tcp:8082` per device.)
 
 - [ ] **2. Confirm each device's own profile id (Settings)** BEFORE inferring who sends to whom
-  (the 2026-07-19 lesson: read each device's own profile id first; don't infer the inbox from
-  message flow).
+      (the 2026-07-19 lesson: read each device's own profile id first; don't infer the inbox from
+      message flow).
 
 - [ ] **3. Send an image with EXIF/GPS from the Samsung → Retroid contact.**
-  Pick a photo that HAS EXIF/GPS (a real camera photo). Confirm on the Samsung:
+      Pick a photo that HAS EXIF/GPS (a real camera photo). Confirm on the Samsung:
   - the outgoing bubble shows the **local thumbnail immediately** with `queued → sent`;
   - the **chunk tx** commits, then the **message tx** commits (note both tx hashes).
 
@@ -54,22 +56,24 @@ If the send is blocked by the pre-flight, that's the 5A gate working — top up 
     would show 7A "Couldn't load full image — tap to retry" with the thumbnail retained.)
 
 - [ ] **5. Prove metadata stripping (5A / the security guarantee).**
-  Pull the rendered full-res image off the Retroid and check for EXIF/GPS:
+      Pull the rendered full-res image off the Retroid and check for EXIF/GPS:
+
   ```bash
   adb -s JY202406200301173 exec-out run-as com.cempmobile.debug cat <app-cache-path>/<file> > /tmp/received.webp
   # or export/share it off-device, then:
   exiftool /tmp/received.webp | grep -iE "gps|orientation|make|model" || echo "no EXIF/GPS — PASS"
   ```
+
   Expected: **no GPS/EXIF tags**, and the image displays **right-side-up** (orientation baked
   into pixels). This is the on-device proof that the native codec strips metadata by
   construction.
 
 - [ ] **6. Confirm reclaim after ack.**
-  After the Retroid auto-acks, confirm the **Samsung reclaims the chunk cells**
-  (`reclaimAttachmentGroup` path) — locked capacity returns to the sender.
+      After the Retroid auto-acks, confirm the **Samsung reclaims the chunk cells**
+      (`reclaimAttachmentGroup` path) — locked capacity returns to the sender.
 
 - [ ] **7. Record the result** (tx hashes, EXIF-strip PASS/FAIL, capacity reclaimed) in the
-  session notes / ckb-transactions feedback log, mirroring the 2026-07-23 text e2e entry.
+      session notes / ckb-transactions feedback log, mirroring the 2026-07-23 text e2e entry.
 
 ---
 

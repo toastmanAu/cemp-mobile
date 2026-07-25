@@ -25,7 +25,12 @@ import { ContactRepository, ConversationRepository, MessageRepository } from "@c
 import { NodeSqliteAdapter } from "@cemp/database/node";
 import { InMemoryScheduler } from "@cemp/sync";
 import { NoopNotifier } from "@cemp/ui";
-import { deriveIdentityKeys, deriveSendAttachmentKey, encryptEnvelope, randomBytes } from "@cemp/crypto";
+import {
+  deriveIdentityKeys,
+  deriveSendAttachmentKey,
+  encryptEnvelope,
+  randomBytes,
+} from "@cemp/crypto";
 import { MessagingService } from "./messaging";
 
 /** Tiny KDF so vault creation stays fast in tests (mirrors vault.test.ts). */

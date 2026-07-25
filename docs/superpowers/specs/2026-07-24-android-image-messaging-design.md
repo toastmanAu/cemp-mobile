@@ -21,8 +21,8 @@ real feature (native codec + picker + send + receive + render), not just UI wiri
    RN library — matches the `CempKdf` pattern, guarantees metadata stripping by
    construction, preserves the exact `decode/resize/encode` seam. (chose A)
 3. **Received-image UX:** thumbnail-immediate (embedded in the manifest cell, no fetch)
-   + tap-to-download the full-res chunks. NOT auto-download. Matches the manifest /
-   pre-download-bomb-guard design. (chose A)
+   - tap-to-download the full-res chunks. NOT auto-download. Matches the manifest /
+     pre-download-bomb-guard design. (chose A)
 4. **Picker:** native Kotlin module wrapping Android's system Photo Picker
    (`ACTION_PICK_IMAGES`, no storage permission on 13+), NOT `react-native-image-picker`
    — no new dependency, matches the "several small native modules" pattern. (chose A)
@@ -37,6 +37,7 @@ The platform-neutral `@cemp/images` pipeline (compress policy, encryption, chunk
 manifests) stays untouched. We add the two missing platform seams + UI/wiring.
 
 New native Kotlin modules (same pattern as `CempKdf`/`CempScheduler`/`CempNotifier`):
+
 - **`CempImageCodec`** — implements the `ImageCodec` seam via a `Bitmap` handle-registry
   (the pipeline does `decode → resize ×2 → encode`, so the native side holds bitmaps
   keyed by an int handle passed to JS):
@@ -54,8 +55,9 @@ JS adapters (in `apps/android/src/platform/`): wrap each native module to the ex
 interface (`ImageCodec`, and `pickImage(): Promise<Uint8Array | null>`).
 
 Wiring: `messaging.ts` gains an image send path; `chat-screen.tsx` gets an attach button
-+ preview; the `bubble` view-model + chat screen render image bubbles (thumbnail → tap →
-full).
+
+- preview; the `bubble` view-model + chat screen render image bubbles (thumbnail → tap →
+  full).
 
 Open impl detail (for the plan, not blocking): byte marshalling across the New-Arch
 bridge — base64 strings (simple, matches CempKdf precedent) vs ArrayBuffer (JSI, less
@@ -114,12 +116,12 @@ handling is purely a UX question; the genuinely new error handling is on the sen
 
 1. **Image too large** — `ImageTooLargeError` from `compressToLimits` (dimension→quality
    retreat exhausted, still >1 MB). Expected, not a crash: caught at the composer, surfaced
-   jargon-free (rule 15) — *"This photo's too large to send. Try a smaller one."* No stranded
+   jargon-free (rule 15) — _"This photo's too large to send. Try a smaller one."_ No stranded
    outgoing row — we fail before any tx is built.
 2. **Picker cancel** — user dismisses the Photo Picker → adapter resolves `null` → pure
    no-op (no bubble, no error).
 3. **Decode failure** — corrupt/unsupported bytes → `BitmapFactory.decodeByteArray` returns
-   null → native `decode` throws → adapter surfaces *"Couldn't read that image."* Composer
+   null → native `decode` throws → adapter surfaces _"Couldn't read that image."_ Composer
    stays put.
 4. **Handle-registry leak safety** — the JS codec adapter wraps `prepareImage` in
    `try/finally` and `release()`s every bitmap handle it created, including on the
@@ -148,13 +150,14 @@ handling is purely a UX question; the genuinely new error handling is on the sen
    wallet) is buildable with no pipeline change. Deferred because it adds a UX question
    (silently degrade quality vs. tell the user) + estimation-accuracy risk beyond the
    round-trip proof. The seam is ready when we want it.
+
 6. **Publish crash mid-send** — no new handling; rides the existing pre-broadcast journal +
    `runPendingTransactions` + reclaim, identical to text.
 
 **Retry (post-milestone follow-up, decided 2026-07-25):**
 
 9. **Send retry — DECISION 9A (tap-to-retry, re-pick for images):** any send failure lands
-   the row in `failed` (fix I-1), and the failed bubble's *"failed — tap retry"* affordance
+   the row in `failed` (fix I-1), and the failed bubble's _"failed — tap retry"_ affordance
    republishes on the SAME row/logical id (`failed → queued` requeue edge; a retry may mint
    a new tx hash but stays the same message in the local UI). Text republishes its persisted
    body; an image re-opens the picker, because its compressed plaintext bytes are never
@@ -179,8 +182,8 @@ handling is purely a UX question; the genuinely new error handling is on the sen
 
 7. **Any `downloadAttachment` throw — DECISION 7A (keep thumbnail + tap-to-retry):** the
    thumbnail is always safe (it never left the manifest cell), so on any thrown error keep
-   the thumbnail visible and swap the affordance to *"Couldn't load full image — tap to
-   retry."* Download is idempotent and the common failure (chunk not yet indexed) is
+   the thumbnail visible and swap the affordance to _"Couldn't load full image — tap to
+   retry."_ Download is idempotent and the common failure (chunk not yet indexed) is
    transient, so retry is the honest default. A reclaimed/pruned chunk (`not live`) also
    lands here — retry keeps failing gracefully, which is acceptable.
 8. **Malformed image message at discovery** — a message whose payload claims an attachment
@@ -216,6 +219,7 @@ that precedent.
    (`androidTest`) test — decode a known GPS-laden JPEG through the real `CempImageCodec`,
    re-parse the output, assert no EXIF — for a permanent CI guarantee. Deferred to avoid
    standing up (and maintaining) a new harness for the round-trip milestone.
+
 5. **On-device round-trip (ground truth)** — Samsung→Retroid, mirroring the 2026-07-23 text
    e2e: send the image from the Samsung → Retroid shows the thumbnail immediately →
    tap-download renders full-res with content-hash verified → sender reclaims chunk cells
@@ -224,7 +228,7 @@ that precedent.
 
 ## Section 6 — Outgoing attachment-key coordination (APPROVED — added 2026-07-25)
 
-**Why this section exists:** the spec originally framed the work as "wire the *completed*
+**Why this section exists:** the spec originally framed the work as "wire the _completed_
 `@cemp/images` backend." Tracing the send path showed the backend is complete on the
 receive side but has a MISSING SEAM on the send side that was never exercised end-to-end
 (the package's own e2e test hard-codes `new Uint8Array(32).fill(11)` as the attachment key
@@ -247,13 +251,13 @@ recipient derives key B ≠ A → every `downloadAttachment` fails its hash chec
   labelled test-only. Fixing both makes the encapsulation deterministic, so the sender can
   derive `attachmentKey` up front and later seal the message under the SAME encapsulation.
   - New tested helper in `@cemp/crypto`: `deriveSendAttachmentKey({ recipientKemPublicKey,
-    kemMessage, nonce, senderProfileId, recipientProfileId }) → Uint8Array` — encapsulate
+kemMessage, nonce, senderProfileId, recipientProfileId }) → Uint8Array` — encapsulate
     with the given `kemMessage`, then `deriveMessageKey(sharedSecret, nonce, sender,
-    recipient, "CEMP-ATTACHMENT-KEY-V1")`.
+recipient, "CEMP-ATTACHMENT-KEY-V1")`.
   - Thread an optional `attachmentEnvelope?: { kemMessage; nonce }` through
     `AssembleTextMessageParams` → `PublishTextInput`, forwarded to `encryptEnvelope`'s
     overrides. Documented as a REAL production seam (not "test override").
-  - **SAFETY INVARIANT (non-negotiable):** the override warning is about *reuse*. C-on-A is
+  - **SAFETY INVARIANT (non-negotiable):** the override warning is about _reuse_. C-on-A is
     sound ONLY because the orchestration generates FRESH CSPRNG `kemMessage`+`nonce` per
     message and uses them for exactly one published envelope. The seam is shaped so the app
     never hand-supplies these — the orchestration owns their generation. Reusing a
@@ -265,7 +269,7 @@ recipient derives key B ≠ A → every `downloadAttachment` fails its hash chec
   `deriveSendAttachmentKey`, (3) `prepareAttachmentChunks` + `publishAttachmentChunks` under
   that key, (4) `buildManifestForCommittedChunks`, (5) publishes the `0x03` manifest-carrying
   message via the injected `MessagePublisher.publishText({ contentType: 0x03,
-  attachmentManifests: [manifest], attachmentEnvelope: { kemMessage, nonce } })` — reusing
+attachmentManifests: [manifest], attachmentEnvelope: { kemMessage, nonce } })` — reusing
   publishText's journal / monitor / crash-resume wholesale. The app's
   `MessagingService.publishImage` just calls it with the native codec + app deps.
 

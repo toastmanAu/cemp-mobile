@@ -36,13 +36,22 @@ describe("deriveSendAttachmentKey", () => {
       padding: new Uint8Array(0),
     });
     const header: codec.CempEnvelopeHeaderV1Encodable = {
-      protocol_version: 1, network: 0x01, content_type: 0x03,
+      protocol_version: 1,
+      network: 0x01,
+      content_type: 0x03,
       message_id: messageId,
       conversation_id: new Uint8Array(32).fill(3),
       sender_profile_id: senderProfileId,
-      created_at_client: 0n, expiry_hint: 0n,
+      created_at_client: 0n,
+      expiry_hint: 0n,
     };
-    const env = encryptEnvelope({ payload, recipientKemPublicKey: publicKey, header, kemMessage, nonce });
+    const env = encryptEnvelope({
+      payload,
+      recipientKemPublicKey: publicKey,
+      header,
+      kemMessage,
+      nonce,
+    });
     const dec = decryptEnvelope({
       envelopeBytes: env.envelopeBytes,
       recipientKemSecretKey: secretKey,

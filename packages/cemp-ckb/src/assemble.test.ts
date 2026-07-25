@@ -25,8 +25,11 @@ describe("assembleTextMessage attachmentEnvelope coordination", () => {
     });
 
     const expected = deriveSendAttachmentKey({
-      recipientKemPublicKey: publicKey, kemMessage, nonce,
-      senderProfileId: sender, recipientProfileId: recipient,
+      recipientKemPublicKey: publicKey,
+      kemMessage,
+      nonce,
+      senderProfileId: sender,
+      recipientProfileId: recipient,
     });
     expect(Array.from(assembled.attachmentKey)).toEqual(Array.from(expected));
 

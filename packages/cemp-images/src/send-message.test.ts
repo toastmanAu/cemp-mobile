@@ -6,7 +6,13 @@ import { describe, expect, it } from "vitest";
 import { decryptAttachment, joinChunks } from "./encrypt.js";
 import { checkManifest } from "./manifest.js";
 import { publishImageMessage, type PublishImageMessageDeps } from "./send-message.js";
-import { FakeCodec, FakeJournal, MESSAGE_TYPE_REF, fakeSourceImage, makeChain } from "./test-helpers.js";
+import {
+  FakeCodec,
+  FakeJournal,
+  MESSAGE_TYPE_REF,
+  fakeSourceImage,
+  makeChain,
+} from "./test-helpers.js";
 
 /**
  * §6 key-coordination proof: publishImageMessage must generate ONE fresh KEM

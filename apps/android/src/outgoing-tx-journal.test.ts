@@ -15,10 +15,16 @@ describe("OutgoingTxJournalAdapter", () => {
     repo = new OutgoingTransactionRepository(db);
     journal = new OutgoingTxJournalAdapter(repo);
   });
-  afterEach(async () => { await db.close(); });
+  afterEach(async () => {
+    await db.close();
+  });
 
   it("records, marks state, and finds by purpose prefix", async () => {
-    await journal.recordOutgoingTx({ txHash: "0xaa", purpose: "attachment-chunks:g1", state: "submitted" });
+    await journal.recordOutgoingTx({
+      txHash: "0xaa",
+      purpose: "attachment-chunks:g1",
+      state: "submitted",
+    });
     await journal.markOutgoingTxState("0xaa", "committed", 1234);
     const found = await journal.findLatestOutgoingTxByPurposePrefix("attachment-chunks:");
     expect(found?.txHash).toBe("0xaa");

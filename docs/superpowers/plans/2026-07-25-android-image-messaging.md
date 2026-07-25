@@ -25,44 +25,53 @@
 ## File Structure
 
 **New — `@cemp/crypto`:**
+
 - `packages/cemp-crypto/src/attachment-key.ts` — `deriveSendAttachmentKey` (the send-side key derivation).
 - `packages/cemp-crypto/src/attachment-key.test.ts`
 
 **Modified — `@cemp/crypto` / `@cemp/ckb`:**
+
 - `packages/cemp-crypto/src/envelope.ts` — no change (overrides already accepted); re-export helper via `index.ts`.
 - `packages/cemp-ckb/src/assemble.ts` — thread `attachmentEnvelope` override into `encryptEnvelope`.
 - `packages/cemp-ckb/src/publisher.ts` — add `attachmentEnvelope` to `PublishTextInput`, forward to `assembleTextMessage`.
 
 **New — `@cemp/images`:**
+
 - `packages/cemp-images/src/send-message.ts` — `publishImageMessage` orchestration (C).
 - `packages/cemp-images/src/capacity.ts` — capacity pre-flight pure helpers (5A).
 - `packages/cemp-images/src/send-message.test.ts`, `packages/cemp-images/src/capacity.test.ts`
 
 **New — Android JS adapters:**
+
 - `apps/android/src/platform/native-image-codec.ts` — `NativeImageCodec` + `HandleTracker`.
 - `apps/android/src/platform/native-image-picker.ts` — `pickImage()`.
 - `apps/android/src/platform/native-image-codec.test.ts`, `native-image-picker.test.ts`
 
 **New — Android Kotlin:**
+
 - `apps/android/android/app/src/main/java/com/cempmobile/imaging/CempImageCodecModule.kt`
 - `apps/android/android/app/src/main/java/com/cempmobile/imaging/CempImagePickerModule.kt`
 - `apps/android/android/app/src/main/java/com/cempmobile/imaging/CempImagePackage.kt`
 
 **Modified — Android native:**
+
 - `apps/android/android/app/src/main/java/com/cempmobile/MainApplication.kt` — register package.
 - `apps/android/android/app/build.gradle` — add `exifinterface` + `activity-ktx`.
 
 **New — app wiring:**
+
 - `apps/android/src/outgoing-tx-journal.ts` — `OutgoingTxJournalAdapter implements AttachmentChunkJournal`.
 - `apps/android/src/outgoing-tx-journal.test.ts`
 
 **Modified — app wiring:**
+
 - `apps/android/src/messaging.ts` — instantiate `AttachmentRepository`, thread into `SyncWorkerDeps`, add `publishImage`.
 - `apps/android/package.json` — add `"@cemp/images": "workspace:*"`.
 - `packages/cemp-sync/src/workers.ts` — add `attachments` to `SyncWorkerDeps`; persist manifest branch.
 - `packages/cemp-sync/src/workers.test.ts` (or existing test file) — persistence-branch test.
 
 **New/Modified — UI:**
+
 - `packages/cemp-ui/src/image-bubble.ts` — `imageBubbleState` view-model (download state machine).
 - `packages/cemp-ui/src/image-bubble.test.ts`
 - `apps/android/src/screens/chat-screen.tsx` — attach button, image send, image bubble + tap-to-download.
@@ -72,11 +81,13 @@
 ## Task 1: `deriveSendAttachmentKey` crypto helper (A)
 
 **Files:**
+
 - Create: `packages/cemp-crypto/src/attachment-key.ts`
 - Test: `packages/cemp-crypto/src/attachment-key.test.ts`
 - Modify: `packages/cemp-crypto/src/index.ts` (export)
 
 **Interfaces:**
+
 - Consumes: `ml_kem768` (`@noble/post-quantum/ml-kem.js`), `deriveMessageKey` (`./hkdf.js`), `ML_KEM_768_SIZES` (`./identity.js`), `AES_256_GCM_NONCE_BYTES` (`./aead.js`), `CempCryptoError` (`./errors.js`).
 - Produces: `deriveSendAttachmentKey(params: DeriveSendAttachmentKeyParams): Uint8Array` and the `DeriveSendAttachmentKeyParams` interface — consumed by Tasks 2, 4.
 
@@ -122,13 +133,22 @@ describe("deriveSendAttachmentKey", () => {
       padding: new Uint8Array(0),
     });
     const header: codec.CempEnvelopeHeaderV1Encodable = {
-      protocol_version: 1, network: 0x01, content_type: 0x03,
+      protocol_version: 1,
+      network: 0x01,
+      content_type: 0x03,
       message_id: messageId,
       conversation_id: new Uint8Array(32).fill(3),
       sender_profile_id: senderProfileId,
-      created_at_client: 0n, expiry_hint: 0n,
+      created_at_client: 0n,
+      expiry_hint: 0n,
     };
-    const env = encryptEnvelope({ payload, recipientKemPublicKey: publicKey, header, kemMessage, nonce });
+    const env = encryptEnvelope({
+      payload,
+      recipientKemPublicKey: publicKey,
+      header,
+      kemMessage,
+      nonce,
+    });
     const dec = decryptEnvelope({
       envelopeBytes: env.envelopeBytes,
       recipientKemSecretKey: secretKey,
@@ -246,10 +266,12 @@ git commit -m "feat(crypto): deriveSendAttachmentKey for coordinated attachment 
 ## Task 2: Thread `attachmentEnvelope` override through `assembleTextMessage` (A)
 
 **Files:**
+
 - Modify: `packages/cemp-ckb/src/assemble.ts`
 - Test: `packages/cemp-ckb/src/assemble.test.ts` (add a case; create file if absent)
 
 **Interfaces:**
+
 - Consumes: `deriveSendAttachmentKey` (Task 1), `encryptEnvelope` overrides (`kemMessage`, `nonce`).
 - Produces: `AssembleTextMessageParams.attachmentEnvelope?: { kemMessage: Uint8Array; nonce: Uint8Array }` — consumed by Task 3.
 
@@ -284,8 +306,11 @@ describe("assembleTextMessage attachmentEnvelope coordination", () => {
     });
 
     const expected = deriveSendAttachmentKey({
-      recipientKemPublicKey: publicKey, kemMessage, nonce,
-      senderProfileId: sender, recipientProfileId: recipient,
+      recipientKemPublicKey: publicKey,
+      kemMessage,
+      nonce,
+      senderProfileId: sender,
+      recipientProfileId: recipient,
     });
     expect(Array.from(assembled.attachmentKey)).toEqual(Array.from(expected));
 
@@ -321,17 +346,17 @@ In `packages/cemp-ckb/src/assemble.ts`, add to `AssembleTextMessageParams` (afte
 Change the `encryptEnvelope` call (currently lines 115-119) to forward the override:
 
 ```ts
-  const { envelopeBytes, attachmentKey } = encryptEnvelope({
-    payload,
-    recipientKemPublicKey: params.recipientKemPublicKey,
-    header,
-    ...(params.attachmentEnvelope === undefined
-      ? {}
-      : {
-          kemMessage: params.attachmentEnvelope.kemMessage,
-          nonce: params.attachmentEnvelope.nonce,
-        }),
-  });
+const { envelopeBytes, attachmentKey } = encryptEnvelope({
+  payload,
+  recipientKemPublicKey: params.recipientKemPublicKey,
+  header,
+  ...(params.attachmentEnvelope === undefined
+    ? {}
+    : {
+        kemMessage: params.attachmentEnvelope.kemMessage,
+        nonce: params.attachmentEnvelope.nonce,
+      }),
+});
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -351,10 +376,12 @@ git commit -m "feat(ckb): thread attachmentEnvelope coordination through assembl
 ## Task 3: Forward `attachmentEnvelope` through `publishText` (A)
 
 **Files:**
+
 - Modify: `packages/cemp-ckb/src/publisher.ts`
 - Test: `packages/cemp-ckb/src/publisher.test.ts` (add a case)
 
 **Interfaces:**
+
 - Consumes: `AssembleTextMessageParams.attachmentEnvelope` (Task 2).
 - Produces: `PublishTextInput.attachmentEnvelope?: { kemMessage: Uint8Array; nonce: Uint8Array }` — consumed by Task 4 via `MessagePublisher.publishText`.
 
@@ -442,11 +469,13 @@ git commit -m "feat(ckb): forward attachmentEnvelope coordination through publis
 ## Task 4: `publishImageMessage` orchestration in `@cemp/images` (C)
 
 **Files:**
+
 - Create: `packages/cemp-images/src/send-message.ts`
 - Test: `packages/cemp-images/src/send-message.test.ts`
 - Modify: `packages/cemp-images/src/index.ts` (export)
 
 **Interfaces:**
+
 - Consumes: `prepareAttachmentChunks`, `publishAttachmentChunks`, `buildManifestForCommittedChunks`, `AttachmentChunkJournal` (`./send.js`); `deriveSendAttachmentKey` (`@cemp/crypto`); `ImageCodec`, `ImageEncodeFormat` (`./codec.js`); types `CempClient`, `MlDsaV2TxSigner`, `CempMessageTypeRef`, `MessagePublisher` (`@cemp/ckb`); `codec` (`@cemp/core`).
 - Produces: `publishImageMessage(deps: PublishImageMessageDeps, input: PublishImageMessageInput): Promise<PublishImageMessageResult>` — consumed by Task 13.
 
@@ -485,15 +514,21 @@ describe("publishImageMessage", () => {
     const result = await publishImageMessage(
       {
         codec: new FakeCodec(),
-        client: fakeClient, signer: fakeSigner, messageType: fakeMessageType,
-        journal: fakeJournal, publisher: fakePublisher,
-        senderProfileId: sender, senderDeviceId: new Uint8Array(16).fill(7),
+        client: fakeClient,
+        signer: fakeSigner,
+        messageType: fakeMessageType,
+        journal: fakeJournal,
+        publisher: fakePublisher,
+        senderProfileId: sender,
+        senderDeviceId: new Uint8Array(16).fill(7),
         randomBytes: deterministicRandom,
       },
       {
-        messageRowId: 1, logicalMessageId: "l1",
+        messageRowId: 1,
+        logicalMessageId: "l1",
         recipientProfileIdHex: "0x" + "02".repeat(32),
-        recipientKemPublicKey: publicKey, recipientProfileId: recipient,
+        recipientKemPublicKey: publicKey,
+        recipientProfileId: recipient,
         sourceBytes: source,
       },
     );
@@ -514,6 +549,7 @@ describe("publishImageMessage", () => {
 ```
 
 > Implementer notes for Step 1:
+>
 > - Extract the `FakeCodec` from `packages/cemp-images/src/images.test.ts` into `packages/cemp-images/src/test-helpers.ts` and import it in both files (DRY). `makePngBytes` already has an equivalent fixture in `images.test.ts` — reuse it.
 > - `makeChainFakes()` mirrors the fake client/signer used by the existing `publishAttachmentChunks` test in `images.test.ts` (a `liveClient` that returns committed cells). Reuse that harness.
 > - The strong assertion: build an envelope via `assembleTextMessage({ contentType:0x03, attachmentManifests:[result.manifest], attachmentEnvelope: captured.publishTextInput.attachmentEnvelope, ...ids })`, `decryptEnvelope` it with `secretKey`, then `decryptAttachment(joinChunks(prepared.chunks), manifest.encryption_nonce, dec.attachmentKey, manifest.attachment_id)` succeeds. This is the round-trip that proves §6.
@@ -601,7 +637,12 @@ export async function publishImageMessage(
       input.format === undefined ? {} : { format: input.format },
     );
     const published = await publishAttachmentChunks(
-      { client: deps.client, signer: deps.signer, journal: deps.journal, messageType: deps.messageType },
+      {
+        client: deps.client,
+        signer: deps.signer,
+        journal: deps.journal,
+        messageType: deps.messageType,
+      },
       prepared,
       input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs },
     );
@@ -660,10 +701,12 @@ git commit -m "feat(images): publishImageMessage orchestration with §6 key coor
 ## Task 5: Capacity pre-flight helpers (5A)
 
 **Files:**
+
 - Create: `packages/cemp-images/src/capacity.ts`
 - Test: `packages/cemp-images/src/capacity.test.ts`
 
 **Interfaces:**
+
 - Consumes: `ATTACHMENT_CHUNK_BYTES` (`./encrypt.js`), `estimateAttachmentCapacity` + `PreparedImage` (`./prepare.js`).
 - Produces: `estimateImageSendShannon(...)`, `hasSufficientCapacity(...)`, `SEND_FEE_RESERVE_SHANNONS`, `CONSERVATIVE_PER_CHUNK_SHANNON`, `CONSERVATIVE_MESSAGE_CELL_SHANNON` — consumed by Task 13.
 
@@ -775,11 +818,13 @@ git commit -m "feat(images): pre-flight capacity estimate for image sends (5A)"
 ## Task 6: `NativeImageCodec` + `HandleTracker` JS adapter
 
 **Files:**
+
 - Create: `apps/android/src/platform/native-image-codec.ts`
 - Test: `apps/android/src/platform/native-image-codec.test.ts`
 - Modify: `apps/android/package.json` (add `"@cemp/images": "workspace:*"`)
 
 **Interfaces:**
+
 - Consumes: `NativeModules` (`react-native`), `bytesToHex`/`hexToBytes` (`./hex`), `ImageCodec`/`DecodedImage`/`ImageEncodeFormat` (`@cemp/images`).
 - Produces: `class NativeImageCodec implements ImageCodec`, `class HandleTracker implements ImageCodec` (decorator with `releaseAll()`) — consumed by Task 13. The native bridge contract `CempImageCodecNativeModule` — consumed by Task 8 (Kotlin must match).
 
@@ -806,7 +851,10 @@ import { HandleTracker, NativeImageCodec } from "./native-image-codec.js";
 import { bytesToHex } from "./hex.js";
 
 function reset() {
-  decode.mockReset(); resize.mockReset(); encode.mockReset(); release.mockReset();
+  decode.mockReset();
+  resize.mockReset();
+  encode.mockReset();
+  release.mockReset();
 }
 
 describe("NativeImageCodec", () => {
@@ -874,7 +922,11 @@ import { NativeModules } from "react-native";
 import type { DecodedImage, ImageCodec, ImageEncodeFormat } from "@cemp/images";
 import { bytesToHex, hexToBytes } from "./hex.js";
 
-interface DecodeResult { handle: number; width: number; height: number }
+interface DecodeResult {
+  handle: number;
+  width: number;
+  height: number;
+}
 
 interface CempImageCodecNativeModule {
   decode(bytesHex: string): Promise<DecodeResult>;
@@ -903,7 +955,11 @@ export class NativeImageCodec implements ImageCodec {
     return { width: r.width, height: r.height, pixels: r.handle };
   }
 
-  async encode(image: DecodedImage, format: ImageEncodeFormat, quality: number): Promise<Uint8Array> {
+  async encode(
+    image: DecodedImage,
+    format: ImageEncodeFormat,
+    quality: number,
+  ): Promise<Uint8Array> {
     return hexToBytes(await this.#module().encode(image.pixels as number, format, quality));
   }
 
@@ -942,7 +998,11 @@ export class HandleTracker implements ImageCodec {
     return this.#track(await this.#inner.resize(image, width, height));
   }
 
-  async encode(image: DecodedImage, format: ImageEncodeFormat, quality: number): Promise<Uint8Array> {
+  async encode(
+    image: DecodedImage,
+    format: ImageEncodeFormat,
+    quality: number,
+  ): Promise<Uint8Array> {
     return this.#inner.encode(image, format, quality);
   }
 
@@ -975,10 +1035,12 @@ git commit -m "feat(android): NativeImageCodec adapter + aliasing-safe HandleTra
 ## Task 7: `pickImage` picker adapter
 
 **Files:**
+
 - Create: `apps/android/src/platform/native-image-picker.ts`
 - Test: `apps/android/src/platform/native-image-picker.test.ts`
 
 **Interfaces:**
+
 - Consumes: `NativeModules`, `hexToBytes`.
 - Produces: `pickImage(): Promise<Uint8Array | null>` — consumed by Task 15. Native contract `CempImagePickerNativeModule.pick(): Promise<string | null>` — consumed by Task 9 (Kotlin must match).
 
@@ -1045,9 +1107,11 @@ git commit -m "feat(android): pickImage adapter for the system Photo Picker"
 ## Task 8: `CempImageCodecModule.kt` (native codec, compile gate)
 
 **Files:**
+
 - Create: `apps/android/android/app/src/main/java/com/cempmobile/imaging/CempImageCodecModule.kt`
 
 **Interfaces:**
+
 - Consumes: the JS contract from Task 6 — `decode(bytesHex): {handle,width,height}`, `resize(handle,w,h): {handle,width,height}`, `encode(handle,format,quality): hex`, `release(handle)`.
 - Produces: a `getName() == "CempImageCodec"` module. Registered by Task 9.
 
@@ -1204,12 +1268,14 @@ git commit -m "feat(android): CempImageCodec native module (EXIF-stripping bitma
 ## Task 9: `CempImagePickerModule.kt` + package + gradle deps + registration (compile gate)
 
 **Files:**
+
 - Create: `apps/android/android/app/src/main/java/com/cempmobile/imaging/CempImagePickerModule.kt`
 - Create: `apps/android/android/app/src/main/java/com/cempmobile/imaging/CempImagePackage.kt`
 - Modify: `apps/android/android/app/build.gradle` (deps)
 - Modify: `apps/android/android/app/src/main/java/com/cempmobile/MainApplication.kt` (register)
 
 **Interfaces:**
+
 - Consumes: JS contract from Task 7 — `pick(): Promise<hex | null>`.
 - Produces: `getName() == "CempImagePicker"`; `CempImagePackage` returning both imaging modules; app registration.
 
@@ -1378,10 +1444,12 @@ git commit -m "feat(android): CempImagePicker module + package registration + gr
 ## Task 10: `OutgoingTxJournalAdapter` (AttachmentChunkJournal)
 
 **Files:**
+
 - Create: `apps/android/src/outgoing-tx-journal.ts`
 - Test: `apps/android/src/outgoing-tx-journal.test.ts`
 
 **Interfaces:**
+
 - Consumes: `OutgoingTransactionRepository` (`@cemp/database`) — methods `record`, `markState(txHash, state, {committedAtMs?})`, `findLatestByPurposePrefix`; `AttachmentChunkJournal` (`@cemp/images`).
 - Produces: `class OutgoingTxJournalAdapter implements AttachmentChunkJournal` — consumed by Task 13.
 
@@ -1405,10 +1473,16 @@ describe("OutgoingTxJournalAdapter", () => {
     repo = new OutgoingTransactionRepository(db);
     journal = new OutgoingTxJournalAdapter(repo);
   });
-  afterEach(async () => { await db.close(); });
+  afterEach(async () => {
+    await db.close();
+  });
 
   it("records, marks state, and finds by purpose prefix", async () => {
-    await journal.recordOutgoingTx({ txHash: "0xaa", purpose: "attachment-chunks:g1", state: "submitted" });
+    await journal.recordOutgoingTx({
+      txHash: "0xaa",
+      purpose: "attachment-chunks:g1",
+      state: "submitted",
+    });
     await journal.markOutgoingTxState("0xaa", "committed", 1234);
     const found = await journal.findLatestOutgoingTxByPurposePrefix("attachment-chunks:");
     expect(found?.txHash).toBe("0xaa");
@@ -1463,7 +1537,9 @@ export class OutgoingTxJournalAdapter implements AttachmentChunkJournal {
 
   async findLatestOutgoingTxByPurposePrefix(
     prefix: string,
-  ): Promise<{ txHash: string; state: string; purpose: string; txHex?: string | null } | undefined> {
+  ): Promise<
+    { txHash: string; state: string; purpose: string; txHex?: string | null } | undefined
+  > {
     return await this.#repo.findLatestByPurposePrefix(prefix);
   }
 }
@@ -1484,10 +1560,12 @@ git commit -m "feat(android): OutgoingTxJournalAdapter for attachment chunk publ
 ## Task 11: Thread `AttachmentRepository` into `SyncWorkerDeps`
 
 **Files:**
+
 - Modify: `packages/cemp-sync/src/workers.ts` (add `attachments` to `SyncWorkerDeps` + type import)
 - Modify: `apps/android/src/messaging.ts` (construct `AttachmentRepository`, pass into `buildWorkerSpecs`)
 
 **Interfaces:**
+
 - Consumes: `AttachmentRepository` (`@cemp/database`).
 - Produces: `SyncWorkerDeps.attachments: AttachmentRepository` — consumed by Task 12.
 
@@ -1504,7 +1582,7 @@ In `packages/cemp-sync/src/workers.ts`, add `AttachmentRepository` to the `type`
 In `apps/android/src/messaging.ts` `init`, alongside the other repos (near `const outgoingTxs = new OutgoingTransactionRepository(db);`), add:
 
 ```ts
-    const attachments = new AttachmentRepository(db);
+const attachments = new AttachmentRepository(db);
 ```
 
 Ensure `AttachmentRepository` is imported from `@cemp/database`. Add `attachments,` to the object passed to `buildWorkerSpecs({ ... })`.
@@ -1526,10 +1604,12 @@ git commit -m "feat(sync): thread AttachmentRepository into SyncWorkerDeps"
 ## Task 12: Persist the manifest on incoming image discovery
 
 **Files:**
+
 - Modify: `packages/cemp-sync/src/workers.ts` (`processDiscoveredCell`, after `messages.insert`)
 - Test: `packages/cemp-sync/src/workers.test.ts` (add a case; reuse the file's existing deps harness)
 
 **Interfaces:**
+
 - Consumes: `incoming.attachmentManifests` (already returned by `processIncomingText`), `deps.attachments` (Task 11), `encodeAttachmentManifestV1` (`@cemp/core` `codec`).
 - Produces: an `attachments` row (`kind: "image"`, encoded manifest blob) linked to the inserted message when the payload carries a manifest.
 
@@ -1545,7 +1625,12 @@ import { describe, expect, it } from "vitest";
 describe("processDiscoveredCell image branch", () => {
   it("persists an image attachment row when the payload carries a manifest", async () => {
     const { deps, feedDiscovered, attachments, messages } = await makeWorkerHarness(); // existing/added helper
-    const manifest = makeManifestV1({ mimeType: "image/webp", plaintextSize: 1000, width: 64, height: 48 });
+    const manifest = makeManifestV1({
+      mimeType: "image/webp",
+      plaintextSize: 1000,
+      width: 64,
+      height: 48,
+    });
     await feedDiscovered({
       contentType: 0x03,
       text: "",
@@ -1580,19 +1665,19 @@ import { codec } from "@cemp/core";
 Immediately after the `const inserted = await deps.messages.insert({ ... });` call in `processDiscoveredCell`, add:
 
 ```ts
-  // Image branch (design §3 step 1): an attachment message stores its manifest
-  // (thumbnail embedded) so the bubble renders immediately with no fetch. The
-  // full-res chunk download is deferred to a user tap (downloadAttachment).
-  if (incoming.attachmentManifests.length > 0) {
-    for (const manifest of incoming.attachmentManifests) {
-      await deps.attachments.create({
-        messageId: inserted.id,
-        kind: "image",
-        byteLength: Number(manifest.plaintext_size),
-        manifest: codec.encodeAttachmentManifestV1(manifest),
-      });
-    }
+// Image branch (design §3 step 1): an attachment message stores its manifest
+// (thumbnail embedded) so the bubble renders immediately with no fetch. The
+// full-res chunk download is deferred to a user tap (downloadAttachment).
+if (incoming.attachmentManifests.length > 0) {
+  for (const manifest of incoming.attachmentManifests) {
+    await deps.attachments.create({
+      messageId: inserted.id,
+      kind: "image",
+      byteLength: Number(manifest.plaintext_size),
+      manifest: codec.encodeAttachmentManifestV1(manifest),
+    });
   }
+}
 ```
 
 - [ ] **Step 4: Run test to verify it passes, then commit**
@@ -1610,10 +1695,12 @@ git commit -m "feat(sync): persist attachment manifest on incoming image discove
 ## Task 13: `MessagingService.publishImage` (send wiring + capacity pre-flight)
 
 **Files:**
+
 - Modify: `apps/android/src/messaging.ts` (add `publishImage`; construct journal adapter)
 - Test: `apps/android/src/messaging.test.ts` (add a focused case, or a new `image-send.test.ts` if the service is hard to construct — see note)
 
 **Interfaces:**
+
 - Consumes: `publishImageMessage`, `estimateImageSendShannon`, `hasSufficientCapacity`, `CONSERVATIVE_PER_CHUNK_SHANNON`, `SEND_FEE_RESERVE_SHANNONS` (`@cemp/images`); `HandleTracker`, `NativeImageCodec` (`./platform/native-image-codec`); `OutgoingTxJournalAdapter` (`./outgoing-tx-journal`); `estimateAttachmentCapacity`, `prepareImage` for the count (or reuse the count from a dry prepare); `AttachmentRepository`; `randomBytes` from `@cemp/crypto`.
 - Produces: `MessagingService.publishImage(input): Promise<{ messageTxHash: string }>` — consumed by Task 15.
 
@@ -1639,7 +1726,7 @@ describe("runImageSend capacity pre-flight (5A)", () => {
           messageCellShannon: 20_000n * 100_000_000n,
           publish,
         },
-        { /* input */ } as never,
+        {/* input */} as never,
       ),
     ).rejects.toThrow(/not enough balance/i);
     expect(publish).not.toHaveBeenCalled();
@@ -1721,11 +1808,13 @@ git commit -m "feat(android): MessagingService.publishImage with capacity pre-fl
 ## Task 14: `imageBubbleState` view-model (download state machine)
 
 **Files:**
+
 - Create: `packages/cemp-ui/src/image-bubble.ts`
 - Test: `packages/cemp-ui/src/image-bubble.test.ts`
 - Modify: `packages/cemp-ui/src/index.ts` (export)
 
 **Interfaces:**
+
 - Produces: `type ImageDownloadState`, `imageBubbleState(input): ImageBubblePresentation` — consumed by Task 15.
 
 - [ ] **Step 1: Write the failing test**
@@ -1738,19 +1827,36 @@ import { imageBubbleState } from "./image-bubble.js";
 describe("imageBubbleState", () => {
   it("shows the thumbnail with a load affordance before download", () => {
     const s = imageBubbleState({ hasThumbnail: true, download: "idle" });
-    expect(s).toEqual({ showThumbnail: true, showFull: false, affordance: "tap-to-load", showSpinner: false });
+    expect(s).toEqual({
+      showThumbnail: true,
+      showFull: false,
+      affordance: "tap-to-load",
+      showSpinner: false,
+    });
   });
   it("spins while downloading", () => {
-    expect(imageBubbleState({ hasThumbnail: true, download: "loading" }))
-      .toEqual({ showThumbnail: true, showFull: false, affordance: "none", showSpinner: true });
+    expect(imageBubbleState({ hasThumbnail: true, download: "loading" })).toEqual({
+      showThumbnail: true,
+      showFull: false,
+      affordance: "none",
+      showSpinner: true,
+    });
   });
   it("keeps the thumbnail and offers retry on failure (7A)", () => {
-    expect(imageBubbleState({ hasThumbnail: true, download: "error" }))
-      .toEqual({ showThumbnail: true, showFull: false, affordance: "tap-to-retry", showSpinner: false });
+    expect(imageBubbleState({ hasThumbnail: true, download: "error" })).toEqual({
+      showThumbnail: true,
+      showFull: false,
+      affordance: "tap-to-retry",
+      showSpinner: false,
+    });
   });
   it("shows the full image once loaded", () => {
-    expect(imageBubbleState({ hasThumbnail: true, download: "loaded" }))
-      .toEqual({ showThumbnail: false, showFull: true, affordance: "none", showSpinner: false });
+    expect(imageBubbleState({ hasThumbnail: true, download: "loaded" })).toEqual({
+      showThumbnail: false,
+      showFull: true,
+      affordance: "none",
+      showSpinner: false,
+    });
   });
 });
 ```
@@ -1780,12 +1886,27 @@ export function imageBubbleState(input: {
 }): ImageBubblePresentation {
   switch (input.download) {
     case "idle":
-      return { showThumbnail: input.hasThumbnail, showFull: false, affordance: "tap-to-load", showSpinner: false };
+      return {
+        showThumbnail: input.hasThumbnail,
+        showFull: false,
+        affordance: "tap-to-load",
+        showSpinner: false,
+      };
     case "loading":
-      return { showThumbnail: input.hasThumbnail, showFull: false, affordance: "none", showSpinner: true };
+      return {
+        showThumbnail: input.hasThumbnail,
+        showFull: false,
+        affordance: "none",
+        showSpinner: true,
+      };
     case "error":
       // 7A: thumbnail never leaves the manifest cell, so keep it + offer retry.
-      return { showThumbnail: input.hasThumbnail, showFull: false, affordance: "tap-to-retry", showSpinner: false };
+      return {
+        showThumbnail: input.hasThumbnail,
+        showFull: false,
+        affordance: "tap-to-retry",
+        showSpinner: false,
+      };
     case "loaded":
       return { showThumbnail: false, showFull: true, affordance: "none", showSpinner: false };
   }
@@ -1809,9 +1930,11 @@ git commit -m "feat(ui): imageBubbleState download state machine (7A retry)"
 ## Task 15: Chat screen — attach button, image send, image bubble + tap-to-download
 
 **Files:**
+
 - Modify: `apps/android/src/screens/chat-screen.tsx`
 
 **Interfaces:**
+
 - Consumes: `pickImage` (Task 7), `MessagingService.publishImage` (Task 13), `imageBubbleState` (Task 14), `AttachmentRepository.listForMessage` + `decodeAttachmentManifestV1` + `downloadAttachment` (`@cemp/images`/`@cemp/core`).
 - Produces: UI. Verified by Task 17 on-device (RN screen has no unit harness here — keep logic in the tested view-model/service; the screen is thin glue).
 
@@ -1820,28 +1943,28 @@ git commit -m "feat(ui): imageBubbleState download state machine (7A retry)"
 In the composer `View` (beside the `Send` `Button`), add an attach button that runs:
 
 ```tsx
-  async function attachImage(): Promise<void> {
-    setPublishError(null);
-    try {
-      const bytes = await pickImage();
-      if (bytes === null) return; // cancel = no-op (spec §4 item 2)
-      const row = await composer.insertImageDraft(); // inserts an outgoing image message row (body null)
-      if (container.hasMessaging && contact?.profileIdHex != null) {
-        await container.messaging.publishImage({
-          messageRowId: row.id,
-          logicalMessageId: row.logicalMessageId,
-          recipientProfileIdHex: contact.profileIdHex,
-          recipientKemPublicKey: contact.kemPublicKey,   // resolved on the contact
-          recipientProfileId: hexToBytes(strip0x(contact.profileIdHex)),
-          sourceBytes: bytes,
-        });
-      }
-    } catch (e) {
-      // ImageTooLargeError / decode / capacity all arrive here already jargon-free.
-      setPublishError(e instanceof Error ? e.message : "Couldn't send that image.");
+async function attachImage(): Promise<void> {
+  setPublishError(null);
+  try {
+    const bytes = await pickImage();
+    if (bytes === null) return; // cancel = no-op (spec §4 item 2)
+    const row = await composer.insertImageDraft(); // inserts an outgoing image message row (body null)
+    if (container.hasMessaging && contact?.profileIdHex != null) {
+      await container.messaging.publishImage({
+        messageRowId: row.id,
+        logicalMessageId: row.logicalMessageId,
+        recipientProfileIdHex: contact.profileIdHex,
+        recipientKemPublicKey: contact.kemPublicKey, // resolved on the contact
+        recipientProfileId: hexToBytes(strip0x(contact.profileIdHex)),
+        sourceBytes: bytes,
+      });
     }
-    await reload();
+  } catch (e) {
+    // ImageTooLargeError / decode / capacity all arrive here already jargon-free.
+    setPublishError(e instanceof Error ? e.message : "Couldn't send that image.");
   }
+  await reload();
+}
 ```
 
 > Implementer note: `composer.insertImageDraft()` is a small addition to `ChatComposerViewModel` (mirror `send()`'s insert but with `body: null`; reuse the `logicalMessageId` generation). If the contact record doesn't already carry `kemPublicKey`, resolve it the same way the text publish path resolves the recipient profile (the publisher already calls `resolveLiveProfile`; expose the resolved KEM key or resolve once here).
@@ -1851,18 +1974,18 @@ In the composer `View` (beside the `Send` `Button`), add an attach button that r
 Load attachments for the conversation in `reload()` (a `Map<messageId, Attachment>` via `attachments.listForMessage`), then in `renderItem`:
 
 ```tsx
-          const attachment = attachmentsByMessage.get(item.id);
-          if (attachment?.kind === "image") {
-            return (
-              <ImageBubble
-                outgoing={item.direction === "outgoing"}
-                manifest={decodeAttachmentManifestV1(attachment.manifest!)}
-                downloadState={downloadStates.get(item.id) ?? "idle"}
-                onTap={() => void loadFull(item.id, attachment)}
-              />
-            );
-          }
-          // ...existing text bubble...
+const attachment = attachmentsByMessage.get(item.id);
+if (attachment?.kind === "image") {
+  return (
+    <ImageBubble
+      outgoing={item.direction === "outgoing"}
+      manifest={decodeAttachmentManifestV1(attachment.manifest!)}
+      downloadState={downloadStates.get(item.id) ?? "idle"}
+      onTap={() => void loadFull(item.id, attachment)}
+    />
+  );
+}
+// ...existing text bubble...
 ```
 
 Where `ImageBubble` is a small inline component using `imageBubbleState(...)` to decide thumbnail (`manifest.thumbnail` as a data URI) vs full image vs spinner vs retry label.
@@ -1870,18 +1993,18 @@ Where `ImageBubble` is a small inline component using `imageBubbleState(...)` to
 - [ ] **Step 3: Implement `loadFull` (tap-to-download, 7A)**
 
 ```tsx
-  async function loadFull(messageId: number, attachment: Attachment): Promise<void> {
-    setDownloadState(messageId, "loading");
-    try {
-      const manifest = decodeAttachmentManifestV1(attachment.manifest!);
-      const attachmentKey = await container.messaging.deriveIncomingAttachmentKey(messageId); // from stored envelope
-      const full = await downloadAttachment(container.client, manifest, attachmentKey);
-      setFullImage(messageId, full.bytes, full.mimeType);
-      setDownloadState(messageId, "loaded");
-    } catch {
-      setDownloadState(messageId, "error"); // keep thumbnail, offer retry
-    }
+async function loadFull(messageId: number, attachment: Attachment): Promise<void> {
+  setDownloadState(messageId, "loading");
+  try {
+    const manifest = decodeAttachmentManifestV1(attachment.manifest!);
+    const attachmentKey = await container.messaging.deriveIncomingAttachmentKey(messageId); // from stored envelope
+    const full = await downloadAttachment(container.client, manifest, attachmentKey);
+    setFullImage(messageId, full.bytes, full.mimeType);
+    setDownloadState(messageId, "loaded");
+  } catch {
+    setDownloadState(messageId, "error"); // keep thumbnail, offer retry
   }
+}
 ```
 
 > Implementer note: the incoming `attachmentKey` is derived from the stored envelope on decrypt (`decryptEnvelope` returns it). The sync worker already has it at discovery time; the cleanest path is to persist the per-message attachment key alongside the attachment row (or re-derive from the stored envelope + own KEM secret key on demand via a `MessagingService.deriveIncomingAttachmentKey`). Add that accessor; it wraps `decryptEnvelope` over the stored message cell using `ownKemSecretKey`. Wipe the key after `downloadAttachment`.
@@ -1907,6 +2030,7 @@ git commit -m "feat(android): chat image UI — attach, image bubble, tap-to-dow
 - [ ] **Step 1: Run all affected package test suites**
 
 Run:
+
 ```bash
 cd packages/cemp-crypto && npx vitest run
 cd packages/cemp-ckb && npx vitest run
@@ -1915,6 +2039,7 @@ cd packages/cemp-sync && npx vitest run
 cd packages/cemp-ui && npx vitest run
 cd apps/android && npx vitest run
 ```
+
 Expected: all green.
 
 - [ ] **Step 2: Typecheck the app and packages**
@@ -1958,9 +2083,11 @@ Confirm the Retroid shows the thumbnail immediately (no fetch), a generic notifi
 - [ ] **Step 5: Prove metadata stripping (5A)**
 
 Pull the rendered full-res image off the Retroid (`adb pull` from the app cache, or export) and run an EXIF check:
+
 ```bash
 exiftool received-image.webp | grep -iE "gps|orientation|make|model" || echo "no EXIF/GPS — PASS"
 ```
+
 Expected: no GPS/EXIF tags; orientation correct (baked into pixels).
 
 - [ ] **Step 6: Confirm reclaim after ack**

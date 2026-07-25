@@ -8,6 +8,7 @@
 
 Evidence (driveThree, healthy toolchain — Swift 6.3.3 via swiftly, Darwin SDK at
 `~/.swiftpm/swift-sdks/darwin.artifactbundle`, xtool 1.17.0):
+
 - `xtool --help` / `xtool dev --help`: xtool is a "Cross-platform Xcode replacement"
   whose `new`/`dev build`/`dev run` operate on **SwiftPM projects only**. The only
   adjacent mode is `dev generate-xcode-project` (SwiftPM → Xcode), still SwiftPM-rooted.
@@ -22,8 +23,8 @@ that specific capability), but the overall path is workable (AMBER):**
 
 1. **Build/ship on the macOS runner** — `pod install` + `xcodebuild archive` on
    `macos-26`, reusing HTMLocal's `ios-release.yml` signing/upload workflow verbatim.
-   This is standard, well-trodden RN iOS CI (unlike xtool-on-Linux). *(Not executed in
-   this spike — it's the conventional path; stand it up when the native modules exist.)*
+   This is standard, well-trodden RN iOS CI (unlike xtool-on-Linux). _(Not executed in
+   this spike — it's the conventional path; stand it up when the native modules exist.)_
 2. **Iterate on Linux via a hybrid loop** — xtool's DEVICE subcommands (`install`,
    `launch`, `devices`) are independent of its build system, so a macOS-CI-built `.ipa`
    can be installed to a USB iPhone **from Linux** with `xtool install`, then **Metro
@@ -38,7 +39,6 @@ builds (slower iterate), not `xtool dev`. Budget for that. Everything JS/TS-side
 ---
 
 ## Original plan (for reference)
-
 
 ## Why this exists
 
@@ -78,7 +78,7 @@ from the embedded Hermes bundle. Success or a documented, specific blocker.
    screen renders. If device signing is needed, reuse the HTMLocal secrets/profile
    setup.
 5. **Fallback probe (only if 2–4 blocks).** Try the macOS-runner path for the RN
-   *build* too (not just archive) — i.e. can `ios-release.yml`-style `xcodebuild`
+   _build_ too (not just archive) — i.e. can `ios-release.yml`-style `xcodebuild`
    on `macos-26` build the RN app even if xtool-on-Linux can't? That preserves the
    ship pipeline while conceding local Linux builds.
 

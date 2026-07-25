@@ -55,7 +55,11 @@ export class NativeImageCodec implements ImageCodec {
     return { width: r.width, height: r.height, pixels: r.handle };
   }
 
-  async encode(image: DecodedImage, format: ImageEncodeFormat, quality: number): Promise<Uint8Array> {
+  async encode(
+    image: DecodedImage,
+    format: ImageEncodeFormat,
+    quality: number,
+  ): Promise<Uint8Array> {
     return hexToBytes(await this.#module().encode(image.pixels as number, format, quality));
   }
 

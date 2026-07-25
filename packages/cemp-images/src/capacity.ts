@@ -19,7 +19,8 @@ export const SEND_FEE_RESERVE_SHANNONS = 1n * SHANNON_PER_CKB;
  * overhead (capacity field + ML-DSA lock + type script ≈ 256 bytes). Task 13
  * may refine from the actual built cell; this bound guarantees no false "OK".
  */
-export const CONSERVATIVE_PER_CHUNK_SHANNON = (BigInt(ATTACHMENT_CHUNK_BYTES) + 256n) * SHANNON_PER_CKB;
+export const CONSERVATIVE_PER_CHUNK_SHANNON =
+  (BigInt(ATTACHMENT_CHUNK_BYTES) + 256n) * SHANNON_PER_CKB;
 
 /**
  * Upper-bound capacity for the manifest-carrying message cell: the envelope +

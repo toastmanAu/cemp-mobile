@@ -72,7 +72,12 @@ export async function publishImageMessage(
       input.format === undefined ? {} : { format: input.format },
     );
     const published = await publishAttachmentChunks(
-      { client: deps.client, signer: deps.signer, journal: deps.journal, messageType: deps.messageType },
+      {
+        client: deps.client,
+        signer: deps.signer,
+        journal: deps.journal,
+        messageType: deps.messageType,
+      },
       prepared,
       input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs },
     );

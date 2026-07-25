@@ -55,7 +55,11 @@ export class HandleTracker implements ImageCodec {
     return this.#track(await this.#inner.resize(image, width, height));
   }
 
-  async encode(image: DecodedImage, format: ImageEncodeFormat, quality: number): Promise<Uint8Array> {
+  async encode(
+    image: DecodedImage,
+    format: ImageEncodeFormat,
+    quality: number,
+  ): Promise<Uint8Array> {
     return this.#inner.encode(image, format, quality);
   }
 

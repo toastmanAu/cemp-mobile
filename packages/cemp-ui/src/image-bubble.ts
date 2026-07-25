@@ -14,12 +14,27 @@ export function imageBubbleState(input: {
 }): ImageBubblePresentation {
   switch (input.download) {
     case "idle":
-      return { showThumbnail: input.hasThumbnail, showFull: false, affordance: "tap-to-load", showSpinner: false };
+      return {
+        showThumbnail: input.hasThumbnail,
+        showFull: false,
+        affordance: "tap-to-load",
+        showSpinner: false,
+      };
     case "loading":
-      return { showThumbnail: input.hasThumbnail, showFull: false, affordance: "none", showSpinner: true };
+      return {
+        showThumbnail: input.hasThumbnail,
+        showFull: false,
+        affordance: "none",
+        showSpinner: true,
+      };
     case "error":
       // 7A: thumbnail never leaves the manifest cell, so keep it + offer retry.
-      return { showThumbnail: input.hasThumbnail, showFull: false, affordance: "tap-to-retry", showSpinner: false };
+      return {
+        showThumbnail: input.hasThumbnail,
+        showFull: false,
+        affordance: "tap-to-retry",
+        showSpinner: false,
+      };
     case "loaded":
       return { showThumbnail: false, showFull: true, affordance: "none", showSpinner: false };
   }

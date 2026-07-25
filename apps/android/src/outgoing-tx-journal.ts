@@ -31,7 +31,9 @@ export class OutgoingTxJournalAdapter implements AttachmentChunkJournal {
 
   async findLatestOutgoingTxByPurposePrefix(
     prefix: string,
-  ): Promise<{ txHash: string; state: string; purpose: string; txHex?: string | null } | undefined> {
+  ): Promise<
+    { txHash: string; state: string; purpose: string; txHex?: string | null } | undefined
+  > {
     return await this.#repo.findLatestByPurposePrefix(prefix);
   }
 }

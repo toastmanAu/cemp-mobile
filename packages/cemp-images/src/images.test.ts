@@ -13,7 +13,11 @@ import {
 import { DEFAULT_IMAGE_LIMITS, planImageFit, planThumbnailFit } from "./limits.js";
 import { buildAttachmentManifest, checkManifest } from "./manifest.js";
 import { codec } from "@cemp/core";
-import { buildManifestForCommittedChunks, prepareAttachmentChunks, publishAttachmentChunks } from "./send.js";
+import {
+  buildManifestForCommittedChunks,
+  prepareAttachmentChunks,
+  publishAttachmentChunks,
+} from "./send.js";
 import { downloadAttachment } from "./receive.js";
 import { reclaimAttachmentGroup } from "./reclaim.js";
 import {

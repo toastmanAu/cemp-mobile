@@ -373,7 +373,9 @@ function ImageBubble({
   const fullUri = full !== undefined ? `data:${full.mimeType};base64,${full.base64}` : null;
 
   return (
-    <View style={[styles.bubble, styles.imageBubble, outgoing ? styles.bubbleOut : styles.bubbleIn]}>
+    <View
+      style={[styles.bubble, styles.imageBubble, outgoing ? styles.bubbleOut : styles.bubbleIn]}
+    >
       <Pressable
         onPress={onTap}
         disabled={presentation.affordance === "none"}

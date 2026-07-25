@@ -10,6 +10,8 @@ export default tseslint.config(
       "**/target/**",
       "reference/**",
       "contracts/**",
+      // Agent session scratch (git-ignored, regenerates outside the repo's control).
+      ".remember/**",
     ],
   },
   js.configs.recommended,

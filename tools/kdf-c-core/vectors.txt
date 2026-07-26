@@ -1,0 +1,24 @@
+# CEMP vault KDF conformance vectors for the C KDF core (tools/kdf-c-core).
+#
+# Extracted verbatim from packages/cemp-secure-vault/src/kdf.test.ts
+# ("deriveKek known-answer tests"). Do not add or edit cases here — the TS
+# known-answer tests are the source of truth; change them there first.
+#
+# The passwords/salts below are PUBLIC test vectors (not secrets).
+#
+# Format, one case per line (whitespace-separated, "#" starts a comment):
+#   name  alg  p1  p2  p3  outlen  password_hex  salt_hex  expected_hex
+#
+#   alg = argon2id: p1 = m (memory, KiB), p2 = t (iterations), p3 = p (lanes)
+#   alg = scrypt:   p1 = logN (N = 2^logN), p2 = r, p3 = p
+#   outlen in bytes; "-" denotes an empty password/salt.
+#
+# Production profiles (packages/cemp-secure-vault/src/kdf.ts defaults):
+#   argon2id m=65536 KiB (64 MiB), t=3, p=1  (RFC 9106 first recommendation)
+#   scrypt   logN=17, r=8, p=1               (key-vault-wasm profile)
+# The pinned KATs use smaller parameters for speed; the same code path and
+# outlen (KEK_BYTES = 32) apply at production strength.
+argon2id-m32-t2-p1   argon2id 32 2 1  32 63656d702d7661756c742d746573742d70617373776f7264 000102030405060708090a0b0c0d0e0f e9461e95231ad67145ae9d19b203fe9d6c471869233d8a07c9dfa2917235ee10
+argon2id-m64-t3-p1   argon2id 64 3 1  32 63656d702d7661756c742d746573742d70617373776f7264 000102030405060708090a0b0c0d0e0f 495e09a32a7af5270bfc08477185c77156430d0a9bbea396da3fbccd4b6e9422
+scrypt-rfc7914-v1    scrypt   4  1 1  32 - - 77d6576238657b203b19ca42c18a0497f16b4844e3074ae8dfdffa3fede21442
+scrypt-rfc7914-v2    scrypt   10 8 16 32 70617373776f7264 4e61436c fdbabe1c9d3472007856e7190d01e9fe7c6ad7cbc8237830e77376634b373162

@@ -22,9 +22,14 @@
  *   the signed wire transaction so a resume can rebroadcast, never wedge.
  * - 7: one attachment per message (review follow-up) — UNIQUE INDEX on
  *   attachments(message_id) enforces the spec's single-attachment rule.
+ * - 8: attachments.attachment_key (review follow-up) — the envelope-derived
+ *   incoming attachment key is persisted at discovery (rule 3: the database
+ *   is encrypted). Chain re-derivation depended on the sender-reclaimable
+ *   message cell (rule 9), which let the sender permanently brick the
+ *   receiver's tap-to-download after ack.
  */
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [

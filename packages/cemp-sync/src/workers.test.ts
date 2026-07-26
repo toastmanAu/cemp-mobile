@@ -10,7 +10,12 @@ import {
 } from "@cemp/ckb";
 import { CempClient, type JsonRpcTransport } from "@cemp/ckb";
 import { MockCkbClient, fillHex, hashFromRpcBody } from "@cemp/ckb/testing";
-import { deriveIdentityKeys, mldsaV2KeygenFromSeed, mnemonicToSeed } from "@cemp/crypto";
+import {
+  deriveIdentityKeys,
+  decryptEnvelope,
+  mldsaV2KeygenFromSeed,
+  mnemonicToSeed,
+} from "@cemp/crypto";
 import {
   AttachmentRepository,
   BalanceRepository,
@@ -664,6 +669,35 @@ describe("processDiscoveredCell image branch (Task 12)", () => {
       expect(decoded.plaintext_size).toBe(manifest.plaintext_size);
       expect(decoded.width).toBe(manifest.width);
       expect(decoded.height).toBe(manifest.height);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("persists the envelope-derived attachment key with the manifest row (schema v8)", async () => {
+    // Sender-reclaim griefing fix: the key the download path needs must be in
+    // the encrypted DB, not re-derivable only from the sender-reclaimable
+    // message cell (rules 9 + 8).
+    const manifest = validDiscoveryManifest(13, true, 1);
+    const { json } = discoveryAttachmentCellJson(manifest);
+    // The expected key is the one derivable from THIS envelope — the same
+    // decryption the worker performs (test fixture material, not a log).
+    const cellData = hexToBytes((json as { output_data: string }).output_data);
+    const expectedKey = decryptEnvelope({
+      envelopeBytes: cellData,
+      recipientKemSecretKey: BOB.mlKem.secretKey,
+      ownProfileId: BOB_PROFILE_ID,
+    }).attachmentKey;
+    const stack = await makeStack({ cells: [json] });
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const received = await stack.messages.listByState(["received"]);
+      expect(received).toHaveLength(1);
+      const rows = await stack.deps.attachments.listForMessage(received[0]!.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.attachmentKey).not.toBeNull();
+      expect(rows[0]!.attachmentKey!.length).toBe(32);
+      expect(Array.from(rows[0]!.attachmentKey!)).toEqual(Array.from(expectedKey));
     } finally {
       await stack.db.close();
     }

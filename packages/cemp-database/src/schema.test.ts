@@ -7,8 +7,9 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v7: one attachment per message (UNIQUE attachments.message_id).
-    expect(SCHEMA_VERSION).toBe(7);
+    // v8: attachments.attachment_key — incoming attachment keys persisted at
+    // discovery (sender-reclaim griefing fix).
+    expect(SCHEMA_VERSION).toBe(8);
   });
 
   it("covers the spec §11 core tables", () => {

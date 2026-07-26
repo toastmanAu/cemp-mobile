@@ -22,6 +22,7 @@ import { CempClient, MessagePublisher, type LiveCellStatus } from "@cemp/ckb";
 import { CKB_TESTNET, codec } from "@cemp/core";
 import { EphemeralSoftwareKeyStore, MemoryVaultStorage, SecureVaultImpl } from "@cemp/secure-vault";
 import {
+  AttachmentRepository,
   ContactRepository,
   ConversationRepository,
   MessageRepository,
@@ -86,6 +87,63 @@ describe("MessagingService.init background scheduling", () => {
 });
 
 describe("MessagingService.deriveIncomingAttachmentKey (Task 15a receive-side crux)", () => {
+  it("prefers the key persisted at discovery (schema v8) — no chain call, returns a wipe-safe copy", async () => {
+    const vault = await unlockedTestVault();
+    const db = new NodeSqliteAdapter();
+    const scheduler = new InMemoryScheduler();
+
+    const service = await MessagingService.init({
+      vault,
+      db,
+      notifier: new NoopNotifier(),
+      scheduler,
+    });
+
+    // A post-v8 incoming image row: the discovery worker stored the
+    // envelope-derived key alongside the manifest.
+    const contacts = new ContactRepository(db);
+    const conversations = new ConversationRepository(db);
+    const messages = new MessageRepository(db);
+    const attachments = new AttachmentRepository(db);
+    const contact = await contacts.create({ displayName: "sender", profileIdHex: "9".repeat(64) });
+    const conversation = await conversations.getOrCreateForContact(contact.id);
+    const row = await messages.insert({
+      conversationId: conversation.id,
+      direction: "incoming",
+      body: "",
+      logicalMessageId: "stored-attachment-key-test",
+    });
+    const storedKey = randomBytes(32);
+    await attachments.create({
+      messageId: row.id,
+      kind: "image",
+      byteLength: 100,
+      attachmentKey: storedKey,
+    });
+
+    // The stored key must resolve WITHOUT touching the chain — the whole
+    // point of the fix is that the sender may have reclaimed the message
+    // cell (rule 9), so getLiveCell would be useless here anyway.
+    const spy = vi.spyOn(CempClient.prototype, "getLiveCell");
+    onTestFinished(() => {
+      spy.mockRestore();
+    });
+
+    try {
+      const derivedKey = await service.deriveIncomingAttachmentKey(row.id);
+      expect(spy).not.toHaveBeenCalled();
+      expect(Array.from(derivedKey)).toEqual(Array.from(storedKey));
+      // The returned buffer is a COPY: downloadImageAttachment wipes it in
+      // `finally`, and that wipe must not zero the persisted key.
+      derivedKey.fill(0);
+      const secondRead = await service.deriveIncomingAttachmentKey(row.id);
+      expect(Array.from(secondRead)).toEqual(Array.from(storedKey));
+      secondRead.fill(0);
+    } finally {
+      await db.close();
+    }
+  });
+
   it("re-derives the byte-identical attachment key the sender used, from a real stored envelope", async () => {
     const vault = await unlockedTestVault();
     const db = new NodeSqliteAdapter();
@@ -172,6 +230,15 @@ describe("MessagingService.deriveIncomingAttachmentKey (Task 15a receive-side cr
     });
     const fakeTxHash = `0x${"ab".repeat(32)}`;
     await messages.setChainRef(row.id, { txHash: fakeTxHash, outpointIndex: 0 });
+    // Legacy pre-v8 row shape: an attachment row exists (manifest stored at
+    // discovery) but its attachment_key is NULL — the stored-key path must
+    // pass it by and fall back to chain re-derivation.
+    await new AttachmentRepository(db).create({
+      messageId: row.id,
+      kind: "image",
+      byteLength: 100,
+      manifest: new Uint8Array([1]),
+    });
 
     // FAKE client (task instruction): `CempClient#getLiveCell` is a plain
     // prototype method, and `MessagingService` builds its own `CempClient`
@@ -194,6 +261,8 @@ describe("MessagingService.deriveIncomingAttachmentKey (Task 15a receive-side cr
       const derivedKey = await service.deriveIncomingAttachmentKey(row.id);
       expect(Array.from(derivedKey)).toEqual(Array.from(sendKey));
       expect(derivedKey.length).toBe(32);
+      // No stored key on the legacy row → the chain re-derivation ran.
+      expect(spy).toHaveBeenCalledTimes(1);
     } finally {
       await db.close();
     }

@@ -231,6 +231,11 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "attachments: one row per message — UNIQUE(message_id) (review follow-up)",
     statements: ["CREATE UNIQUE INDEX attachments_message_id ON attachments(message_id)"],
   },
+  {
+    version: 8,
+    description: "attachments: persist the incoming attachment key (sender-reclaim griefing fix)",
+    statements: ["ALTER TABLE attachments ADD COLUMN attachment_key BLOB"],
+  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

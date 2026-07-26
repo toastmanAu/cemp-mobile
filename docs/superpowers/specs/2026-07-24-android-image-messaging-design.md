@@ -93,6 +93,22 @@ publish/journal/state-machine machinery.
 3. **Tap → download** — `downloadAttachment(...)`: pull chunk cells, `checkManifest`
    (pre-download bomb guard on declared size/count), decrypt, verify content hash,
    `sniffImageFormat` on the plaintext (untrusted mime), display full-res.
+
+   **Amended 2026-07-26 (review finding — receiver griefing):** the tap-to-download
+   key originally came from RE-DERIVING the attachment key out of the message cell's
+   envelope at tap time (the §9.2/§9.4 "attachment key is never stored" decision: the
+   key was treated as a decrypt-time secret, recomputed on demand from the live cell).
+   That decision predates the discovery that re-derivation depends on the message cell
+   still being LIVE — and rule 9 lets the SENDER reclaim that cell after ack. The
+   normal ack→reclaim lifecycle (or a malicious sender) therefore permanently bricked
+   the receiver's tap-to-download: the row and thumbnail survived (rule 8) but the full
+   image became undownloadable — history retained but not usable, against the spirit of
+   rule 8. The attachment key is now PERSISTED IN THE ENCRYPTED APPLICATION DATABASE
+   AT DISCOVERY (schema v8, `attachments.attachment_key`): rule-3 compliant, since the
+   encrypted DB already holds the message plaintext itself. Chain re-derivation remains
+   only as the fallback for pre-v8 rows. (The SEND-side key is still never persisted —
+   see retry economics below.)
+
 4. **Reclaim** — sender's chunk cells reclaim via `reclaimAttachmentGroup` after ack,
    same as text. **Amended 2026-07-25 (T17 finding F-2):** "existing path" was wrong —
    the function had no production caller and chunk cells were never reclaimed (proven

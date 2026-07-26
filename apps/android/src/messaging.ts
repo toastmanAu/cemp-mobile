@@ -497,13 +497,29 @@ export class MessagingService {
   }
 
   /**
-   * Re-derive the attachment key for one already-received image message
-   * (Task 15a; spec §9.2/§9.4 "attachment key is never stored"). The key is
-   * a decrypt-time secret — it is recomputed on demand from the stored
-   * message cell rather than persisted, so a caller must wipe it after
+   * Resolve the attachment key for one already-received image message (Task
+   * 15a; spec §9.2/§9.4). Amended key discipline (2026-07-26): the key is
+   * persisted in the ENCRYPTED application database at discovery (rule 3) —
+   * the original "never stored" decision predates the discovery that chain
+   * re-derivation depends on the message cell, which the sender can reclaim
+   * after ack (rule 9), permanently bricking tap-to-download even though the
+   * history row survives (rule 8). The stored key is preferred; re-deriving
+   * from the live message cell remains the fallback for pre-v8 rows. The key
+   * is a decrypt-time secret either way — a caller must wipe it after
    * `downloadAttachment` finishes with it.
    */
   async deriveIncomingAttachmentKey(messageId: number): Promise<Uint8Array> {
+    const stored = (await this.#attachments.listForMessage(messageId)).find(
+      (a) => a.attachmentKey !== null,
+    );
+    if (stored?.attachmentKey != null) {
+      // Return a COPY: downloadImageAttachment wipes the returned buffer in
+      // `finally`, and that wipe must not zero the repository row's bytes.
+      return stored.attachmentKey.slice();
+    }
+    // Legacy fallback (pre-v8 rows, or a row stored before the key column
+    // existed): re-derive from the message cell — requires it to still be
+    // live on-chain, which a sender-side reclaim may have ended.
     const ref = await this.#messages.getChainRef(messageId);
     if (ref === undefined || ref.txHash === null || ref.outpointIndex === null) {
       throw new Error(
@@ -531,8 +547,9 @@ export class MessagingService {
    * Download + decrypt one incoming image attachment (Task 15b; spec §9.4
    * tap-to-download). Centralizes the two secrets the screen must never
    * touch directly: the `CempClient` used to fetch chunk cells, and the
-   * per-message attachment key derived from the stored envelope. The key is
-   * wiped as soon as `downloadAttachment` returns, success or failure.
+   * per-message attachment key (from the encrypted database, falling back to
+   * the stored envelope for legacy rows). The key is wiped as soon as
+   * `downloadAttachment` returns, success or failure.
    */
   async downloadImageAttachment(
     messageId: number,

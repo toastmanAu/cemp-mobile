@@ -65,6 +65,69 @@ describe("migrate", () => {
     }
   });
 
+  it("v7→v8: adds attachments.attachment_key; pre-existing rows get NULL", async () => {
+    const db = new NodeSqliteAdapter();
+    try {
+      // Build a v7 database by hand (the on-device pre-upgrade state): apply
+      // migrations 1..7 with their bookkeeping stamps, then let migrate()
+      // take it from there.
+      await db.exec(`CREATE TABLE IF NOT EXISTS cemp_schema_migrations (
+        version INTEGER PRIMARY KEY,
+        description TEXT NOT NULL,
+        applied_at_ms INTEGER NOT NULL
+      )`);
+      for (const migration of MIGRATIONS.filter((m) => m.version <= 7)) {
+        for (const statement of migration.statements) {
+          await db.exec(statement);
+        }
+        await db.run(
+          "INSERT INTO cemp_schema_migrations (version, description, applied_at_ms) VALUES (?, ?, ?)",
+          [migration.version, migration.description, Date.now()],
+        );
+      }
+      expect(await currentSchemaVersion(db)).toBe(7);
+      // A pre-v8 attachment row (FK chain contact → conversation → message).
+      await db.run(
+        "INSERT INTO contacts (display_name, created_at_ms, updated_at_ms) VALUES (?, ?, ?)",
+        ["alice", 1, 1],
+      );
+      await db.run(
+        "INSERT INTO conversations (contact_id, created_at_ms, last_activity_at_ms) VALUES (?, ?, ?)",
+        [1, 1, 1],
+      );
+      await db.run(
+        "INSERT INTO messages (conversation_id, direction, state, body, logical_message_id, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [1, "incoming", "received", "", "lm-v8-upgrade", 1, 1],
+      );
+      await db.run(
+        "INSERT INTO attachments (message_id, kind, byte_length, state, created_at_ms) VALUES (?, ?, ?, ?, ?)",
+        [1, "image", 100, "pending", 1],
+      );
+
+      await migrate(db);
+
+      expect(await currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
+      const columns = await db.all("PRAGMA table_info(attachments)");
+      expect(columns.map((c) => String(c.name))).toContain("attachment_key");
+      // The pre-v8 row survives untouched: no key was ever derivable offline,
+      // so the column stays NULL (the chain re-derivation fallback covers it).
+      const row = await db.get("SELECT attachment_key FROM attachments WHERE message_id = ?", [1]);
+      expect(row?.attachment_key).toBeNull();
+      // And the column accepts key material going forward.
+      await db.run("UPDATE attachments SET attachment_key = ? WHERE message_id = ?", [
+        new Uint8Array(32).fill(7),
+        1,
+      ]);
+      const keyed = await db.get(
+        "SELECT attachment_key FROM attachments WHERE message_id = ?",
+        [1],
+      );
+      expect(keyed?.attachment_key).toEqual(new Uint8Array(32).fill(7));
+    } finally {
+      await db.close();
+    }
+  });
+
   it("refuses a database stamped with an unknown (newer) version", async () => {
     const db = new NodeSqliteAdapter();
     try {

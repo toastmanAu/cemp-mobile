@@ -315,6 +315,64 @@ describe("repositories", () => {
     expect(await attachments.listForMessage(m.id)).toHaveLength(1);
   });
 
+  it("attachment key round-trips as a BLOB; absent without a key (schema v8)", async () => {
+    const alice = await makeContact();
+    const conv = await conversations.getOrCreateForContact(alice.id);
+    const insert = (logicalMessageId: string) =>
+      messages.insert({
+        conversationId: conv.id,
+        direction: "incoming",
+        body: "",
+        logicalMessageId,
+      });
+    const keyed = await attachments.create({
+      messageId: (await insert("att-key-1")).id,
+      kind: "image",
+      byteLength: 100,
+      manifest: new Uint8Array([1]),
+      attachmentKey: new Uint8Array(32).fill(0xab),
+    });
+    expect(keyed.attachmentKey).toEqual(new Uint8Array(32).fill(0xab));
+    const plain = await attachments.create({
+      messageId: (await insert("att-key-2")).id,
+      kind: "image",
+      byteLength: 100,
+    });
+    expect(plain.attachmentKey).toBeNull();
+    // The mapping survives a fresh read (listForMessage is the download
+    // path's lookup).
+    expect((await attachments.listForMessage(keyed.messageId))[0]!.attachmentKey).toEqual(
+      new Uint8Array(32).fill(0xab),
+    );
+  });
+
+  it("attachment re-create REFRESHES the stored key (upsert semantics, schema v8)", async () => {
+    const alice = await makeContact();
+    const conv = await conversations.getOrCreateForContact(alice.id);
+    const m = await messages.insert({
+      conversationId: conv.id,
+      direction: "incoming",
+      body: "",
+      logicalMessageId: "att-key-refresh",
+    });
+    await attachments.create({
+      messageId: m.id,
+      kind: "image",
+      byteLength: 100,
+      attachmentKey: new Uint8Array(32).fill(1),
+    });
+    // A re-create carries the freshest derivation of the same message's key,
+    // so the update path replaces the stored bytes rather than preserving a
+    // stale copy (same deliberate choice as the manifest columns in v7).
+    const refreshed = await attachments.create({
+      messageId: m.id,
+      kind: "image",
+      byteLength: 100,
+      attachmentKey: new Uint8Array(32).fill(2),
+    });
+    expect(refreshed.attachmentKey).toEqual(new Uint8Array(32).fill(2));
+  });
+
   it("listForMessages batches the per-message lookup (chat reload, no N+1)", async () => {
     const alice = await makeContact();
     const conv = await conversations.getOrCreateForContact(alice.id);

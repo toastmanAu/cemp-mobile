@@ -1,10 +1,17 @@
 /**
  * Attachment repository (spec Phase 6 task 5).
  *
- * Metadata + chunk bookkeeping only — attachment bytes never enter the
+ * Metadata + chunk bookkeeping only — attachment BYTES never enter the
  * database (they live in the encrypted attachment directory, spec §3; chunk
  * cells land in Phase 10). The manifest is the encrypted CEMP attachment
  * manifest blob (spec §10).
+ *
+ * The one secret held here is `attachmentKey` (schema v8): the
+ * envelope-derived 32-byte AES key for an INCOMING image, persisted at
+ * discovery so tap-to-download survives the sender reclaiming the message
+ * cell after ack (rule 9). Storing it is rule-3 compliant — this database is
+ * encrypted and already holds the message plaintext. Outgoing keys are never
+ * persisted (the send retry path re-encrypts, §9.2).
  */
 
 import type { SqliteAdapter, SqlRow } from "../adapter.js";
@@ -17,6 +24,12 @@ export interface Attachment {
   readonly byteLength: number;
   readonly state: string;
   readonly manifest: Uint8Array | null;
+  /**
+   * The envelope-derived 32-byte attachment key for an incoming image
+   * (schema v8; SECRET — lives only inside the encrypted database, rule 3).
+   * Null for text messages, outgoing attachments, and pre-v8 rows.
+   */
+  readonly attachmentKey: Uint8Array | null;
   readonly createdAtMs: number;
 }
 
@@ -38,6 +51,10 @@ function rowToAttachment(row: SqlRow): Attachment {
     state: String(row.state),
     manifest:
       row.manifest === null || row.manifest === undefined ? null : (row.manifest as Uint8Array),
+    attachmentKey:
+      row.attachment_key === null || row.attachment_key === undefined
+        ? null
+        : (row.attachment_key as Uint8Array),
     createdAtMs: Number(row.created_at_ms),
   };
 }
@@ -69,8 +86,11 @@ export class AttachmentRepository {
   /**
    * Create the attachment row for a message. Idempotent per message (schema
    * v7 enforces one attachment per message, spec §3): re-creating for the
-   * same message updates kind/size/manifest in place — the state and the
-   * original creation time are preserved — and returns the existing row.
+   * same message updates kind/size/manifest/attachment_key in place — the
+   * state and the original creation time are preserved — and returns the
+   * existing row. The attachment key REPLACEMENT is deliberate: a re-create
+   * always carries the freshest derivation of the same message's key, so
+   * refreshing it can never strand the download path on a stale key.
    */
   async create(input: {
     messageId: number;
@@ -78,21 +98,25 @@ export class AttachmentRepository {
     byteLength: number;
     state?: string;
     manifest?: Uint8Array;
+    /** 32-byte incoming attachment key (schema v8; secret, stored as BLOB). */
+    attachmentKey?: Uint8Array;
   }): Promise<Attachment> {
     const now = Date.now();
     await this.#db.run(
-      `INSERT INTO attachments (message_id, kind, byte_length, state, manifest, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO attachments (message_id, kind, byte_length, state, manifest, attachment_key, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (message_id) DO UPDATE SET
          kind = excluded.kind,
          byte_length = excluded.byte_length,
-         manifest = excluded.manifest`,
+         manifest = excluded.manifest,
+         attachment_key = excluded.attachment_key`,
       [
         input.messageId,
         input.kind,
         input.byteLength,
         input.state ?? "pending",
         input.manifest ?? null,
+        input.attachmentKey ?? null,
         now,
       ],
     );

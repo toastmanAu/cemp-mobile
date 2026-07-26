@@ -239,31 +239,42 @@ async function processDiscoveredCell(
   // (thumbnail embedded) so the bubble renders immediately with no fetch. The
   // full-res chunk download is deferred to a user tap (downloadAttachment).
   //
+  // The envelope-derived attachment key is persisted WITH the manifest row
+  // (schema v8; rule 3 — the database is encrypted). Re-deriving it at tap
+  // time from the message cell depended on that cell still being live, which
+  // the SENDER controls (rule 9 reclaim after ack) — a reclaimed cell
+  // permanently bricked tap-to-download even though the row survived
+  // (rule 8). The in-memory copy is wiped right after it is stored.
+  //
   // Discovery persists no cursor (see the comment in runIncomingDiscovery), so
   // the same cell is re-scanned on every worker tick, and a healed/stranded
   // row can also re-enter this function — guard on existing rows (the same
   // check-before-create idempotency pattern queueAcknowledgement uses) so a
   // manifest is persisted exactly once per message.
-  if (
-    incoming.attachmentManifests.length > 0 &&
-    (await deps.attachments.listForMessage(inserted.id)).length === 0
-  ) {
-    for (const manifest of incoming.attachmentManifests) {
-      // Rule 4 receive-side hardening: the manifest is validated BEFORE it is
-      // persisted (the same checkManifest the download path runs). A hostile
-      // manifest — decompression-bomb sizes, a chunk count that doesn't match
-      // the declared ciphertext — never reaches the attachments table: the
-      // message stays a plain row and the worker carries on.
-      if (!checkManifest(manifest).ok) {
-        continue;
+  if (incoming.attachmentManifests.length > 0) {
+    if ((await deps.attachments.listForMessage(inserted.id)).length === 0) {
+      for (const manifest of incoming.attachmentManifests) {
+        // Rule 4 receive-side hardening: the manifest is validated BEFORE it is
+        // persisted (the same checkManifest the download path runs). A hostile
+        // manifest — decompression-bomb sizes, a chunk count that doesn't match
+        // the declared ciphertext — never reaches the attachments table: the
+        // message stays a plain row and the worker carries on.
+        if (!checkManifest(manifest).ok) {
+          continue;
+        }
+        await deps.attachments.create({
+          messageId: inserted.id,
+          kind: "image",
+          byteLength: Number(manifest.plaintext_size),
+          manifest: codec.encodeAttachmentManifestV1(manifest),
+          attachmentKey: incoming.attachmentKey,
+        });
       }
-      await deps.attachments.create({
-        messageId: inserted.id,
-        kind: "image",
-        byteLength: Number(manifest.plaintext_size),
-        manifest: codec.encodeAttachmentManifestV1(manifest),
-      });
     }
+    // The key now lives in the encrypted database (or the row was already
+    // persisted on an earlier scan); drop the in-memory copy either way
+    // (processAcknowledgements below only reads `incoming.receipts`).
+    incoming.attachmentKey.fill(0);
   }
   // Idempotent insert collapses duplicates: an already-received row needs no
   // transition, but its receipts are processed EVERY time (review E8 — a

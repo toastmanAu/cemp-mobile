@@ -1,0 +1,16 @@
+diff --git a/minimatch.js b/minimatch.js
+index 2e4a058a130dceebf83a7bd435f5d22b765ac836..2cfe7e43b49537b3bf7b6ee6304191220cca04c2 100644
+--- a/minimatch.js
++++ b/minimatch.js
+@@ -8,6 +8,11 @@ minimatch.sep = path.sep
+ 
+ var GLOBSTAR = minimatch.GLOBSTAR = Minimatch.GLOBSTAR = {}
+ var expand = require('brace-expansion')
++// brace-expansion >=2 exports { expand } instead of a bare function (the
++// repo's GHSA-mh99-v99m-4gvg override pins 5.0.8); accept both shapes.
++if (typeof expand !== 'function') {
++  expand = expand.expand || expand.default
++}
+ 
+ var plTypes = {
+   '!': { open: '(?:(?!(?:', close: '))[^/]*?)'},

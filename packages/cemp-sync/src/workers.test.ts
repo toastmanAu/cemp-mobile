@@ -810,6 +810,81 @@ describe("pending-transactions worker (exit criterion 2)", () => {
     }
   });
 
+  it("reserves the journaled capacity when the submitted-scan finalizes a commit (M-2)", async () => {
+    // The worker (not the publish monitor) advances the message to
+    // available_on_chain, so it must also do the monitor's reserve — or the
+    // later ack's markCapacityReclaimable fires against an unfunded bucket.
+    const stack = await makeStack();
+    try {
+      const capacity = fixedPointFrom(500);
+      await stack.deps.balances.setChainBalances(
+        stack.deps.walletId,
+        capacity * 10n,
+        capacity * 10n,
+      );
+      const conv = await stack.conversations.getOrCreateForContact(
+        (await stack.contacts.create({ displayName: "alice" })).id,
+      );
+      const message = await stack.messages.insert({
+        conversationId: conv.id,
+        direction: "outgoing",
+        body: "in flight",
+        logicalMessageId: "lm-reserve-scan",
+        state: "pending",
+      });
+      await stack.outgoingTxs.record({
+        txHash: fillHex(0xac, 32),
+        purpose: "message:lm-reserve-scan",
+        state: "submitted",
+        capacityShannon: capacity.toString(),
+      });
+
+      expect(await stack.engine.runWorker("pending-transactions")).toBe("success");
+      expect((await stack.messages.getById(message.id))?.state).toBe("available_on_chain");
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reservedShannon).toBe(capacity);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("reserves the journaled capacity when healing a stranded message (M-2)", async () => {
+    const stack = await makeStack();
+    try {
+      const capacity = fixedPointFrom(500);
+      await stack.deps.balances.setChainBalances(
+        stack.deps.walletId,
+        capacity * 10n,
+        capacity * 10n,
+      );
+      const conv = await stack.conversations.getOrCreateForContact(
+        (await stack.contacts.create({ displayName: "alice" })).id,
+      );
+      const message = await stack.messages.insert({
+        conversationId: conv.id,
+        direction: "outgoing",
+        body: "stranded",
+        logicalMessageId: "lm-reserve-strand",
+        state: "pending",
+      });
+      // The tx already committed (the monitor was interrupted before it
+      // could reserve), so only the stranded heal revisits the row.
+      await stack.outgoingTxs.record({
+        txHash: fillHex(0xad, 32),
+        purpose: "message:lm-reserve-strand",
+        state: "committed",
+        capacityShannon: capacity.toString(),
+      });
+
+      expect(await stack.engine.runWorker("pending-transactions")).toBe("success");
+      expect((await stack.messages.getById(message.id))?.state).toBe("available_on_chain");
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reservedShannon).toBe(capacity);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
   it("applies a receipt to a message that is still pending when the pass starts", async () => {
     // runAllNow drains workers in REGISTRATION ORDER. With incoming-discovery
     // ahead of pending-transactions, a receipt arriving for a not-yet-ackable

@@ -492,6 +492,10 @@ async function runPendingTransactions(deps: SyncWorkerDeps): Promise<void> {
         if (message?.state === "pending") {
           await deps.messages.transitionState(message.id, "committed");
           await deps.messages.transitionState(message.id, "available_on_chain");
+          // Review M-2: the publish monitor that would have reserved the
+          // cell's capacity never ran — reserve now, or the later ack's
+          // markCapacityReclaimable fires against an unfunded bucket.
+          await deps.lifecycle.reserveCommittedCapacity(message.id);
         }
       }
     } else if (status.status === "rejected") {
@@ -517,6 +521,9 @@ async function runPendingTransactions(deps: SyncWorkerDeps): Promise<void> {
       await deps.messages.transitionState(message.id, "committed");
     }
     await deps.messages.transitionState(message.id, "available_on_chain");
+    // Review M-2: same reserve gap as the `submitted` scan above — the
+    // monitor was interrupted before it could reserve the cell's capacity.
+    await deps.lifecycle.reserveCommittedCapacity(message.id);
   }
 
   await healStrandedIncoming(deps);

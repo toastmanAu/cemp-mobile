@@ -180,6 +180,24 @@ export class ResponseLifecycle {
     return acked;
   }
 
+  /* ---------------- worker-driven commit finalization (review M-2) ------ */
+
+  /**
+   * Reserve a committed message cell's capacity when a WORKER (not the
+   * publish monitor) finalizes the commit: the pending-tx heal and the
+   * stranded-message heal advance rows to `available_on_chain` without the
+   * monitor, so the reserve the monitor would have done must happen here —
+   * otherwise the later ack's markCapacityReclaimable fires against an
+   * unfunded reserved bucket. No-op when the journal carries no capacity
+   * (legacy rows).
+   */
+  async reserveCommittedCapacity(rowId: number): Promise<void> {
+    const journal = await this.#deps.store.getMessageJournalInfo(rowId);
+    if (journal?.capacityShannon != null && journal.capacityShannon !== "0") {
+      await this.#deps.store.reserveCapacity(journal.capacityShannon);
+    }
+  }
+
   /* ------------------------------------- B) batch reclaim (tasks 6–8) -- */
 
   /**

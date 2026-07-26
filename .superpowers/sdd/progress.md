@@ -394,3 +394,10 @@ presentation on a real device is a first-device checklist item. Image-side
 native modules are now COMPLETE on iOS (kdf, codec, picker). Remaining:
 BGTaskScheduler bridge, keystore/storage adapters + app-container wiring,
 device deployment.
+
+iOS app wiring (2026-07-26, 75baa20): Platform.OS seam selection — one
+composition root serves both platforms; iOS gets the mirrored bridge classes
+(keystore/kdf/codec/scheduler), NoopNotifier (v1: foreground catch-up is the
+primary sync path), no-op notification permission; headless task registers
+on Android only. 639 vitest; iOS Metro bundle verified (10.9 MB, headless
+registration constant-folded out on iOS).

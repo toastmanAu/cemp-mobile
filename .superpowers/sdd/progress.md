@@ -374,3 +374,7 @@ either-way test contract covers devices whose ImageIO does encode webp.
 Remaining ios-prep: PHPicker bridge, BGTaskScheduler bridge, keystore/
 storage iOS adapters, iOS app-container wiring, device deployment (needs
 signing secrets).
+
+Follow-up (2026-07-26): pinned Ruby 3.3 in ios-build.yml (dca25b2) after the
+CocoaPods null-byte flake (CocoaPods/CocoaPods#12798) burned all 3 retries on
+main; ios-build on main green since (run 30194390437).

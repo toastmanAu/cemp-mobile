@@ -11,19 +11,6 @@ permissions:
 
 on:
   workflow_dispatch:
-  # Temporary while this file lives only on feat/ios-target: workflow_dispatch
-  # requires the workflow on the default branch, so pushes to the branch drive
-  # the iteration loop instead. Remove the push trigger once merged to main.
-  push:
-    branches: [feat/ios-target]
-    paths:
-      - .github/workflows/ios-build.yml
-      - apps/android/ios/**
-      - apps/android/package.json
-      - apps/android/metro.config.js
-      - apps/android/react-native.config.js
-      - tools/kdf-c-core/**
-      - pnpm-lock.yaml
 
 jobs:
   build:

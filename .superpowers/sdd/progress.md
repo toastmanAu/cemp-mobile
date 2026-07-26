@@ -417,3 +417,22 @@ expiration → failure. ios-prep remaining: CI simulator boot smoke, then
 device deployment (signing secrets + first-device smoke list). CI notes:
 UTF-8 locale + 5 retries for the CocoaPods null-byte flake; gem install
 cocoapods under the pinned Ruby 3.3 (the bare pin was ineffective).
+
+## Phase 12 remote part 5 (2026-07-27): CellSend BOOTS ON iOS (simulator smoke GREEN)
+
+CI boot smoke (feat/ios-simulator-smoke, merged 51013dc; run 30208597658):
+Debug build + on-runner Metro → simctl install/launch com.cempmobile on a
+booted iPhone 16e → assertions: Metro serves index.bundle within 180 s with
+no Metro ERROR, app process alive 15 s post-load, no crash reports/exceptions.
+Screenshot artifact verified by parent: the CellSend "Set up your wallet"
+vault screen renders (fresh-install create variant — correct end state) —
+native boot → polyfills → seam wiring → real UI, all proven. One CI gap
+fixed en route (2b9ccd1): the workflow now runs pnpm build before Metro
+(@cemp/* export dist/, Metro's exports-resolution fails without it; the
+fallback-legacy-resolution warning is the tell if Metro is ever run
+unbuilt). ios-prep items now DONE: all 7 preconditions + boot proof.
+Remaining for device: signing secrets (App ID com.cempmobile + dev profile
+in the Apple account — user action), release-bundle boot variant
+(main.jsbundle embedded, untested), first-device checklist (runtime
+CempKdf smoke, vault round-trip, op-sqlite header check, PHPicker
+presentation, real BGTask delivery).

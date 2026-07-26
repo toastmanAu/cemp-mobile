@@ -57,11 +57,11 @@ NS_ASSUME_NONNULL_BEGIN
   return self;
 }
 
-- (void (^)(void))expirationHandler {
+- (void (^ _Nullable)(void))expirationHandler {
   return _task.expirationHandler;
 }
 
-- (void)setExpirationHandler:(void (^)(void))handler {
+- (void)setExpirationHandler:(void (^ _Nullable)(void))handler {
   _task.expirationHandler = handler;
 }
 

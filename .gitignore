@@ -51,3 +51,6 @@ apps/reference-client/.cemp-state/
 
 # Ad-hoc local diagnostics (hardcoded testnet ids/addresses; not tooling)
 *.local.mts
+apps/android/ios/build/
+apps/android/ios/.xcode.env.local
+apps/android/ios/**/xcuserdata/

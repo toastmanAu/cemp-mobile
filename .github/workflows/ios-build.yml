@@ -1,0 +1,56 @@
+name: iOS Build (validate)
+
+# Remote macOS iteration loop for the Phase 12 iOS target: compiles the RN
+# iOS app on macos-26 WITHOUT signing (CODE_SIGNING_ALLOWED=NO) so native
+# work needs no App Store secrets. Dispatch-only — macOS minutes are spent
+# deliberately. Release/signing mode comes with device deployment (see
+# docs/architecture/ios-prep.md).
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The iOS pods consume the same workspace install as every other gate
+      # (react-native resolves through the pnpm store from the Podfile).
+      - run: pnpm install --frozen-lockfile
+
+      - name: CocoaPods install
+        run: pod install --project-directory=apps/android/ios 2>&1 | tee "$RUNNER_TEMP/pod-install.log"
+
+      - name: xcodebuild (unsigned, simulator)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -workspace apps/android/ios/CempMobile.xcworkspace \
+            -scheme CempMobile \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Upload build logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-build-logs-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/pod-install.log
+            ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: warn
+          retention-days: 14

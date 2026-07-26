@@ -64,7 +64,7 @@
 
     size_t hexLen = (size_t)outlen * 2 + 1;
     char *got = malloc(hexLen);
-    XCTAssertNotNil(got);
+    XCTAssertTrue(got != NULL);
     int rc;
     if ([alg isEqualToString:@"argon2id"]) {
       rc = cemp_kdf_argon2id_hex(passwordHex.UTF8String, saltHex.UTF8String,

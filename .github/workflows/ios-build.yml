@@ -30,6 +30,11 @@ jobs:
       # (react-native resolves through the pnpm store from the Podfile).
       - run: pnpm install --frozen-lockfile
 
+      # Metro resolves the @cemp/* workspace packages through their
+      # "exports" maps, which point at dist/ (tsc output) — without this the
+      # boot-smoke bundle fails with "invalid package.json configuration".
+      - run: pnpm build
+
       # Pin Ruby: the macos runner's default Ruby intermittently kills
       # CocoaPods with "pathname contains null byte"
       # (CocoaPods/CocoaPods#12798 — reports say 3.2/3.3 are unaffected).
@@ -148,12 +153,14 @@ jobs:
           touch "$RUNNER_TEMP/smoke-marker"
           xcrun simctl launch "$UDID" com.cempmobile
 
-          # Assertion 1: Metro really serves the JS bundle TO THE APP.
+          # Assertion 1: Metro really serves the JS bundle TO THE APP. The
+          # request URL is /index.bundle; Metro's own log line is
+          # "BUNDLE ./index.js" once bundling starts — accept either.
           bundle_served=0
           for i in $(seq 1 90); do
-            if grep -qi "index.bundle" "$RUNNER_TEMP/metro.log"; then
+            if grep -qiE "index\.bundle|BUNDLE +\./index" "$RUNNER_TEMP/metro.log"; then
               bundle_served=1
-              echo "Metro served the bundle to the app"
+              echo "Metro received the app's bundle request"
               break
             fi
             sleep 2
@@ -161,6 +168,14 @@ jobs:
           if [ "$bundle_served" != "1" ]; then
             echo "FAIL: Metro never received the app's bundle request" >&2
             tail -30 "$RUNNER_TEMP/metro.log" >&2
+            exit 1
+          fi
+
+          # A bundle that errors leaves the app on a redbox — that is a boot
+          # failure even though the process stays alive.
+          if grep -q "ERROR" "$RUNNER_TEMP/metro.log"; then
+            echo "FAIL: Metro failed to build the bundle" >&2
+            grep -A8 "ERROR" "$RUNNER_TEMP/metro.log" | head -40 >&2
             exit 1
           fi
 

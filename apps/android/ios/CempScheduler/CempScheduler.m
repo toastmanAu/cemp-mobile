@@ -148,9 +148,11 @@ static __weak CempScheduler *ActiveInstance = nil;
     return;
   }
   NSInteger tickId = [engine nextTickId];
-  // The same entry the Android CempSyncWorker invokes; index.js registers
-  // "CempBackgroundSync" unchanged. The finish signal returns through the
-  // CempHeadlessTask module and completes this task via the engine.
+  // The same entry the Android CempSyncWorker invokes. NOTE: index.js
+  // currently registers "CempBackgroundSync" on Android only (Platform.OS
+  // seam, 5e6ca11) — until that guard covers iOS, the invocation warns and
+  // returns without running the tick. The grace completion below is what
+  // settles the task in that state (no JS signal ever arrives).
   [jsModules invokeModule:@"AppRegistry"
                    method:@"startHeadlessTask"
                  withArgs:@[
@@ -158,6 +160,17 @@ static __weak CempScheduler *ActiveInstance = nil;
                    @"CempBackgroundSync",
                    @{@"tickId" : @(tickId)},
                  ]];
+  // Grace completion (the Kotlin worker's timeout-grace analogue): if no JS
+  // finish signal arrives within the grace window — wedged runtime, JS
+  // bundle failed to load, or no task registered — settle natively with
+  // success instead of burning the OS budget to expiration (a failure mark
+  // would only throttle future best-effort slots; foreground catch-up owns
+  // correctness either way). A JS signal that already arrived makes this a
+  // no-op (the engine's bookkeeping is empty by then).
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+    [engine notifyTickFinished];
+  });
 }
 
 static void SettleEngineCall(void (^call)(void (^)(NSError *)),

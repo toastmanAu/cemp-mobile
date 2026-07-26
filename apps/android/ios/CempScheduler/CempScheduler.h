@@ -19,9 +19,12 @@
  * BGTask fires the launch handler mints a tick id and, if the JS runtime is
  * reachable (callableJSModules present), invokes the SAME entry the Android
  * worker invokes — AppRegistry.startHeadlessTask(tickId,
- * "CempBackgroundSync", {tickId}) — which index.js already registers, so
- * apps/android/src needs no iOS branch. JS signals completion through the
- * CempHeadlessTask module (same as Android), which completes the BGTask.
+ * "CempBackgroundSync", {tickId}). CAVEAT: index.js currently registers
+ * that task on Android only (5e6ca11); until the guard covers iOS the
+ * invocation is a warn-and-return, and the 30-second grace completion in
+ * handleBackgroundTask is what settles the task. JS signals completion
+ * through the CempHeadlessTask module (same as Android), which completes
+ * the BGTask.
  * If the runtime is NOT reachable the task is completed natively,
  * immediately: background slots are best-effort accelerators and FOREGROUND
  * CATCH-UP owns correctness (ios-prep.md Task 3). A BGTask launch of a cold

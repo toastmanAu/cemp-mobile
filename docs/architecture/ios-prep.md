@@ -75,9 +75,14 @@ the Kotlin SCHEDULE_VERSION guard has no iOS equivalent (every fire and
 every unlock re-registers). Background-JS invocation, the honest v1: a
 fired BGTask delivers the tick via
 `AppRegistry.startHeadlessTask(tickId, "CempBackgroundSync", {tickId})` —
-the same entry index.js registers — when the JS runtime is reachable, and
-completes natively immediately when it is not (DEBUG without Metro, or any
-cold-runtime case; v1 does not attempt reliable cold-boot delivery).
+the same entry index.js registers on Android — when the JS runtime is
+reachable, and completes natively immediately when it is not (DEBUG without
+Metro, or any cold-runtime case; v1 does not attempt reliable cold-boot
+delivery). OPEN INTEGRATION POINT: index.js currently registers
+`"CempBackgroundSync"` on Android only (5e6ca11); until that Platform.OS
+guard covers iOS, delivery warns and returns without running JS — the
+module's 30-second grace completion settles the BGTask with success in
+that state (a failure mark would throttle future best-effort slots).
 Completion returns through `CempHeadlessTask.notifyTaskFinished` into the
 engine's bookkeeping; the BGTask expiration handler completes with failure.
 Headless engine XCTests cover request construction, KEEP idempotency,

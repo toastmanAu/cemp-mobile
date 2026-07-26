@@ -70,26 +70,30 @@ static NSError *CempPickError(CempImagePickerError code, NSString *message) {
 #pragma mark - Result processing
 
 - (void)processPickerResults:(nullable NSArray<NSItemProvider *> *)providers {
+  // Capture the pending completion NOW (the Kotlin onActivityResult
+  // semantics): the async load below settles exactly this pick. A result
+  // arriving with no pending pick is dropped immediately, and a slow load
+  // started by a stale result can never steal a newer pick's completion.
+  CempImagePickerCompletion completion = [self takePending];
+  if (completion == nil) {
+    return;
+  }
   if (providers.count == 0) {
     // User cancel (or no selection): resolve with no bytes — JS maps to null.
-    CempImagePickerCompletion completion = [self takePending];
-    if (completion != nil) {
-      completion(nil, nil);
-    }
+    completion(nil, nil);
     return;
   }
   NSItemProvider *provider = providers.firstObject;
   NSString *uti = [self preferredTypeIdentifierFor:provider];
   if (uti == nil) {
-    [self deliverError:CempPickError(CempImagePickerErrorRead,
-                                     @"could not read the selected image")];
+    completion(nil, CempPickError(CempImagePickerErrorRead,
+                                  @"could not read the selected image"));
     return;
   }
   // Load as public.data when possible: requesting an IMAGE type identifier
-  // routes through NSItemProvider's image coercion and can re-encode the
-  // bytes (observed in tests: a 161-byte PNG came back as 160 bytes). The
-  // picker must deliver the original file bytes — the codec pipeline owns
-  // re-encoding downstream. public.data vends the file untouched.
+  // can route through NSItemProvider's image coercion (re-encode), while
+  // the picker must deliver the original file bytes — the codec pipeline
+  // owns re-encoding downstream. public.data vends the file untouched.
   NSString *loadUti = [provider hasItemConformingToTypeIdentifier:@"public.data"]
       ? @"public.data"
       : uti;
@@ -101,16 +105,16 @@ static NSError *CempPickError(CempImagePickerError code, NSString *message) {
     if (loadError != nil || url == nil) {
       // Some providers only offer an in-memory representation; fall back to
       // data loading and apply the same cap after the fact.
-      [self loadDataFromProvider:provider uti:loadUti];
+      [self loadDataFromProvider:provider uti:loadUti completion:completion];
       return;
     }
     NSError *readError = nil;
     NSData *data = [self readCapped:url error:&readError];
     if (data == nil) {
-      [self deliverError:readError];
+      completion(nil, readError);
       return;
     }
-    [self deliverData:data];
+    completion([self hexStringFromData:data], nil);
   }];
 }
 
@@ -165,20 +169,22 @@ static NSError *CempPickError(CempImagePickerError code, NSString *message) {
   return out;
 }
 
-- (void)loadDataFromProvider:(NSItemProvider *)provider uti:(NSString *)uti {
+- (void)loadDataFromProvider:(NSItemProvider *)provider
+                         uti:(NSString *)uti
+                  completion:(CempImagePickerCompletion)completion {
   [provider loadDataRepresentationForTypeIdentifier:uti
                                   completionHandler:^(NSData *data, NSError *loadError) {
     if (loadError == nil && data != nil &&
         data.length <= (NSUInteger)CempImagePickerMaxPickBytes) {
-      [self deliverData:data];
+      completion([self hexStringFromData:data], nil);
       return;
     }
     if (loadError == nil && data != nil) {
-      [self deliverError:CempPickError(CempImagePickerErrorTooLarge,
-                                       @"the selected image is too large (over 64 MB)")];
+      completion(nil, CempPickError(CempImagePickerErrorTooLarge,
+                                    @"the selected image is too large (over 64 MB)"));
       return;
     }
-    [self loadImageObjectFromProvider:provider];
+    [self loadImageObjectFromProvider:provider completion:completion];
   }];
 }
 
@@ -189,10 +195,11 @@ static NSError *CempPickError(CempImagePickerError code, NSString *message) {
  * documented as a deviation from the original-representation goal (the
  * codec pipeline still owns the EXIF strip downstream).
  */
-- (void)loadImageObjectFromProvider:(NSItemProvider *)provider {
+- (void)loadImageObjectFromProvider:(NSItemProvider *)provider
+                                     completion:(CempImagePickerCompletion)completion {
   if (![provider canLoadObjectOfClass:UIImage.class]) {
-    [self deliverError:CempPickError(CempImagePickerErrorRead,
-                                     @"could not read the selected image")];
+    completion(nil, CempPickError(CempImagePickerErrorRead,
+                                  @"could not read the selected image"));
     return;
   }
   [provider loadObjectOfClass:UIImage.class
@@ -200,36 +207,25 @@ static NSError *CempPickError(CempImagePickerError code, NSString *message) {
     NSData *data =
         (loadError == nil && image != nil) ? UIImageJPEGRepresentation(image, 1.0) : nil;
     if (data != nil && data.length <= (NSUInteger)CempImagePickerMaxPickBytes) {
-      [self deliverData:data];
+      completion([self hexStringFromData:data], nil);
     } else if (data != nil) {
-      [self deliverError:CempPickError(CempImagePickerErrorTooLarge,
-                                       @"the selected image is too large (over 64 MB)")];
+      completion(nil, CempPickError(CempImagePickerErrorTooLarge,
+                                    @"the selected image is too large (over 64 MB)"));
     } else {
-      [self deliverError:CempPickError(CempImagePickerErrorRead,
-                                       @"could not read the selected image")];
+      completion(nil, CempPickError(CempImagePickerErrorRead,
+                                    @"could not read the selected image"));
     }
   }];
 }
 
-- (void)deliverData:(NSData *)data {
+- (NSString *)hexStringFromData:(NSData *)data {
   static const char digits[] = "0123456789abcdef";
   const uint8_t *bytes = data.bytes;
   NSMutableString *hex = [NSMutableString stringWithCapacity:data.length * 2];
   for (NSUInteger i = 0; i < data.length; i++) {
     [hex appendFormat:@"%c%c", digits[bytes[i] >> 4], digits[bytes[i] & 0xf]];
   }
-  CempImagePickerCompletion completion = [self takePending];
-  // A late result with no pending pick is dropped, never misdelivered.
-  if (completion != nil) {
-    completion(hex, nil);
-  }
-}
-
-- (void)deliverError:(NSError *)error {
-  CempImagePickerCompletion completion = [self takePending];
-  if (completion != nil) {
-    completion(nil, error);
-  }
+  return hex;
 }
 
 @end

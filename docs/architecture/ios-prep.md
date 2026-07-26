@@ -140,37 +140,51 @@ it that way).
 
 ## What remains before `apps/ios`
 
-1. A macOS build host (Xcode) — the Linux box cannot build iOS binaries.
-2. The `CempKdf` native iOS module (Task 2) + vector conformance run. The C
-   core is ready and validated (`tools/kdf-c-core/`); what remains is the
-   Swift bridge wrapper only.
-3. op-sqlite SQLCipher iOS build flag + plaintext-header verification.
+1. ~~A macOS build host (Xcode)~~ — SOLVED remotely: the GitHub `macos-26`
+   runner + `ios-build.yml` (validate mode, unsigned) is the iteration loop.
+2. ~~The `CempKdf` native iOS module (Task 2) + vector conformance run~~ —
+   DONE 2026-07-26 (`apps/android/ios/CempKdf/`, legacy RCTBridgeModule over
+   the RN 0.83 interop layer, exact Android bridge contract; vendored C core
+   from `tools/kdf-c-core`; XCTest runs all 4 vectors byte-identical on an
+   iPhone simulator, CI run 30190483652). The iOS target itself is ENABLED in
+   the existing RN app (`apps/android/ios/`, bundle id `com.cempmobile`) and
+   builds green unsigned on macos-26 — no separate `apps/ios` package needed.
+3. op-sqlite SQLCipher iOS build flag + plaintext-header verification —
+   flag CONFIRMED honored in the pod build (`[OP-SQLITE] using SQLCipher`);
+   the on-device plaintext-header check is a first-device item.
 4. BGTaskScheduler bridge for the `@cemp/sync` Scheduler seam (Task 3).
 5. Core Image codec module (Task 5 — contract updated above) + a JPEG-only
    fallback profile.
 6. iPhone pairing for debug (`idevicepair` + `ideviceinfo` are present on
-   this machine for the later device checks; deployment itself needs the
-   macOS host).
+   this machine; a CI-built dev-signed `.ipa` installs from Linux via
+   `xtool install` — needs the signing secrets, NOT yet on this repo:
+   `gh secret list` is empty; copy the HTMLocal ASC_*/certificate/profile
+   secrets when device deployment starts). First-device checklist: JS↔native
+   CempKdf smoke (bridge registration is compile-verified only), vault
+   unlock round-trip, op-sqlite plaintext-header check.
 
-## App-extraction map (verified 2026-07-26; execute at apps/ios time)
+~~## App-extraction map (verified 2026-07-26; execute at apps/ios time)~~
 
-Move the platform-NEUTRAL app code out of `apps/android` into a shared
-workspace app (e.g. `apps/app-shell`) so `apps/ios` is a thin shell. Do NOT
-do this before the consumer exists — the map is the checklist:
+## App-extraction map (verified 2026-07-26)
 
-- **Move (generic RN / RN-free):** `src/screens/*`, `App.tsx` (tabs/stack),
+The iOS target lives in the EXISTING app package, so no extraction was
+needed after all: `apps/android` already holds all the shared JS (screens,
+navigation, `messaging.ts` composition). What remains genuinely
+Android-specific inside it (the eventual per-platform split, if ever):
+
+- **Shared as-is (generic RN / RN-free):** `src/screens/*`, `App.tsx` (tabs/stack),
   `navigation.ts`, `messaging.ts` (composition, RN-free by design),
   `image-send.ts`, `outgoing-tx-journal.ts`, `vault-liveness.ts`,
   `background-sync-core.ts`, and the RN-free platform halves (`hex.ts`,
   `base64.ts`, `keychain-blob.ts`, `pick-result.ts`, `handle-tracker.ts`,
   `scheduler-coalesce.ts`, `best-effort.ts`, `route-tag-cache-core.ts`).
-- **Keep per-platform (Android stays / iOS re-implements):** everything in
+- **Per-platform (Android has it / iOS re-implements):** everything in
   `src/platform/` importing `NativeModules` (keystore, notifier, scheduler,
   kdf, image codec, image picker, headless-task, locked-probe,
   route-tag-cache binding), `app-container.ts` (composition root — the
   _shape_ is the template for the iOS container), `background-sync.ts`
   (HeadlessJS entry), `notification-permission.ts` (PermissionsAndroid).
-- Carry the polyfills (`react-native-get-random-values`,
-  `fast-text-encoding`) and the Metro monorepo config (`metro.config.js`
-  watchFolders + symlink exports) to the iOS app. Note the T17 F-3 lesson:
-  an actual Metro bundle build is part of the iOS gate, not just tsc.
+- The polyfills (`react-native-get-random-values`, `fast-text-encoding`) and
+  the Metro monorepo config (`metro.config.js` watchFolders + symlink
+  exports) already serve both targets. Note the T17 F-3 lesson: an actual
+  Metro bundle build is part of the iOS gate, not just tsc.

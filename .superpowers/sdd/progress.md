@@ -327,3 +327,26 @@ runner, version-locked, registry completeness asserted (633 vitest). KDF C core 
   Deferred to macOS host (recorded in ios-prep.md): apps/ios target, Swift wrappers
   (CempKdf, CoreImageCodec, PHPicker, BGTaskScheduler), extraction execution, iPhone
   pairing.
+
+## Phase 12 remote macOS session part 1 (2026-07-26): iOS target + CempKdf GREEN
+
+iOS target ENABLED in the existing RN app (no separate apps/ios needed):
+apps/android/ios/ stock 0.83.10 tree (bundle id com.cempmobile, CellSend),
+.github/workflows/ios-build.yml = remote macos-26 validate loop (unsigned;
+no signing secrets required — gh secret list is empty; copy HTMLocal
+ASC_*/cert/profile secrets when device deployment starts). Remote iteration
+(agent-11, 8 CI runs): skeleton build green (run 30188006154), then CempKdf
+module green incl. XCTest (run 30190483652): legacy RCTBridgeModule over the
+RN 0.83 interop layer, EXACT Android bridge contract (native-kdf.ts
+unchanged), vendored tools/kdf-c-core C sources, all 4 KDF vectors
+byte-identical on an iPhone simulator. Fixes landed en route:
+cli-platform-ios devDep, pod-install CWD + pipefail + CocoaPods null-byte
+retry, xcodeproj-gem target script (scripts/add-kdf-targets.rb), and a
+LATENT repo-wide bug — the brace-expansion@5.0.8 audit override broke
+minimatch@3 consumers (glob@7 / RN codegen, ALL platforms); fixed via
+patches/minimatch@3.1.5.patch accepting both export shapes (audit gate
+intact). op-sqlite SQLCipher flag confirmed honored in the iOS pod build.
+Remaining ios-prep items: BGTaskScheduler bridge, Core Image codec, device
+deployment (needs signing secrets + first-device smoke list in ios-prep.md).
+Android re-verified after the dep changes (compileDebugKotlin OK; 633
+vitest).

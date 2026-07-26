@@ -30,6 +30,14 @@ jobs:
       # (react-native resolves through the pnpm store from the Podfile).
       - run: pnpm install --frozen-lockfile
 
+      # Pin Ruby: the macos runner's default Ruby intermittently kills
+      # CocoaPods with "pathname contains null byte"
+      # (CocoaPods/CocoaPods#12798 — reports say 3.2/3.3 are unaffected).
+      # The 3x retry below stays as belt-and-braces.
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
       # pod install must run with CWD = apps/android/ios: use_native_modules!
       # shells out to `node -e "...require('@react-native-community/cli')..."`
       # which resolves from the process CWD, and pnpm does not hoist the CLI

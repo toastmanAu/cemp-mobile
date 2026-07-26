@@ -423,7 +423,11 @@ export class MessagingService {
       const resolved = await resolveLiveProfile(this.#client, input.recipientProfileIdHex);
       checkResolvedProfileBinding(resolved, input.recipientProfileIdHex);
       const recipientProfileId = hexToBytes(input.recipientProfileIdHex);
-      const journal = new OutgoingTxJournalAdapter(this.#outgoingTxs);
+      const journal = new OutgoingTxJournalAdapter(
+        this.#outgoingTxs,
+        this.#balances,
+        this.#walletId,
+      );
       const balance = await this.#balances.getBalance(this.#walletId);
       const result = await runImageSend(
         {

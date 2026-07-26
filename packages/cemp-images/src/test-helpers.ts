@@ -85,15 +85,26 @@ export const MESSAGE_TYPE_REF: CempMessageTypeRef = {
 export class FakeJournal implements AttachmentChunkJournal, AttachmentReclaimStore {
   readonly txs = new Map<
     string,
-    { txHash: string; state: string; purpose: string; capacityShannon?: string }
+    {
+      txHash: string;
+      state: string;
+      purpose: string;
+      capacityShannon?: string;
+      feeShannon?: string;
+    }
   >();
+  /** Capacity accounting calls, in order (review M-1/E7 assertions). */
+  reserved: string[] = [];
+  reclaimable: string[] = [];
   released: string[] = [];
+  feeBurns: string[] = [];
 
   recordOutgoingTx(input: {
     txHash: string;
     purpose: string;
     state: string;
     capacityShannon?: string;
+    feeShannon?: string;
   }): Promise<void> {
     this.txs.set(input.txHash, { ...input });
     return Promise.resolve();
@@ -104,13 +115,37 @@ export class FakeJournal implements AttachmentChunkJournal, AttachmentReclaimSto
     return Promise.resolve();
   }
 
+  markOutgoingTxStateIf(txHash: string, expectedFromState: string, state: string): Promise<number> {
+    const tx = this.txs.get(txHash);
+    if (tx === undefined || tx.state !== expectedFromState) {
+      return Promise.resolve(0);
+    }
+    tx.state = state;
+    return Promise.resolve(1);
+  }
+
   findLatestOutgoingTxByPurposePrefix(prefix: string) {
     const found = [...this.txs.values()].filter((t) => t.purpose.startsWith(prefix)).at(-1);
     return Promise.resolve(found);
   }
 
+  reserveCapacity(amount: string): Promise<void> {
+    this.reserved.push(amount);
+    return Promise.resolve();
+  }
+
+  markCapacityReclaimable(amount: string): Promise<void> {
+    this.reclaimable.push(amount);
+    return Promise.resolve();
+  }
+
   releaseReclaimedCapacity(amount: string): Promise<void> {
     this.released.push(amount);
+    return Promise.resolve();
+  }
+
+  recordFeeBurn(amount: string): Promise<void> {
+    this.feeBurns.push(amount);
     return Promise.resolve();
   }
 }

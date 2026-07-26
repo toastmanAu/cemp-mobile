@@ -25,6 +25,7 @@ import {
 } from "@cemp/ckb";
 import { cccTransactionToWire, type CempClient } from "@cemp/ckb";
 import type { MlDsaV2TxSigner } from "@cemp/ckb";
+import type { TransactionLike } from "@ckb-ccc/core";
 import { codec } from "@cemp/core";
 import { splitIntoChunks, encryptAttachment, type EncryptedAttachment } from "./encrypt.js";
 import { buildAttachmentManifest } from "./manifest.js";
@@ -80,9 +81,23 @@ export interface AttachmentChunkJournal {
     txHex?: string | undefined;
   }): Promise<void>;
   markOutgoingTxState(txHash: string, state: string, committedAtMs?: number): Promise<void>;
-  findLatestOutgoingTxByPurposePrefix(
-    prefix: string,
-  ): Promise<{ txHash: string; state: string; purpose: string; txHex?: string | null } | undefined>;
+  findLatestOutgoingTxByPurposePrefix(prefix: string): Promise<
+    | {
+        txHash: string;
+        state: string;
+        purpose: string;
+        capacityShannon?: string | null;
+        feeShannon?: string | null;
+        txHex?: string | null;
+      }
+    | undefined
+  >;
+  /**
+   * Reserve the committed chunk cells' capacity in the ledger (review M-1):
+   * without it the group reclaim's release fires against an unfunded
+   * reclaimable bucket AFTER the reclaim tx already committed.
+   */
+  reserveCapacity(amountShannon: string): Promise<void>;
 }
 
 export interface PublishChunksResult {
@@ -114,14 +129,26 @@ export async function publishAttachmentChunks(
     // Review E1: rebroadcast from the journaled signed bytes if the network
     // never saw the chunk tx (never wedge, never double-upload).
     try {
-      await resumeJournaledBroadcast(
+      const outcome = await resumeJournaledBroadcast(
         client,
         { txHash: journaled.txHash, txHex: journaled.txHex ?? null },
         {
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
         },
       );
+      if (outcome === "rebroadcast" && journaled.txHex != null) {
+        // F-1 one layer up: mark the rebroadcast spend so the next build
+        // cannot re-select these inputs while the indexer lags. The journaled
+        // wire JSON is structurally a TransactionLike (cccTransactionToWire).
+        await trackBroadcastSpend(signer, JSON.parse(journaled.txHex) as TransactionLike);
+      }
       await journal.markOutgoingTxState(journaled.txHash, "committed", Date.now());
+      // Review M-1: reserve the committed chunk cells' capacity, mirroring
+      // the fresh path — the group reclaim's release draws on this bucket.
+      const journaledCapacity = journaled.capacityShannon;
+      if (journaledCapacity != null && journaledCapacity !== "0") {
+        await journal.reserveCapacity(journaledCapacity);
+      }
       return { chunksTxHash: journaled.txHash, chunkCount: chunks.chunks.length, resumed: true };
     } catch (error) {
       if (!(error instanceof JournaledAbandonedError)) {
@@ -165,6 +192,12 @@ export async function publishAttachmentChunks(
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
   await journal.markOutgoingTxState(txHash, "committed", Date.now());
+  // Review M-1: reserve the committed chunk cells' capacity at commit time
+  // (mirroring the publisher's message-cell reserve) so the later group
+  // reclaim's markCapacityReclaimable/release is funded.
+  if (totalCapacity > 0n) {
+    await journal.reserveCapacity(totalCapacity.toString());
+  }
   return { chunksTxHash: txHash, chunkCount: chunks.chunks.length, resumed: false };
 }
 

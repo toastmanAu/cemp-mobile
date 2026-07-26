@@ -213,6 +213,9 @@ describe("attachment send + receive (e2e offline)", () => {
     const journaled = [...journal.txs.values()][0]!;
     expect(journaled.purpose.startsWith("attachment-chunks:")).toBe(true);
     expect(journaled.state).toBe("committed");
+    // Review M-1: the committed chunk cells' capacity is reserved at commit,
+    // funding the later group reclaim's release.
+    expect(journal.reserved).toEqual([journaled.capacityShannon]);
 
     // Crash-resume: a journaled-but-uncommitted tx is adopted (no re-upload).
     const crashed = new FakeJournal();
@@ -220,6 +223,9 @@ describe("attachment send + receive (e2e offline)", () => {
       txHash: published.chunksTxHash,
       state: "submitted",
       purpose: journaled.purpose,
+      ...(journaled.capacityShannon === undefined
+        ? {}
+        : { capacityShannon: journaled.capacityShannon }),
     });
     const again = await publishAttachmentChunks(
       { client, signer, journal: crashed, messageType: MESSAGE_TYPE_REF },
@@ -227,6 +233,8 @@ describe("attachment send + receive (e2e offline)", () => {
     );
     expect(again.resumed).toBe(true);
     expect(sentBodies).toHaveLength(1);
+    // The resume path reserves the journaled capacity the same way (M-1).
+    expect(crashed.reserved).toEqual([journaled.capacityShannon]);
 
     // Phase B: manifest from the committed outpoints.
     const manifestEncodable = buildManifestForCommittedChunks({
@@ -369,11 +377,83 @@ describe("reclaimAttachmentGroup (task 14)", () => {
     expect(result).not.toBeNull();
     expect(result!.cellCount).toBe(3);
     expect(result!.resumed).toBe(false);
+    // Review M-1/E7: the full released capacity funds the reclaimable bucket
+    // first; the release is NET of the reclaim tx's fee, which is written
+    // off as burned — net + fee == gross.
+    const gross = fixedPointFrom(1100);
+    expect(store.reclaimable).toEqual([gross.toString()]);
     expect(store.released).toHaveLength(1);
-    expect(BigInt(store.released[0]!)).toBe(fixedPointFrom(1100));
+    expect(store.feeBurns).toHaveLength(1);
+    expect(BigInt(store.released[0]!) + BigInt(store.feeBurns[0]!)).toBe(gross);
+    expect(result!.releasedShannon).toBe(store.released[0]!);
     const journaled = [...store.txs.values()][0]!;
     expect(journaled.purpose.startsWith("reclaim-attachment:")).toBe(true);
     expect(journaled.state).toBe("committed");
+  });
+
+  it("abandons a rejected journaled group reclaim and rebuilds from the live cells only (I-4)", async () => {
+    const { signer } = makeChain();
+    const deadHash = fillHex(0xde, 32);
+    const chunkCell = (seed: number) =>
+      Cell.from({
+        outPoint: { txHash: fillHex(seed, 32), index: 0 },
+        cellOutput: toOutputLike(
+          CellOutput.from({ capacity: fixedPointFrom(300), lock: signer.lockScript() }),
+        ),
+        outputData: "0xbeef",
+      });
+    // One of the group's cells is already spent (absent from the live set) —
+    // the rebuild must cover only the live ones.
+    const liveCells = new Map<string, Cell>([
+      [`${fillHex(0xc2, 32)}:0`, chunkCell(0xc2)],
+      [`${fillHex(0xc3, 32)}:0`, chunkCell(0xc3)],
+    ]);
+    const { client } = makeChain(liveCells, { rejectedTxHashes: new Set([deadHash]) });
+    const mockChain = new MockCkbClient();
+    const fundedSigner = new MlDsaV2TxSigner({ keyPair, client: mockChain });
+    mockChain.addCells(
+      chunkCell(0xc2),
+      chunkCell(0xc3),
+      Cell.from({
+        outPoint: { txHash: fillHex(0xf2, 32), index: 1 },
+        cellOutput: toOutputLike(
+          CellOutput.from({ capacity: fixedPointFrom(2000), lock: fundedSigner.lockScript() }),
+        ),
+        outputData: "0x",
+      }),
+    );
+    const store = new FakeJournal();
+    // The wedged state: a submitted group reclaim the network rejected — the
+    // old code let JournaledAbandonedError propagate and the journal stayed
+    // `submitted` forever (the worker swallows per-group errors).
+    const groupId = new Uint8Array(16).fill(6);
+    const purpose = `reclaim-attachment:${bytesToHex(groupId)}`;
+    store.txs.set(deadHash, { txHash: deadHash, state: "submitted", purpose });
+
+    const result = await reclaimAttachmentGroup(
+      { client, signer: fundedSigner, messageType: MESSAGE_TYPE_REF, store },
+      groupId,
+      [
+        { txHash: fillHex(0xc1, 32), index: "0x0" }, // already spent — skipped
+        { txHash: fillHex(0xc2, 32), index: "0x0" },
+        { txHash: fillHex(0xc3, 32), index: "0x0" },
+      ],
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.resumed).toBe(false);
+    expect(result!.txHash).not.toBe(deadHash);
+    // The dead tx is abandoned; a FRESH reclaim over the two LIVE cells is
+    // journaled under the same purpose and committed.
+    expect(store.txs.get(deadHash)!.state).toBe("abandoned");
+    expect(result!.cellCount).toBe(2);
+    const replacement = [...store.txs.values()].find((t) => t.txHash !== deadHash)!;
+    expect(replacement.purpose).toBe(purpose);
+    expect(replacement.state).toBe("committed");
+    // Accounting: gross = the two live chunk cells; net + fee == gross.
+    const gross = fixedPointFrom(600);
+    expect(store.reclaimable).toEqual([gross.toString()]);
+    expect(BigInt(store.released[0]!) + BigInt(store.feeBurns[0]!)).toBe(gross);
   });
 });
 

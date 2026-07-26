@@ -51,21 +51,26 @@ jobs:
       # to the repo-root node_modules.
       - name: CocoaPods install
         working-directory: apps/android/ios
+        env:
+          # The "null byte" flake is encoding-sensitive (Pathname#realdirpath
+          # on globbed paths); CocoaPods requires a UTF-8 locale.
+          LANG: en_US.UTF-8
+          LC_ALL: en_US.UTF-8
         run: |
           set -o pipefail
           # CocoaPods intermittently dies with "pathname contains null byte"
           # in PodsProjectGenerator (upstream flake CocoaPods/CocoaPods#12798,
           # "hit or miss" on the macos runners) — retry with a clean Pods
           # state before giving up.
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5; do
             if pod install 2>&1 | tee "$RUNNER_TEMP/pod-install.log"; then
               exit 0
             fi
-            echo "pod install failed (attempt $attempt of 3), cleaning Pods state" >&2
+            echo "pod install failed (attempt $attempt of 5), cleaning Pods state" >&2
             rm -rf Pods Podfile.lock
             sleep 5
           done
-          echo "pod install failed after 3 attempts" >&2
+          echo "pod install failed after 5 attempts" >&2
           exit 1
 
       - name: xcodebuild (unsigned, simulator)

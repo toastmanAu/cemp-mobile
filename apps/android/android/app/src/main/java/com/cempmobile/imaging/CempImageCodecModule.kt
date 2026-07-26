@@ -34,10 +34,21 @@ class CempImageCodecModule(reactContext: ReactApplicationContext) :
     Thread {
       try {
         val bytes = hexToBytes(bytesHex)
-        val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-          ?: throw IllegalArgumentException("decode: not a decodable image")
-        val oriented = applyExifOrientation(raw, bytes)
-        promise.resolve(store(oriented))
+        var raw: Bitmap? = decodeSampled(bytes)
+        var oriented: Bitmap? = null
+        try {
+          oriented = applyExifOrientation(raw!!, bytes)
+          // Ownership has moved to `oriented` (applyExifOrientation either
+          // returned `raw` itself or recycled it for the rotated copy).
+          raw = null
+          promise.resolve(store(oriented))
+          // Ownership has moved to the handle registry.
+          oriented = null
+        } finally {
+          // Error path: never leak a decoded bitmap.
+          raw?.recycle()
+          oriented?.recycle()
+        }
       } catch (e: Throwable) {
         promise.reject("image-decode-error", "could not decode image", asException(e))
       }
@@ -108,6 +119,27 @@ class CempImageCodecModule(reactContext: ReactApplicationContext) :
     }
   }
 
+  /**
+   * Two-pass sampled decode (review: OOM on huge source images). An unbounded
+   * `decodeByteArray` on a 50 MP photo allocates ~200 MB and OOMs the app, so
+   * the first pass only reads the bounds and the second decodes with a
+   * power-of-two `inSampleSize` that caps the decoded longest edge at
+   * [MAX_DECODE_EDGE_PX] — ample headroom over the pipeline's first 960 px
+   * compress target.
+   */
+  private fun decodeSampled(bytes: ByteArray): Bitmap {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+      throw IllegalArgumentException("decode: not a decodable image")
+    }
+    val options = BitmapFactory.Options().apply {
+      inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, MAX_DECODE_EDGE_PX)
+    }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+      ?: throw IllegalArgumentException("decode: not a decodable image")
+  }
+
   private fun applyExifOrientation(bitmap: Bitmap, bytes: ByteArray): Bitmap {
     val exif = ExifInterface(ByteArrayInputStream(bytes))
     val orientation = exif.getAttributeInt(
@@ -132,6 +164,23 @@ class CempImageCodecModule(reactContext: ReactApplicationContext) :
   private fun asException(e: Throwable): Exception? = if (e is Exception) e else null
 
   companion object {
+    /** Cap on the decoded longest edge (px) — see decodeSampled. */
+    private const val MAX_DECODE_EDGE_PX = 2560
+
+    /**
+     * The smallest power-of-two `inSampleSize` that brings the longest edge
+     * down to ≤ maxEdge — the most quality that still bounds the allocation.
+     */
+    fun sampleSizeFor(width: Int, height: Int, maxEdge: Int): Int {
+      var sample = 1
+      var longest = maxOf(width, height)
+      while (longest > maxEdge) {
+        sample *= 2
+        longest /= 2
+      }
+      return sample
+    }
+
     fun hexToBytes(hex: String): ByteArray {
       val out = ByteArray(hex.length / 2)
       for (i in out.indices) {

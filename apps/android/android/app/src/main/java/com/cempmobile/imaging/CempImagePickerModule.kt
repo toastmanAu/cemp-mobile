@@ -79,14 +79,33 @@ class CempImagePickerModule(reactContext: ReactApplicationContext) :
 
   override fun onNewIntent(intent: Intent) { /* not used */ }
 
+  /**
+   * Bridge teardown (RN 0.83 hook; onCatalystInstanceDestroy is deprecated):
+   * reject any pending pick so the JS promise settles instead of hanging
+   * forever, and drop the activity listener.
+   */
+  override fun invalidate() {
+    reactApplicationContext.removeActivityEventListener(this)
+    pending.getAndSet(null)?.reject(
+      "image-pick-cancelled",
+      "the photo picker was closed before a result arrived",
+    )
+  }
+
   private fun readAllBytes(resolver: ContentResolver, uri: Uri): ByteArray {
     resolver.openInputStream(uri).use { input ->
       requireNotNull(input) { "could not open the selected image stream" }
       val out = ByteArrayOutputStream()
       val buf = ByteArray(64 * 1024)
+      var total = 0
       while (true) {
         val n = input.read(buf)
         if (n < 0) break
+        total += n
+        // Hard cap: an unbounded read of a hostile/huge stream OOMs the app.
+        if (total > MAX_PICK_BYTES) {
+          throw IllegalStateException("the selected image is too large (over 64 MB)")
+        }
         out.write(buf, 0, n)
       }
       return out.toByteArray()
@@ -95,5 +114,6 @@ class CempImagePickerModule(reactContext: ReactApplicationContext) :
 
   companion object {
     private const val REQUEST_CODE = 0xC0DE
+    private const val MAX_PICK_BYTES = 64 * 1024 * 1024
   }
 }

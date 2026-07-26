@@ -40,4 +40,16 @@ export default tseslint.config(
       "@typescript-eslint/no-require-imports": "off",
     },
   },
+  {
+    // Node CLI tooling (CI gates): ESM with Node + fetch globals.
+    files: ["tools/**/*.mjs"],
+    languageOptions: {
+      sourceType: "module",
+      globals: {
+        process: "readonly",
+        console: "readonly",
+        fetch: "readonly",
+      },
+    },
+  },
 );

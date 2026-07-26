@@ -280,6 +280,7 @@ lookup, UNIQUE(message_id) migration v7). CHECKLIST refreshed (47a43d4).
 
 DELTA RE-REVIEW (task-16 follow-up, 5-area swarm over the whole image surface + F-1/F-2
 deltas): 2 Critical + ~12 Important/Minor found, all triaged and fixed same-session:
+
 - C-1 resume wedge (illegal queued→committed on resume): publisher now walks the legal
   state path from the row's CURRENT state; fake test store now enforces the machine (5ecc639).
 - C-2 post-broadcast UI mis-marking: PublicationError.broadcast; UI no longer fails rows

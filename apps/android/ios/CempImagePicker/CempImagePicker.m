@@ -79,6 +79,10 @@ RCT_EXPORT_METHOD(pick:(RCTPromiseResolveBlock)resolve
         [[PHPickerConfiguration alloc] init];
     config.selectionLimit = 1;
     config.filter = [PHPickerFilter imagesFilter]; // images only, no video
+    // Deliver the asset's current representation (no transcoding) — the
+    // picker must not alter bytes; re-encoding happens in the codec pipeline.
+    config.preferredAssetRepresentationMode =
+        PHPickerConfigurationAssetRepresentationModeCurrent;
     PHPickerViewController *picker =
         [[PHPickerViewController alloc] initWithConfiguration:config];
     picker.delegate = self;

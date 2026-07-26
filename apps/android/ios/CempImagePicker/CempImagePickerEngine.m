@@ -85,15 +85,23 @@ static NSError *CempPickError(CempImagePickerError code, NSString *message) {
                                      @"could not read the selected image")];
     return;
   }
+  // Load as public.data when possible: requesting an IMAGE type identifier
+  // routes through NSItemProvider's image coercion and can re-encode the
+  // bytes (observed in tests: a 161-byte PNG came back as 160 bytes). The
+  // picker must deliver the original file bytes — the codec pipeline owns
+  // re-encoding downstream. public.data vends the file untouched.
+  NSString *loadUti = [provider hasItemConformingToTypeIdentifier:@"public.data"]
+      ? @"public.data"
+      : uti;
   // Stream the file representation so the 64 MB cap is enforced DURING the
   // read, never holding more than the cap in memory (the Android
   // readAllBytes idiom).
-  [provider loadFileRepresentationForTypeIdentifier:uti
+  [provider loadFileRepresentationForTypeIdentifier:loadUti
                                   completionHandler:^(NSURL *url, NSError *loadError) {
     if (loadError != nil || url == nil) {
       // Some providers only offer an in-memory representation; fall back to
       // data loading and apply the same cap after the fact.
-      [self loadDataFromProvider:provider uti:uti];
+      [self loadDataFromProvider:provider uti:loadUti];
       return;
     }
     NSError *readError = nil;

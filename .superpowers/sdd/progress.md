@@ -270,3 +270,42 @@ manifest, tap → full-res renders with orientation baked — the F-1 recovery i
 end-to-end delivery (message tx 0x5bcf7dd6…). The older T17 image bubble correctly shows
 "Tap to load" still (its chunks were reclaimed in the F-2 proof; a tap would exercise the
 documented 7A graceful-failure path).
+
+## Phase 11 close-out + review-remediation session (2026-07-26)
+
+Prettier sweep (f53085b, CI gate parity; eslint ignores .remember scratch). Trivial minors
+(54f8c76: 0x-tolerant hex helper, double-tap guard, aspect-ratio bubble, spyOn fixture).
+Small minors (bc619b0: checkManifest at discovery, single prepareImage, batch attachment
+lookup, UNIQUE(message_id) migration v7). CHECKLIST refreshed (47a43d4).
+
+DELTA RE-REVIEW (task-16 follow-up, 5-area swarm over the whole image surface + F-1/F-2
+deltas): 2 Critical + ~12 Important/Minor found, all triaged and fixed same-session:
+- C-1 resume wedge (illegal queued→committed on resume): publisher now walks the legal
+  state path from the row's CURRENT state; fake test store now enforces the machine (5ecc639).
+- C-2 post-broadcast UI mis-marking: PublicationError.broadcast; UI no longer fails rows
+  after broadcast (5ecc639, b543d5d); publishImage desync guard skips chunk re-upload when
+  a message journal already exists (b543d5d).
+- I-3 transient rebroadcast errors no longer abandon (5ecc639). I-4 group-reclaim
+  abandon+requeue (d8807ec). I-5/I-6/M-1 reclaim accounting: chunk capacity reserved at
+  commit, CAS commit, net-of-fee release (d8807ec). M-2 worker commit heals reserve (6e4b007).
+- Agent-1 I-1: native two-pass sampled decode (OOM on huge photos), bitmap recycle on
+  error, picker 64 MB cap + invalidate() (28b21fc).
+- Agent-3 I-2 (sender-reclaim griefing): incoming attachment keys now persisted in the
+  encrypted DB at discovery (schema v8), chain re-derivation is the legacy fallback;
+  spec §3 step 3 amended (478ac87).
+- Affordance/UX: expired no longer offers retry, outgoing bubbles no longer offer
+  tap-to-load, loadFull double-tap guard, render-time decode guarded, stranded
+  insertImageDraft marks failed (83ab115).
+- Minors (e4d73df): thumbnail content sniff + encryption_algorithm fail-closed in
+  checkManifest, trackBroadcastSpend on the last two resume branches, strict worker hex,
+  payloadBytes wipe, capacity comment corrected.
+
+DEFERRED (recorded, not blockers): Kotlin per-byte hex perf (M-2); abandoned-tx inputs
+stay cache-marked until restart (M-3, bounded); crash-stranded pre-pending rows have no
+healer (pre-existing design gap — publishText is UI-driven; needs a product decision);
+dev-mode LogBox surfaces console.error full-screen (F-4); E9 manual/TTL reclaim (product
+decision, disclosed in threat model); multi-manifest messages persist only the last image
+(protocol allows 4, UI/schema are single-image — cap the sender at 1 or design N later).
+
+Final gate: vitest 628+1, eslint, prettier --check, cargo 7/7, compileDebugKotlin +
+assembleDebug all green.

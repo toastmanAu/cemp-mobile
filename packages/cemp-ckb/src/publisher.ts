@@ -21,6 +21,7 @@
  */
 
 import { codec } from "@cemp/core";
+import type { TransactionLike } from "@ckb-ccc/core";
 import { assembleTextMessage } from "./assemble.js";
 import { buildSendMessageTx, type CempMessageTypeRef } from "./builders.js";
 import { CempCkbError, type CempClient } from "./client.js";
@@ -46,6 +47,8 @@ export interface OutgoingTxRecord {
 /** Narrow persistence boundary — cemp-database implements this (rule 14 style). */
 export interface PublicationStore {
   transitionMessage(messageRowId: number, to: string): Promise<void>;
+  /** Current §11 state of a message row (the resume path walks from here). */
+  getMessageState(messageRowId: number): Promise<string | undefined>;
   setMessageChainRef(
     messageRowId: number,
     ref: { txHash: string; outpointIndex: number },
@@ -84,17 +87,33 @@ export class PublicationError extends Error {
   readonly code: PublicationErrorCode;
   /** Chain-jargon-free, user-presentable failure text (rule 15). */
   readonly userMessage: string;
+  /**
+   * True when the failure happened AFTER broadcast (review C-2): the tx is
+   * legitimately in flight and may still land, so the UI must NOT treat the
+   * message as failed — the resume path picks it up on the next call.
+   */
+  readonly broadcast: boolean;
 
-  constructor(code: PublicationErrorCode, userMessage: string, cause?: unknown) {
+  constructor(
+    code: PublicationErrorCode,
+    userMessage: string,
+    cause?: unknown,
+    options: { broadcast?: boolean } = {},
+  ) {
     super(`${code}: ${userMessage}`, cause === undefined ? undefined : { cause });
     this.name = "PublicationError";
     this.code = code;
     this.userMessage = userMessage;
+    this.broadcast = options.broadcast ?? false;
   }
 }
 
 /** Classify a pipeline failure into a user-readable publication error. */
-export function classifyPublishError(error: unknown): PublicationError {
+export function classifyPublishError(
+  error: unknown,
+  options: { broadcast?: boolean } = {},
+): PublicationError {
+  const broadcast = options.broadcast ?? false;
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof PublicationError) {
     return error;
@@ -104,6 +123,7 @@ export function classifyPublishError(error: unknown): PublicationError {
       "profile-not-found",
       "This contact's profile could not be found. Ask them to check their profile is still active.",
       error,
+      { broadcast },
     );
   }
   if (message.includes("capacity") || message.includes("Insufficient")) {
@@ -111,6 +131,7 @@ export function classifyPublishError(error: unknown): PublicationError {
       "insufficient-capacity",
       "Not enough balance to cover this message. Top up your messaging capacity and try again.",
       error,
+      { broadcast },
     );
   }
   if (message.includes("timed out")) {
@@ -118,6 +139,7 @@ export function classifyPublishError(error: unknown): PublicationError {
       "commit-timeout",
       "Still waiting for network confirmation. The message is saved — check back shortly.",
       error,
+      { broadcast },
     );
   }
   if (
@@ -130,6 +152,7 @@ export function classifyPublishError(error: unknown): PublicationError {
       "network-unavailable",
       "Can't reach the network right now. The message is saved and can be retried.",
       error,
+      { broadcast },
     );
   }
   if (message.includes("rejected")) {
@@ -137,12 +160,14 @@ export function classifyPublishError(error: unknown): PublicationError {
       "rejected-by-node",
       "The network rejected this message. It has been saved — try again in a moment.",
       error,
+      { broadcast },
     );
   }
   return new PublicationError(
     "internal",
     "Something went wrong while sending. The message is saved.",
     error,
+    { broadcast },
   );
 }
 
@@ -194,6 +219,24 @@ export interface PublishResult {
   readonly resumed: boolean;
 }
 
+/**
+ * The §11 outgoing path the publisher drives (review C-1). The resume path
+ * walks the row along these steps — never skipping — so every transition is
+ * a legal edge regardless of where a crash or UI retry left the row.
+ */
+const OUTGOING_PUBLISH_PATH = [
+  "draft",
+  "queued",
+  "encrypting",
+  "building_transaction",
+  "awaiting_signature",
+  "submitting",
+  "pending",
+  "committed",
+  "available_on_chain",
+] as const;
+type PublishPathState = (typeof OUTGOING_PUBLISH_PATH)[number];
+
 export class MessagePublisher {
   readonly #deps: MessagePublisherDeps;
 
@@ -222,11 +265,22 @@ export class MessagePublisher {
       let resumable = existing;
       if (resumable !== undefined) {
         try {
-          await resumeJournaledBroadcast(
+          const outcome = await resumeJournaledBroadcast(
             this.#deps.client,
             { txHash: resumable.txHash, txHex: resumable.txHex },
             { ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }) },
           );
+          if (outcome === "rebroadcast" && resumable.txHex !== null) {
+            // F-1 one layer up: the rebroadcast spends the journaled inputs,
+            // but the indexer keeps reporting them live until the tx commits
+            // — mark the spend or the next build re-selects them and is
+            // dropped as a double-spend. The journaled wire JSON is
+            // structurally a TransactionLike (produced by cccTransactionToWire).
+            await trackBroadcastSpend(
+              this.#deps.signer,
+              JSON.parse(resumable.txHex) as TransactionLike,
+            );
+          }
         } catch (error) {
           if (!(error instanceof JournaledAbandonedError)) {
             throw error;
@@ -244,6 +298,11 @@ export class MessagePublisher {
       }
       if (resumable !== undefined) {
         broadcast = true;
+        // Review C-1: drive the row from its CURRENT state through the legal
+        // §11 path to `pending` before #monitor's committed →
+        // available_on_chain. A row requeued by the UI retry (failed →
+        // queued) has no direct queued → committed edge and would wedge.
+        await this.#walkToState(input.messageRowId, "pending");
         return await this.#monitor(
           input.messageRowId,
           resumable.txHash,
@@ -334,7 +393,7 @@ export class MessagePublisher {
         messageCellCapacity.toString(),
       );
     } catch (error) {
-      const publicationError = classifyPublishError(error);
+      const publicationError = classifyPublishError(error, { broadcast });
       if (!broadcast) {
         // Pre-broadcast failure: the message never left the device — record
         // the failure on the row (the journal still holds the truth).
@@ -362,13 +421,36 @@ export class MessagePublisher {
     });
     await store.markOutgoingTxState(txHash, "committed", Date.now());
     await store.setMessageChainRef(messageRowId, { txHash, outpointIndex: 0 });
-    await store.transitionMessage(messageRowId, "committed");
-    await store.transitionMessage(messageRowId, "available_on_chain");
+    await this.#walkToState(messageRowId, "available_on_chain");
     // Review E3: reserve the committed message cell's capacity in the ledger
     // (the ack path later moves it to reclaimable; reclaim releases it).
     if (reserveAmountShannon !== undefined && reserveAmountShannon !== "0") {
       await store.reserveCapacity(reserveAmountShannon);
     }
     return { txHash, outPoint: { txHash, index: 0 }, committed: true, resumed };
+  }
+
+  /**
+   * Drive a message row stepwise along the legal §11 outgoing path to
+   * `target` (review C-1). A state already AT or PAST the target is an
+   * idempotent no-op; a state OFF the path (e.g. `failed` after the UI retry
+   * edge failed → queued was taken... the row must already be `queued` then)
+   * starts the walk at `queued`, the only legal exit from `failed`.
+   */
+  async #walkToState(messageRowId: number, target: string): Promise<void> {
+    const { store } = this.#deps;
+    const current = await store.getMessageState(messageRowId);
+    const fromIndex =
+      current === undefined ? -1 : OUTGOING_PUBLISH_PATH.indexOf(current as PublishPathState);
+    const toIndex = OUTGOING_PUBLISH_PATH.indexOf(target as PublishPathState);
+    if (toIndex === -1 || fromIndex >= toIndex) {
+      return;
+    }
+    // `draft` sits at index 0; any state NOT on the path (undefined row,
+    // `failed`) starts at `queued` — failed → queued is the retry edge.
+    const start = fromIndex === -1 ? 1 : fromIndex + 1;
+    for (let i = start; i <= toIndex; i++) {
+      await store.transitionMessage(messageRowId, OUTGOING_PUBLISH_PATH[i]!);
+    }
   }
 }

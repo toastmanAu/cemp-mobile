@@ -56,6 +56,11 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
     await this.#messages.transitionState(messageRowId, to as MessageState);
   }
 
+  async getMessageState(messageRowId: number): Promise<string | undefined> {
+    const message = await this.#messages.getById(messageRowId);
+    return message?.state;
+  }
+
   async setMessageChainRef(
     messageRowId: number,
     ref: { txHash: string; outpointIndex: number },

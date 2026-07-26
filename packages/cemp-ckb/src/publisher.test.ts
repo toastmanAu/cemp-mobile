@@ -72,15 +72,60 @@ interface StoreEvent {
   detail: string;
 }
 
+/**
+ * The §11 outgoing transition table, mirrored from cemp-database's
+ * message-states (cemp-ckb cannot depend on cemp-database, so the small
+ * table is reimplemented here). The fake store ENFORCES it — a regression
+ * like review C-1 (resume jumping queued → committed, which has no edge)
+ * fails these tests instead of wedging silently.
+ */
+const OUTGOING_TRANSITIONS: Readonly<Record<string, readonly string[]>> = {
+  draft: ["queued", "failed"],
+  queued: ["encrypting", "failed", "expired"],
+  encrypting: ["building_transaction", "failed"],
+  building_transaction: ["awaiting_signature", "failed"],
+  awaiting_signature: ["submitting", "failed"],
+  submitting: ["pending", "failed"],
+  pending: ["committed", "failed", "expired"],
+  committed: ["available_on_chain", "failed"],
+  available_on_chain: ["downloaded_by_recipient", "failed"],
+  downloaded_by_recipient: ["acknowledged", "failed"],
+  acknowledged: ["reclaim_queued", "failed"],
+  reclaim_queued: ["reclaim_pending", "failed"],
+  reclaim_pending: ["reclaimed", "reclaim_queued", "failed"],
+  reclaimed: [],
+  expired: [],
+  failed: ["queued"],
+};
+
 class FakeStore implements PublicationStore {
   readonly events: StoreEvent[] = [];
   readonly states: string[] = [];
   readonly txs = new Map<string, { txHash: string; state: string; purpose: string }>();
+  /** Per-row §11 state — the composer hands publishText a queued row. */
+  readonly rowStates = new Map<number, string>();
 
-  transitionMessage(_id: number, to: string): Promise<void> {
+  #stateOf(id: number): string {
+    return this.rowStates.get(id) ?? "queued";
+  }
+
+  transitionMessage(id: number, to: string): Promise<void> {
+    const current = this.#stateOf(id);
+    if (to !== current) {
+      // Same-state is an idempotent no-op (§11); anything else must be a
+      // legal edge, exactly like MessageRepository.transitionState.
+      if (!OUTGOING_TRANSITIONS[current]?.includes(to)) {
+        throw new Error(`illegal transition ${current} → ${to}`);
+      }
+      this.rowStates.set(id, to);
+    }
     this.states.push(to);
     this.events.push({ kind: "transition", detail: to });
     return Promise.resolve();
+  }
+
+  getMessageState(id: number): Promise<string | undefined> {
+    return Promise.resolve(this.#stateOf(id));
   }
 
   setMessageChainRef(_id: number, ref: { txHash: string; outpointIndex: number }): Promise<void> {
@@ -138,6 +183,8 @@ interface FakeChainOptions {
   readonly profileCellJson?: unknown;
   readonly onBroadcast?: () => void;
   readonly rejectedTxHashes?: ReadonlySet<string>;
+  /** Every tx stays in the mempool forever (commit-timeout tests). */
+  readonly neverCommit?: boolean;
 }
 
 function makeFakeChain(options: FakeChainOptions): {
@@ -165,6 +212,9 @@ function makeFakeChain(options: FakeChainOptions): {
             return Promise.resolve({
               tx_status: { status: "rejected", reason: "Resolve failed Unknown(OutPoint)" },
             });
+          }
+          if (options.neverCommit === true) {
+            return Promise.resolve({ tx_status: { status: "pending" } });
           }
           return Promise.resolve({
             tx_status: { status: "committed", block_hash: fillHex(0x99, 32) },
@@ -199,7 +249,7 @@ const MESSAGE_TYPE_REF: CempMessageTypeRef = {
 
 function makeFixture(
   profileCellJson?: unknown,
-  opts: { rejectedTxHashes?: ReadonlySet<string> } = {},
+  opts: { rejectedTxHashes?: ReadonlySet<string>; neverCommit?: boolean } = {},
 ): {
   publisher: MessagePublisher;
   store: FakeStore;
@@ -210,6 +260,7 @@ function makeFixture(
   const { transport, sentBodies } = makeFakeChain({
     ...(profileCellJson === undefined ? {} : { profileCellJson }),
     ...(opts.rejectedTxHashes === undefined ? {} : { rejectedTxHashes: opts.rejectedTxHashes }),
+    ...(opts.neverCommit === undefined ? {} : { neverCommit: opts.neverCommit }),
     onBroadcast: () => {
       store.events.push({ kind: "broadcast", detail: "send_transaction" });
     },
@@ -314,9 +365,41 @@ describe("MessagePublisher.publishText", () => {
       );
     expect(failure).toBeInstanceOf(PublicationError);
     expect((failure as PublicationError).code).toBe("profile-not-found");
+    // Pre-broadcast failure: the broadcast flag is false and the row IS failed.
+    expect((failure as PublicationError).broadcast).toBe(false);
     expect((failure as PublicationError).userMessage).not.toMatch(/cell|transaction|CKB/i);
     expect(store.states).toEqual(["encrypting", "failed"]);
     expect(sentBodies).toHaveLength(0);
+  });
+
+  it("flags a post-broadcast failure (commit timeout) and does NOT mark the row failed (C-2)", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const { publisher, store, sentBodies } = makeFixture(json, { neverCommit: true });
+
+    const failure = await publisher
+      .publishText({
+        messageRowId: 13,
+        logicalMessageId: "lm-timeout",
+        text: "still pending",
+        recipientProfileIdHex: profileIdHex,
+        timeoutMs: 50,
+      })
+      .then(
+        () => {
+          throw new Error("expected publishText to fail");
+        },
+        (e: unknown) => e,
+      );
+
+    expect(failure).toBeInstanceOf(PublicationError);
+    expect((failure as PublicationError).code).toBe("commit-timeout");
+    // The tx WAS broadcast — the UI can tell this apart from a send failure.
+    expect((failure as PublicationError).broadcast).toBe(true);
+    expect(sentBodies).toHaveLength(1);
+    // The row is legitimately in flight, NOT failed — the resume path picks
+    // it up on the next call.
+    expect(store.states).not.toContain("failed");
+    expect(store.rowStates.get(13)).toBe("pending");
   });
 
   it("resumes a journaled tx after a crash instead of rebuilding (task 10)", async () => {
@@ -343,7 +426,58 @@ describe("MessagePublisher.publishText", () => {
     // NO new transaction was built or broadcast.
     expect(sentBodies).toHaveLength(0);
     expect(store.txs.get(crashedTxHash)?.state).toBe("committed");
-    expect(store.states).toEqual(["committed", "available_on_chain"]);
+    // Review C-1: the resume walks the row through the LEGAL §11 path from
+    // its current state (queued) to available_on_chain — never a direct
+    // queued → committed jump (that edge does not exist and wedged the row).
+    expect(store.states).toEqual([
+      "encrypting",
+      "building_transaction",
+      "awaiting_signature",
+      "submitting",
+      "pending",
+      "committed",
+      "available_on_chain",
+    ]);
+  });
+
+  it("resumes a row requeued by the UI retry (failed → queued) through the legal path (C-1)", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const { publisher, store, sentBodies } = makeFixture(json);
+    // A pre-broadcast failure marked the row failed; the user retried, taking
+    // the §11 retry edge failed → queued — while the journaled tx was still
+    // submitted (crash between journal and monitor).
+    store.rowStates.set(12, "failed");
+    await store.transitionMessage(12, "queued");
+    store.states.length = 0; // the assertions below cover the publish walk only
+    const crashedTxHash = fillHex(0xcb, 32);
+    store.txs.set(crashedTxHash, {
+      txHash: crashedTxHash,
+      state: "submitted",
+      purpose: "message:lm-requeued",
+    });
+
+    const result = await publisher.publishText({
+      messageRowId: 12,
+      logicalMessageId: "lm-requeued",
+      text: "retried after failure",
+      recipientProfileIdHex: profileIdHex,
+    });
+
+    expect(result.resumed).toBe(true);
+    expect(result.committed).toBe(true);
+    expect(sentBodies).toHaveLength(0);
+    // Every step is a legal §11 edge, end to end (the FakeStore enforces the
+    // state machine, so an illegal jump would have thrown above).
+    expect(store.states).toEqual([
+      "encrypting",
+      "building_transaction",
+      "awaiting_signature",
+      "submitting",
+      "pending",
+      "committed",
+      "available_on_chain",
+    ]);
+    expect(store.rowStates.get(12)).toBe("available_on_chain");
   });
 
   it("abandons a rejected journaled tx and rebuilds fresh for the same logical message (T17 F-1)", async () => {

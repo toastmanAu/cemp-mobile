@@ -99,10 +99,15 @@ export type ResumeBroadcastOutcome = "committed" | "rebroadcast";
  * 2. In the mempool (`pending`/`proposed`) — wait for commit.
  * 3. `unknown` to the network and the journal holds signed bytes (schema v6)
  *    — REBROADCAST the journaled transaction and wait.
- * 4. `unknown` and no signed bytes (legacy journal), or the rebroadcast is
- *    rejected (its inputs were spent by a different tx while we were down) —
+ * 4. `unknown` and no signed bytes (legacy journal), or the rebroadcast fails
+ *    because its inputs were spent by a different tx while we were down —
  *    {@link JournaledAbandonedError}: the pipeline unwedges instead of
  *    waiting forever (the old behaviour).
+ *
+ * A rebroadcast failure that does NOT match the spent/double-spend pattern
+ * (mempool full, a transient node hiccup) is rethrown as-is (review I-3):
+ * the tx may still land, so abandoning it would risk a double commit — the
+ * caller retries on a later pass instead.
  */
 export async function resumeJournaledBroadcast(
   client: CempClient,
@@ -137,9 +142,15 @@ export async function resumeJournaledBroadcast(
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     const spentElsewhere = /double.?spend|already|spent|dead|resolve/i.test(message);
+    if (!spentElsewhere) {
+      // Transient failure (review I-3): the journaled tx may still land, so
+      // do NOT abandon it — propagate the original error and let the caller
+      // retry on a later pass.
+      throw e;
+    }
     throw new JournaledAbandonedError(
-      `rebroadcast of the journaled tx failed: ${message}`,
-      spentElsewhere,
+      `rebroadcast of the journaled tx failed (inputs spent by another transaction): ${message}`,
+      true,
     );
   }
   if (rebroadcastHash !== record.txHash) {

@@ -428,10 +428,13 @@ function assertAllInputsLockedBy(resolvedInputs: readonly ResolvedInput[], lock:
  * a double-spend and its message sits at `pending` forever.
  *
  * Marking is idempotent, so re-broadcast/resume paths may call it again safely.
+ * Accepts either the concrete CCC `Transaction` (fresh broadcast) or the
+ * journaled wire JSON (resume rebroadcast) — both are structurally a
+ * `TransactionLike` at runtime.
  */
 export async function trackBroadcastSpend(
   signer: { readonly client: CccClient },
-  tx: Transaction,
+  tx: Transaction | TransactionLike,
 ): Promise<void> {
   // CCC's own `client.sendTransaction` hands a concrete `Transaction` to this
   // very method, but the parameter is declared `TransactionLike`, whose

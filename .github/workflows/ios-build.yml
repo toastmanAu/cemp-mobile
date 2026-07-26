@@ -43,7 +43,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: CocoaPods install
-        run: pod install --project-directory=apps/android/ios 2>&1 | tee "$RUNNER_TEMP/pod-install.log"
+        run: |
+          set -o pipefail
+          pod install --project-directory=apps/android/ios 2>&1 | tee "$RUNNER_TEMP/pod-install.log"
 
       - name: xcodebuild (unsigned, simulator)
         run: |

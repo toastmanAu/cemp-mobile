@@ -39,6 +39,7 @@
     "@babel/plugin-transform-export-namespace-from": "7.29.7",
     "@react-native-community/cli": "20.0.0",
     "@react-native-community/cli-platform-android": "20.0.0",
+    "@react-native-community/cli-platform-ios": "20.0.0",
     "@react-native/babel-preset": "0.83.10",
     "@react-native/codegen": "0.83.10",
     "@react-native/gradle-plugin": "0.83.10",

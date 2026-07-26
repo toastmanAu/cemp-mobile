@@ -22,6 +22,7 @@ on:
       - apps/android/package.json
       - apps/android/metro.config.js
       - apps/android/react-native.config.js
+      - tools/kdf-c-core/**
       - pnpm-lock.yaml
 
 jobs:
@@ -63,6 +64,28 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
 
+      # Conformance gate for the CempKdf native module: runs the CempMobileTests
+      # XCTest (tools/kdf-c-core/vectors.txt through the module's C core) on a
+      # booted iPhone simulator, unsigned.
+      - name: xcodebuild test (CempKdf vectors, simulator)
+        run: |
+          set -o pipefail
+          UDID=$(xcrun simctl list devices available -j | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.name | contains("iPhone"))] | last | .udid')
+          if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
+            echo "No available iPhone simulator found" >&2
+            exit 1
+          fi
+          echo "Using simulator: $UDID"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcodebuild test \
+            -workspace apps/android/ios/CempMobile.xcworkspace \
+            -scheme CempMobile \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_TESTABILITY=YES 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log"
+
       - name: Upload build logs
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
@@ -71,5 +94,6 @@ jobs:
           path: |
             ${{ runner.temp }}/pod-install.log
             ${{ runner.temp }}/xcodebuild.log
+            ${{ runner.temp }}/xcodebuild-test.log
           if-no-files-found: warn
           retention-days: 14

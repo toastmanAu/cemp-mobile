@@ -7,23 +7,76 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		07BABD8F3FA0C27F4B81CFE9 /* CempKdf.m in Sources */ = {isa = PBXBuildFile; fileRef = BFB4FD51C5B8A03BAE2D06E1 /* CempKdf.m */; };
 		0C80B921A6F3F58F76C31292 /* libPods-CempMobile.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-CempMobile.a */; };
+		0CAB7FDE0EDCB82B6ACA03D3 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 665157A24D374604C8CD4199 /* Foundation.framework */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		22D8F88B687FBC76D3150226 /* argon2.c in Sources */ = {isa = PBXBuildFile; fileRef = DA5B7220F8A7E247DABD7270 /* argon2.c */; };
+		2706D07ED0BE2F454B7D6790 /* vectors.txt in Resources */ = {isa = PBXBuildFile; fileRef = A2C098E97E269EDB23F0D354 /* vectors.txt */; };
+		2868217D266BC43AB3BE3528 /* thread.c in Sources */ = {isa = PBXBuildFile; fileRef = D84FDD695F148911F02316E6 /* thread.c */; };
+		33FFF5BC7B94516A9144E263 /* encoding.c in Sources */ = {isa = PBXBuildFile; fileRef = F344768B0B859694A685B67C /* encoding.c */; };
+		3E4F8B8A1F250BBD7ADA6A45 /* crypto_scrypt-ref.c in Sources */ = {isa = PBXBuildFile; fileRef = 110379211318E1F8F6D0DCCB /* crypto_scrypt-ref.c */; };
+		46768DA30D9264A4B3D24173 /* core.c in Sources */ = {isa = PBXBuildFile; fileRef = 11021983D1B7385C99ABE4FE /* core.c */; };
+		4ADB3568E4D54CDA4486B72F /* blake2b.c in Sources */ = {isa = PBXBuildFile; fileRef = 2CC2E7CBF063A5B123A04F6C /* blake2b.c */; };
+		755F8604784781D7A0ADFF81 /* insecure_memzero.c in Sources */ = {isa = PBXBuildFile; fileRef = E36F687324B7AE026C2DE51B /* insecure_memzero.c */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
+		79F04CA827A0EB9E80F2AA0D /* sha256.c in Sources */ = {isa = PBXBuildFile; fileRef = F540415EE0E0615043A6E35F /* sha256.c */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
+		96C356831DF6386EAB767FE2 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D66E96BB29CE154CFB9D6FC8 /* XCTest.framework */; };
+		9F9FC24BDE20689464460613 /* blake2b.c in Sources */ = {isa = PBXBuildFile; fileRef = FBFDCAE329E66A471EB06974 /* blake2b.c */; };
+		AA56F14A400E0DEC084945BB /* CempKdfTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 01EF7510EAA6F798AAC62ECA /* CempKdfTests.m */; };
+		B01EE71BB5203E688BEFB035 /* ref.c in Sources */ = {isa = PBXBuildFile; fileRef = C31F3C33B7027F3090B09CCA /* ref.c */; };
+		BEBB764942C71FD3B7D73F42 /* encoding.c in Sources */ = {isa = PBXBuildFile; fileRef = D7D234018E87EC144AC83E9D /* encoding.c */; };
+		C40E01FCD45D234EEF5591EC /* core.c in Sources */ = {isa = PBXBuildFile; fileRef = EB5C8A8CB5C82AC932E6D610 /* core.c */; };
+		C60A07418CA0ADC1FD57DFF1 /* argon2.c in Sources */ = {isa = PBXBuildFile; fileRef = 583D6CAF3974A5794712F94C /* argon2.c */; };
+		D25727FD77B22B4FBB02FB8C /* ref.c in Sources */ = {isa = PBXBuildFile; fileRef = 86A186C2311F896485ACCE21 /* ref.c */; };
+		D7958F179AB987DAD100EB82 /* sha256.c in Sources */ = {isa = PBXBuildFile; fileRef = 482B3663D1E2C5DA5C23F284 /* sha256.c */; };
+		E21A9DAD30715CAE1679EC90 /* thread.c in Sources */ = {isa = PBXBuildFile; fileRef = 1883AA23EEEC367C875D6255 /* thread.c */; };
+		E2FADA692FF8878A85774BF6 /* crypto_scrypt-ref.c in Sources */ = {isa = PBXBuildFile; fileRef = D8411AD9BA3498AD3A200BDD /* crypto_scrypt-ref.c */; };
+		E34C9DF6073397E063B0F14D /* CempKdfCore.c in Sources */ = {isa = PBXBuildFile; fileRef = D8B41D67F8C02F8DBCBDADFB /* CempKdfCore.c */; };
+		EE8D4DAC9E40F58152CCE7EB /* CempKdfCore.c in Sources */ = {isa = PBXBuildFile; fileRef = B8B4A927C878E7F3A85FB2ED /* CempKdfCore.c */; };
+		F30B4430904328B3FF67B38D /* insecure_memzero.c in Sources */ = {isa = PBXBuildFile; fileRef = 24F64F20E093155EA3688754 /* insecure_memzero.c */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		01EF7510EAA6F798AAC62ECA /* CempKdfTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempKdfTests.m; sourceTree = "<group>"; };
+		11021983D1B7385C99ABE4FE /* core.c */ = {isa = PBXFileReference; includeInIndex = 1; name = core.c; path = ../CempKdf/vendor/argon2/src/core.c; sourceTree = "<group>"; };
+		110379211318E1F8F6D0DCCB /* crypto_scrypt-ref.c */ = {isa = PBXFileReference; includeInIndex = 1; name = "crypto_scrypt-ref.c"; path = "vendor/scrypt/lib/crypto/crypto_scrypt-ref.c"; sourceTree = "<group>"; };
 		13B07F961A680F5B00A75B9A /* CempMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CempMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = CempMobile/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = CempMobile/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = CempMobile/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		1883AA23EEEC367C875D6255 /* thread.c */ = {isa = PBXFileReference; includeInIndex = 1; name = thread.c; path = ../CempKdf/vendor/argon2/src/thread.c; sourceTree = "<group>"; };
+		24F64F20E093155EA3688754 /* insecure_memzero.c */ = {isa = PBXFileReference; includeInIndex = 1; name = insecure_memzero.c; path = vendor/scrypt/libcperciva/util/insecure_memzero.c; sourceTree = "<group>"; };
+		2CC2E7CBF063A5B123A04F6C /* blake2b.c */ = {isa = PBXFileReference; includeInIndex = 1; name = blake2b.c; path = ../CempKdf/vendor/argon2/src/blake2/blake2b.c; sourceTree = "<group>"; };
 		3B4392A12AC88292D35C810B /* Pods-CempMobile.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CempMobile.debug.xcconfig"; path = "Target Support Files/Pods-CempMobile/Pods-CempMobile.debug.xcconfig"; sourceTree = "<group>"; };
+		482B3663D1E2C5DA5C23F284 /* sha256.c */ = {isa = PBXFileReference; includeInIndex = 1; name = sha256.c; path = ../CempKdf/vendor/scrypt/libcperciva/alg/sha256.c; sourceTree = "<group>"; };
 		5709B34CF0A7D63546082F79 /* Pods-CempMobile.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CempMobile.release.xcconfig"; path = "Target Support Files/Pods-CempMobile/Pods-CempMobile.release.xcconfig"; sourceTree = "<group>"; };
+		583D6CAF3974A5794712F94C /* argon2.c */ = {isa = PBXFileReference; includeInIndex = 1; name = argon2.c; path = ../CempKdf/vendor/argon2/src/argon2.c; sourceTree = "<group>"; };
 		5DCACB8F33CDC322A6C60F78 /* libPods-CempMobile.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-CempMobile.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		665157A24D374604C8CD4199 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = CempMobile/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = CempMobile/LaunchScreen.storyboard; sourceTree = "<group>"; };
+		86A186C2311F896485ACCE21 /* ref.c */ = {isa = PBXFileReference; includeInIndex = 1; name = ref.c; path = ../CempKdf/vendor/argon2/src/ref.c; sourceTree = "<group>"; };
+		A2C098E97E269EDB23F0D354 /* vectors.txt */ = {isa = PBXFileReference; includeInIndex = 1; name = vectors.txt; path = "../../../tools/kdf-c-core/vectors.txt"; sourceTree = SOURCE_ROOT; };
+		B8B4A927C878E7F3A85FB2ED /* CempKdfCore.c */ = {isa = PBXFileReference; includeInIndex = 1; name = CempKdfCore.c; path = ../CempKdf/CempKdfCore.c; sourceTree = "<group>"; };
+		BFB4FD51C5B8A03BAE2D06E1 /* CempKdf.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempKdf.m; sourceTree = "<group>"; };
+		C01522814E1C0C38F1D77702 /* CempKdfCore.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = CempKdfCore.h; sourceTree = "<group>"; };
+		C31F3C33B7027F3090B09CCA /* ref.c */ = {isa = PBXFileReference; includeInIndex = 1; name = ref.c; path = vendor/argon2/src/ref.c; sourceTree = "<group>"; };
+		C70A543C820087BB3F06A92D /* CempMobileTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CempMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C70DFE18D571B3ACEF47A021 /* PROVENANCE.md */ = {isa = PBXFileReference; includeInIndex = 1; path = PROVENANCE.md; sourceTree = "<group>"; };
+		D66E96BB29CE154CFB9D6FC8 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/XCTest.framework; sourceTree = DEVELOPER_DIR; };
+		D7D234018E87EC144AC83E9D /* encoding.c */ = {isa = PBXFileReference; includeInIndex = 1; name = encoding.c; path = ../CempKdf/vendor/argon2/src/encoding.c; sourceTree = "<group>"; };
+		D8411AD9BA3498AD3A200BDD /* crypto_scrypt-ref.c */ = {isa = PBXFileReference; includeInIndex = 1; name = "crypto_scrypt-ref.c"; path = "../CempKdf/vendor/scrypt/lib/crypto/crypto_scrypt-ref.c"; sourceTree = "<group>"; };
+		D84FDD695F148911F02316E6 /* thread.c */ = {isa = PBXFileReference; includeInIndex = 1; name = thread.c; path = vendor/argon2/src/thread.c; sourceTree = "<group>"; };
+		D8B41D67F8C02F8DBCBDADFB /* CempKdfCore.c */ = {isa = PBXFileReference; includeInIndex = 1; path = CempKdfCore.c; sourceTree = "<group>"; };
+		DA5B7220F8A7E247DABD7270 /* argon2.c */ = {isa = PBXFileReference; includeInIndex = 1; name = argon2.c; path = vendor/argon2/src/argon2.c; sourceTree = "<group>"; };
+		E36F687324B7AE026C2DE51B /* insecure_memzero.c */ = {isa = PBXFileReference; includeInIndex = 1; name = insecure_memzero.c; path = ../CempKdf/vendor/scrypt/libcperciva/util/insecure_memzero.c; sourceTree = "<group>"; };
+		EB5C8A8CB5C82AC932E6D610 /* core.c */ = {isa = PBXFileReference; includeInIndex = 1; name = core.c; path = vendor/argon2/src/core.c; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
+		F344768B0B859694A685B67C /* encoding.c */ = {isa = PBXFileReference; includeInIndex = 1; name = encoding.c; path = vendor/argon2/src/encoding.c; sourceTree = "<group>"; };
+		F540415EE0E0615043A6E35F /* sha256.c */ = {isa = PBXFileReference; includeInIndex = 1; name = sha256.c; path = vendor/scrypt/libcperciva/alg/sha256.c; sourceTree = "<group>"; };
+		FBFDCAE329E66A471EB06974 /* blake2b.c */ = {isa = PBXFileReference; includeInIndex = 1; name = blake2b.c; path = vendor/argon2/src/blake2/blake2b.c; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -32,6 +85,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				0C80B921A6F3F58F76C31292 /* libPods-CempMobile.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1AC376A2CE8FA0E993B252A5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0CAB7FDE0EDCB82B6ACA03D3 /* Foundation.framework in Frameworks */,
+				96C356831DF6386EAB767FE2 /* XCTest.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -50,13 +112,43 @@
 			name = CempMobile;
 			sourceTree = "<group>";
 		};
+		218FA06A83ABE40317F1964E /* CempMobileTests */ = {
+			isa = PBXGroup;
+			children = (
+				B8B4A927C878E7F3A85FB2ED /* CempKdfCore.c */,
+				583D6CAF3974A5794712F94C /* argon2.c */,
+				11021983D1B7385C99ABE4FE /* core.c */,
+				D7D234018E87EC144AC83E9D /* encoding.c */,
+				86A186C2311F896485ACCE21 /* ref.c */,
+				1883AA23EEEC367C875D6255 /* thread.c */,
+				2CC2E7CBF063A5B123A04F6C /* blake2b.c */,
+				D8411AD9BA3498AD3A200BDD /* crypto_scrypt-ref.c */,
+				482B3663D1E2C5DA5C23F284 /* sha256.c */,
+				E36F687324B7AE026C2DE51B /* insecure_memzero.c */,
+				01EF7510EAA6F798AAC62ECA /* CempKdfTests.m */,
+				A2C098E97E269EDB23F0D354 /* vectors.txt */,
+			);
+			name = CempMobileTests;
+			path = CempMobileTests;
+			sourceTree = "<group>";
+		};
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
 				5DCACB8F33CDC322A6C60F78 /* libPods-CempMobile.a */,
+				4404A4315DB16E1C09CE59B4 /* iOS */,
 			);
 			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		4404A4315DB16E1C09CE59B4 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				665157A24D374604C8CD4199 /* Foundation.framework */,
+				D66E96BB29CE154CFB9D6FC8 /* XCTest.framework */,
+			);
+			name = iOS;
 			sourceTree = "<group>";
 		};
 		832341AE1AAA6A7D00B99B32 /* Libraries */ = {
@@ -74,6 +166,8 @@
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				BBD78D7AC51CEA395F1C20DB /* Pods */,
+				D7AC0F9D0DF5FE158DEE1450 /* CempKdf */,
+				218FA06A83ABE40317F1964E /* CempMobileTests */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -84,6 +178,7 @@
 			isa = PBXGroup;
 			children = (
 				13B07F961A680F5B00A75B9A /* CempMobile.app */,
+				C70A543C820087BB3F06A92D /* CempMobileTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -95,6 +190,27 @@
 				5709B34CF0A7D63546082F79 /* Pods-CempMobile.release.xcconfig */,
 			);
 			path = Pods;
+			sourceTree = "<group>";
+		};
+		D7AC0F9D0DF5FE158DEE1450 /* CempKdf */ = {
+			isa = PBXGroup;
+			children = (
+				BFB4FD51C5B8A03BAE2D06E1 /* CempKdf.m */,
+				D8B41D67F8C02F8DBCBDADFB /* CempKdfCore.c */,
+				DA5B7220F8A7E247DABD7270 /* argon2.c */,
+				EB5C8A8CB5C82AC932E6D610 /* core.c */,
+				F344768B0B859694A685B67C /* encoding.c */,
+				C31F3C33B7027F3090B09CCA /* ref.c */,
+				D84FDD695F148911F02316E6 /* thread.c */,
+				FBFDCAE329E66A471EB06974 /* blake2b.c */,
+				110379211318E1F8F6D0DCCB /* crypto_scrypt-ref.c */,
+				F540415EE0E0615043A6E35F /* sha256.c */,
+				24F64F20E093155EA3688754 /* insecure_memzero.c */,
+				C01522814E1C0C38F1D77702 /* CempKdfCore.h */,
+				C70DFE18D571B3ACEF47A021 /* PROVENANCE.md */,
+			);
+			name = CempKdf;
+			path = CempKdf;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -120,6 +236,23 @@
 			productName = CempMobile;
 			productReference = 13B07F961A680F5B00A75B9A /* CempMobile.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B7D78FBA62FC1F319AEF7C38 /* CempMobileTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EB3BD5EADD555762C7AE3B1C /* Build configuration list for PBXNativeTarget "CempMobileTests" */;
+			buildPhases = (
+				E73799D83BF07589E1311DA4 /* Sources */,
+				1AC376A2CE8FA0E993B252A5 /* Frameworks */,
+				E9A5CF690C9A7E6AC11736AE /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CempMobileTests;
+			productName = CempMobileTests;
+			productReference = C70A543C820087BB3F06A92D /* CempMobileTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -148,6 +281,7 @@
 			projectRoot = "";
 			targets = (
 				13B07F861A680F5B00A75B9A /* CempMobile */,
+				B7D78FBA62FC1F319AEF7C38 /* CempMobileTests */,
 			);
 		};
 /* End PBXProject section */
@@ -159,6 +293,14 @@
 			files = (
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E9A5CF690C9A7E6AC11736AE /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2706D07ED0BE2F454B7D6790 /* vectors.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -245,6 +387,35 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				07BABD8F3FA0C27F4B81CFE9 /* CempKdf.m in Sources */,
+				E34C9DF6073397E063B0F14D /* CempKdfCore.c in Sources */,
+				22D8F88B687FBC76D3150226 /* argon2.c in Sources */,
+				C40E01FCD45D234EEF5591EC /* core.c in Sources */,
+				33FFF5BC7B94516A9144E263 /* encoding.c in Sources */,
+				B01EE71BB5203E688BEFB035 /* ref.c in Sources */,
+				2868217D266BC43AB3BE3528 /* thread.c in Sources */,
+				9F9FC24BDE20689464460613 /* blake2b.c in Sources */,
+				3E4F8B8A1F250BBD7ADA6A45 /* crypto_scrypt-ref.c in Sources */,
+				79F04CA827A0EB9E80F2AA0D /* sha256.c in Sources */,
+				F30B4430904328B3FF67B38D /* insecure_memzero.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E73799D83BF07589E1311DA4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EE8D4DAC9E40F58152CCE7EB /* CempKdfCore.c in Sources */,
+				C60A07418CA0ADC1FD57DFF1 /* argon2.c in Sources */,
+				46768DA30D9264A4B3D24173 /* core.c in Sources */,
+				BEBB764942C71FD3B7D73F42 /* encoding.c in Sources */,
+				D25727FD77B22B4FBB02FB8C /* ref.c in Sources */,
+				E21A9DAD30715CAE1679EC90 /* thread.c in Sources */,
+				4ADB3568E4D54CDA4486B72F /* blake2b.c in Sources */,
+				E2FADA692FF8878A85774BF6 /* crypto_scrypt-ref.c in Sources */,
+				D7958F179AB987DAD100EB82 /* sha256.c in Sources */,
+				755F8604784781D7A0ADFF81 /* insecure_memzero.c in Sources */,
+				AA56F14A400E0DEC084945BB /* CempKdfTests.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -259,6 +430,20 @@
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_BITCODE = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"ARGON2_NO_THREADS=1",
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CempKdf",
+					"$(SRCROOT)/CempKdf/vendor/argon2/include",
+					"$(SRCROOT)/CempKdf/vendor/argon2/src",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/lib-platform/crypto",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/alg",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/cpusupport",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/util",
+				);
 				INFOPLIST_FILE = CempMobile/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -286,6 +471,20 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"ARGON2_NO_THREADS=1",
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CempKdf",
+					"$(SRCROOT)/CempKdf/vendor/argon2/include",
+					"$(SRCROOT)/CempKdf/vendor/argon2/src",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/lib-platform/crypto",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/alg",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/cpusupport",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/util",
+				);
 				INFOPLIST_FILE = CempMobile/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -444,6 +643,61 @@
 			};
 			name = Release;
 		};
+		AC3B29F846483A3E9D900A92 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"ARGON2_NO_THREADS=1",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CempKdf",
+					"$(SRCROOT)/CempKdf/vendor/argon2/include",
+					"$(SRCROOT)/CempKdf/vendor/argon2/src",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/lib-platform/crypto",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/alg",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/cpusupport",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/util",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cempmobile.tests;
+				SDKROOT = iphoneos;
+			};
+			name = Debug;
+		};
+		FB00BA6101AD3B94341F3ED3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGNING_ALLOWED = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"ARGON2_NO_THREADS=1",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CempKdf",
+					"$(SRCROOT)/CempKdf/vendor/argon2/include",
+					"$(SRCROOT)/CempKdf/vendor/argon2/src",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/lib-platform/crypto",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/alg",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/cpusupport",
+					"$(SRCROOT)/CempKdf/vendor/scrypt/libcperciva/util",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cempmobile.tests;
+				SDKROOT = iphoneos;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -461,6 +715,15 @@
 			buildConfigurations = (
 				83CBBA201A601CBA00E9B192 /* Debug */,
 				83CBBA211A601CBA00E9B192 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EB3BD5EADD555762C7AE3B1C /* Build configuration list for PBXNativeTarget "CempMobileTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FB00BA6101AD3B94341F3ED3 /* Release */,
+				AC3B29F846483A3E9D900A92 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

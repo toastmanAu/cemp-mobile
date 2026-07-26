@@ -32,7 +32,7 @@
             skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "00E356ED1AD99517003FC87E"
+               BlueprintIdentifier = "B7D78FBA62FC1F319AEF7C38"
                BuildableName = "CempMobileTests.xctest"
                BlueprintName = "CempMobileTests"
                ReferencedContainer = "container:CempMobile.xcodeproj">

@@ -310,3 +310,20 @@ decision, disclosed in threat model); multi-manifest messages persist only the l
 
 Final gate: vitest 628+1, eslint, prettier --check, cargo 7/7, compileDebugKotlin +
 assembleDebug all green.
+
+## Phase 12 kick-off (2026-07-26, Linux-verifiable iOS prep)
+
+ios-prep.md refreshed to current truth (0020367: schema v8, shipped Android image codec
+contract folded into iOS requirements — sampled decode, handle lifecycle, EXIF strip;
+locked-probe honesty for iOS Keychain WhenUnlocked; app-extraction map recorded for the
+apps/ios session). Shared conformance runner (5771aab): typed suite registry +
+platform-neutral loaders in cemp-test-vectors — one entry point for the future iOS
+runner, version-locked, registry completeness asserted (633 vitest). KDF C core vendored
+
+- validated (d61a13e): phc-winner-argon2 @20190702 (CC0) + Tarsnap scrypt @1.3.3 (BSD),
+  4/4 known-answer vectors byte-identical incl. full-strength argon2id m=64MiB/t=3/p=1 and
+  scrypt logN=17/r=8/p=1 — the exact core the Swift CempKdf module will wrap; wrapper
+  subtleties documented (argon2 v0x13, KiB units, ref/no-threads build, dkLen=32).
+  Deferred to macOS host (recorded in ios-prep.md): apps/ios target, Swift wrappers
+  (CempKdf, CoreImageCodec, PHPicker, BGTaskScheduler), extraction execution, iPhone
+  pairing.

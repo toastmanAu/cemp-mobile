@@ -38,6 +38,13 @@ jobs:
         with:
           ruby-version: "3.3"
 
+      # The pin alone does nothing without a `pod` installed FOR that Ruby —
+      # otherwise PATH falls through to the runner's homebrew CocoaPods,
+      # which still runs under 3.4 (observed on run 30202050162: the pinned
+      # step was present yet the failure log shows "Ruby : ruby 3.4.10").
+      - name: CocoaPods for the pinned Ruby
+        run: gem install cocoapods --no-document
+
       # pod install must run with CWD = apps/android/ios: use_native_modules!
       # shells out to `node -e "...require('@react-native-community/cli')..."`
       # which resolves from the process CWD, and pnpm does not hoist the CLI

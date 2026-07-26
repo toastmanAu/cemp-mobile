@@ -63,6 +63,27 @@ equivalent for this use case. Honest mapping of the §12 workers:
   `schedulePeriodic` → `BGAppRefreshTask` (best-effort),
   `scheduleOneShot` → `BGProcessingTask`, `cancel` → `BGTaskScheduler.cancel`.
 
+**Shipped (2026-07-26, `apps/android/ios/CempScheduler/`):** the
+`CempScheduler`/`CempHeadlessTask` RCT modules mirror the Android module
+names and JS surface exactly (no `apps/android/src` changes). iOS refresh
+tasks are one-shot, so periodicity is emulated by resubmitting the next
+occurrence on each fire. Retry one-shots share ONE
+`com.cempmobile.sync.oneshot` identifier (resubmission replaces) — safe
+because the fired tick is generic, never per-worker. KEEP vs UPDATE maps to
+pending-query-then-submit vs submit-replaces (BGTaskScheduler has no KEEP);
+the Kotlin SCHEDULE_VERSION guard has no iOS equivalent (every fire and
+every unlock re-registers). Background-JS invocation, the honest v1: a
+fired BGTask delivers the tick via
+`AppRegistry.startHeadlessTask(tickId, "CempBackgroundSync", {tickId})` —
+the same entry index.js registers — when the JS runtime is reachable, and
+completes natively immediately when it is not (DEBUG without Metro, or any
+cold-runtime case; v1 does not attempt reliable cold-boot delivery).
+Completion returns through `CempHeadlessTask.notifyTaskFinished` into the
+engine's bookkeeping; the BGTask expiration handler completes with failure.
+Headless engine XCTests cover request construction, KEEP idempotency,
+cancel passthrough, expiration/completion bookkeeping, and resubmission.
+Actual OS delivery of BGTasks is a first-device item.
+
 ## Task 4 — Filesystem assumptions replaced by platform adapters
 
 **Done by construction.** The only filesystem contact in shared packages is
@@ -163,7 +184,9 @@ it that way).
 3. op-sqlite SQLCipher iOS build flag + plaintext-header verification —
    flag CONFIRMED honored in the pod build (`[OP-SQLITE] using SQLCipher`);
    the on-device plaintext-header check is a first-device item.
-4. BGTaskScheduler bridge for the `@cemp/sync` Scheduler seam (Task 3).
+4. ~~BGTaskScheduler bridge for the `@cemp/sync` Scheduler seam (Task 3)~~ —
+   DONE 2026-07-26 (`apps/android/ios/CempScheduler/`, see the "Shipped"
+   note in Task 3; OS delivery of BGTasks is a first-device item).
 5. ~~Core Image codec module (Task 5)~~ — DONE (see Task 5 above; JPEG
    encode v1, WebP decode only). ~~The iOS picker~~ — DONE 2026-07-26
    (`apps/android/ios/CempImagePicker/`, PHPicker bridge, exact Android

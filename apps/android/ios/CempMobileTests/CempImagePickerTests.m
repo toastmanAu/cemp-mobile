@@ -35,8 +35,25 @@
 
 #pragma mark - Helpers
 
+/*
+ * File-backed provider: NSItemProvider RE-ENCODES in-memory image items
+ * (initWithItem: round-trips a PNG through ImageIO and the bytes change),
+ * while real PHPicker providers wrap asset files. Writing a temp file and
+ * using initWithContentsOfURL: mirrors the real thing — original bytes.
+ */
 - (NSItemProvider *)providerWithData:(NSData *)data uti:(NSString *)uti {
-  return [[NSItemProvider alloc] initWithItem:data typeIdentifier:uti];
+  NSString *ext = @{
+    @"public.jpeg" : @"jpg",
+    @"public.png" : @"png",
+    @"public.webp" : @"webp",
+  }[uti];
+  XCTAssertNotNil(ext, @"no extension mapping for %@", uti);
+  NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:
+      [NSString stringWithFormat:@"picker-test-%@.%@",
+       NSUUID.UUID.UUIDString, ext]];
+  XCTAssertTrue([data writeToFile:path atomically:YES]);
+  return [[NSItemProvider alloc] initWithContentsOfURL:
+      [NSURL fileURLWithPath:path]];
 }
 
 /* Small solid-color image, encoded. */

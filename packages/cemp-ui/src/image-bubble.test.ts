@@ -35,4 +35,17 @@ describe("imageBubbleState", () => {
       showSpinner: false,
     });
   });
+  it("never offers tap-to-load on an outgoing image (envelope is sealed to the recipient)", () => {
+    // Sender-side deriveIncomingAttachmentKey throws by construction — the
+    // tap could only produce a spinner → "Tap to retry" loop on a
+    // successfully-sent image.
+    for (const download of ["idle", "loading", "error", "loaded"] as const) {
+      expect(imageBubbleState({ hasThumbnail: true, download, outgoing: true })).toEqual({
+        showThumbnail: true,
+        showFull: false,
+        affordance: "none",
+        showSpinner: false,
+      });
+    }
+  });
 });

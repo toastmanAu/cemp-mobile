@@ -11,7 +11,21 @@ export interface ImageBubblePresentation {
 export function imageBubbleState(input: {
   readonly hasThumbnail: boolean;
   readonly download: ImageDownloadState;
+  /**
+   * Sender-side bubble: the envelope is sealed to the recipient, so a
+   * sender-side full-image download can never succeed — never offer the
+   * tap-to-load/retry affordance on an outgoing image.
+   */
+  readonly outgoing?: boolean;
 }): ImageBubblePresentation {
+  if (input.outgoing === true) {
+    return {
+      showThumbnail: input.hasThumbnail,
+      showFull: false,
+      affordance: "none",
+      showSpinner: false,
+    };
+  }
   switch (input.download) {
     case "idle":
       return {

@@ -155,6 +155,19 @@ export class ChatComposerViewModel {
       body: null,
       logicalMessageId: bytesToHex(randomBytes(16)),
     });
-    return await this.#messages.transitionState(message.id, "queued");
+    try {
+      return await this.#messages.transitionState(message.id, "queued");
+    } catch (e) {
+      // The row is already inserted; if the draft → queued transition fails
+      // it would strand as a permanent "draft" bubble with no retry
+      // affordance. Best-effort draft → failed (a legal edge) so the UI can
+      // honestly show a failed bubble, then rethrow the original error.
+      try {
+        await this.#messages.transitionState(message.id, "failed");
+      } catch {
+        // Nothing better to do — the insert still holds the truth.
+      }
+      throw e;
+    }
   }
 }

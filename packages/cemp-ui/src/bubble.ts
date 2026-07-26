@@ -45,7 +45,7 @@ const OUTGOING_MAP: Readonly<Partial<Record<MessageState, BubblePresentation>>> 
   reclaim_queued: { status: "acknowledged", showSpinner: false, canRetry: false },
   reclaim_pending: { status: "acknowledged", showSpinner: false, canRetry: false },
   reclaimed: { status: "reclaimed", showSpinner: false, canRetry: false },
-  expired: { status: "expired", showSpinner: false, canRetry: true },
+  expired: { status: "expired", showSpinner: false, canRetry: false },
   failed: { status: "failed", showSpinner: false, canRetry: true },
 };
 

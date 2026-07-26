@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ContactRepository,
   ConversationRepository,
@@ -186,6 +186,37 @@ describe("ChatComposerViewModel", () => {
     }
   });
 
+  it("insertImageDraft fails the inserted row when the queue transition throws (no stranded draft)", async () => {
+    const { db, contacts, conversations, messages } = await makeStack();
+    try {
+      const alice = await contacts.create({ displayName: "alice" });
+      const conv = await conversations.getOrCreateForContact(alice.id);
+      const composer = new ChatComposerViewModel(messages, conv.id);
+
+      // Force the draft → queued transition to fail once; the best-effort
+      // draft → failed fallback must still go through.
+      const real = messages.transitionState.bind(messages);
+      const spy = vi
+        .spyOn(messages, "transitionState")
+        .mockImplementation(
+          async (id: number, to: Parameters<MessageRepository["transitionState"]>[1]) => {
+            if (to === "queued") throw new Error("queue transition exploded");
+            return real(id, to);
+          },
+        );
+
+      await expect(composer.insertImageDraft()).rejects.toThrow("queue transition exploded");
+      spy.mockRestore();
+
+      const rows = await messages.listByConversation(conv.id);
+      expect(rows).toHaveLength(1);
+      // Not stranded at "draft": the retry affordance comes from `failed`.
+      expect(rows[0]!.state).toBe("failed");
+    } finally {
+      await db.close();
+    }
+  });
+
   it("resumeDraft restores only outgoing drafts", async () => {
     const { db, contacts, conversations, messages } = await makeStack();
     try {
@@ -230,6 +261,12 @@ describe("messageBubbleState", () => {
     expect(messageBubbleState({ direction: "outgoing", state: "reclaimed" }).status).toBe(
       "reclaimed",
     );
+    // Expired is terminal — retryMessage rejects it, so no retry affordance.
+    expect(messageBubbleState({ direction: "outgoing", state: "expired" })).toEqual({
+      status: "expired",
+      showSpinner: false,
+      canRetry: false,
+    });
   });
 
   it("maps incoming states and stays neutral on unknown states", () => {

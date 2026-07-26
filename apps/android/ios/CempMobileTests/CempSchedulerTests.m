@@ -154,11 +154,14 @@
 
 - (void)testCancelPassthrough {
   [_engine cancelWithIdentifier:@"route-scan:retry"];
-  XCTAssertEqualObjects(_gateway.cancelled, @[ CempSchedulerOneShotIdentifier ]);
+  NSArray<NSString *> *afterOneShot = @[ CempSchedulerOneShotIdentifier ];
+  XCTAssertEqualObjects(_gateway.cancelled, afterOneShot);
   [_engine cancelPeriodic];
-  XCTAssertEqualObjects(_gateway.cancelled,
-                        @[ CempSchedulerOneShotIdentifier,
-                           CempSchedulerPeriodicIdentifier ]);
+  // Bound first: a comma inside @[...] would split the XCTAssert macro's
+  // arguments (the preprocessor does not group square brackets).
+  NSArray<NSString *> *expected =
+      @[ CempSchedulerOneShotIdentifier, CempSchedulerPeriodicIdentifier ];
+  XCTAssertEqualObjects(_gateway.cancelled, expected);
 }
 
 - (void)testTaskCompletionBookkeeping {

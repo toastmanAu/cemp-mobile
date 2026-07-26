@@ -10,6 +10,7 @@
 		07BABD8F3FA0C27F4B81CFE9 /* CempKdf.m in Sources */ = {isa = PBXBuildFile; fileRef = BFB4FD51C5B8A03BAE2D06E1 /* CempKdf.m */; };
 		0C80B921A6F3F58F76C31292 /* libPods-CempMobile.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-CempMobile.a */; };
 		0CAB7FDE0EDCB82B6ACA03D3 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 665157A24D374604C8CD4199 /* Foundation.framework */; };
+		0D873120F3F8D08E2E0491D4 /* CempImagePickerTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 4FE9CE2EBB5BDBEFDB09F927 /* CempImagePickerTests.m */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		194FA86B7BF9C66F1E6A311A /* CempImageCodecEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = ECC6167411A64E05D46F13D4 /* CempImageCodecEngine.m */; };
 		22D8F88B687FBC76D3150226 /* argon2.c in Sources */ = {isa = PBXBuildFile; fileRef = DA5B7220F8A7E247DABD7270 /* argon2.c */; };
@@ -20,16 +21,21 @@
 		3E4F8B8A1F250BBD7ADA6A45 /* crypto_scrypt-ref.c in Sources */ = {isa = PBXBuildFile; fileRef = 110379211318E1F8F6D0DCCB /* crypto_scrypt-ref.c */; };
 		46768DA30D9264A4B3D24173 /* core.c in Sources */ = {isa = PBXBuildFile; fileRef = 11021983D1B7385C99ABE4FE /* core.c */; };
 		4ADB3568E4D54CDA4486B72F /* blake2b.c in Sources */ = {isa = PBXBuildFile; fileRef = 2CC2E7CBF063A5B123A04F6C /* blake2b.c */; };
+		5A14FC6F217C153515DEA426 /* CempImagePickerEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = B5DB4DD37FC9F25EBDAC8137 /* CempImagePickerEngine.m */; };
+		6241E90D16A8D7B558E0DB03 /* CempImagePickerEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = 1905F92A0F948D07DB54C935 /* CempImagePickerEngine.m */; };
 		755F8604784781D7A0ADFF81 /* insecure_memzero.c in Sources */ = {isa = PBXBuildFile; fileRef = E36F687324B7AE026C2DE51B /* insecure_memzero.c */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		79F04CA827A0EB9E80F2AA0D /* sha256.c in Sources */ = {isa = PBXBuildFile; fileRef = F540415EE0E0615043A6E35F /* sha256.c */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		96C356831DF6386EAB767FE2 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D66E96BB29CE154CFB9D6FC8 /* XCTest.framework */; };
+		9C36EBBA42E51331A0B8478A /* PhotosUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FD5795BD756AE43162704E43 /* PhotosUI.framework */; };
 		9E92C78FBB38E9CACCD79E2F /* MobileCoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3422FCC4026C90D9BE92E40E /* MobileCoreServices.framework */; };
 		9F9FC24BDE20689464460613 /* blake2b.c in Sources */ = {isa = PBXBuildFile; fileRef = FBFDCAE329E66A471EB06974 /* blake2b.c */; };
 		A4BD7AC5EC00E0352219BA18 /* CempImageCodecEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = 01233C30F687B14AE924638A /* CempImageCodecEngine.m */; };
+		A94EE0C18EAE82698A6483F2 /* CempImagePicker.m in Sources */ = {isa = PBXBuildFile; fileRef = 3B5273A8715B0609BA956A64 /* CempImagePicker.m */; };
 		AA56F14A400E0DEC084945BB /* CempKdfTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 01EF7510EAA6F798AAC62ECA /* CempKdfTests.m */; };
 		B01EE71BB5203E688BEFB035 /* ref.c in Sources */ = {isa = PBXBuildFile; fileRef = C31F3C33B7027F3090B09CCA /* ref.c */; };
+		B6AA2B72D6D9F04C61DB092B /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C55FDED485EAA31F53EDAB73 /* UIKit.framework */; };
 		BAC52793DD2875C1AE4E541A /* MobileCoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3422FCC4026C90D9BE92E40E /* MobileCoreServices.framework */; };
 		BEBB764942C71FD3B7D73F42 /* encoding.c in Sources */ = {isa = PBXBuildFile; fileRef = D7D234018E87EC144AC83E9D /* encoding.c */; };
 		C40E01FCD45D234EEF5591EC /* core.c in Sources */ = {isa = PBXBuildFile; fileRef = EB5C8A8CB5C82AC932E6D610 /* core.c */; };
@@ -59,26 +65,32 @@
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = CempMobile/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = CempMobile/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		1883AA23EEEC367C875D6255 /* thread.c */ = {isa = PBXFileReference; includeInIndex = 1; name = thread.c; path = ../CempKdf/vendor/argon2/src/thread.c; sourceTree = "<group>"; };
+		1905F92A0F948D07DB54C935 /* CempImagePickerEngine.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = CempImagePickerEngine.m; path = ../CempImagePicker/CempImagePickerEngine.m; sourceTree = "<group>"; };
 		24F64F20E093155EA3688754 /* insecure_memzero.c */ = {isa = PBXFileReference; includeInIndex = 1; name = insecure_memzero.c; path = vendor/scrypt/libcperciva/util/insecure_memzero.c; sourceTree = "<group>"; };
 		2CC2E7CBF063A5B123A04F6C /* blake2b.c */ = {isa = PBXFileReference; includeInIndex = 1; name = blake2b.c; path = ../CempKdf/vendor/argon2/src/blake2/blake2b.c; sourceTree = "<group>"; };
 		3422FCC4026C90D9BE92E40E /* MobileCoreServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MobileCoreServices.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/MobileCoreServices.framework; sourceTree = DEVELOPER_DIR; };
 		3B4392A12AC88292D35C810B /* Pods-CempMobile.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CempMobile.debug.xcconfig"; path = "Target Support Files/Pods-CempMobile/Pods-CempMobile.debug.xcconfig"; sourceTree = "<group>"; };
+		3B5273A8715B0609BA956A64 /* CempImagePicker.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImagePicker.m; sourceTree = "<group>"; };
 		482B3663D1E2C5DA5C23F284 /* sha256.c */ = {isa = PBXFileReference; includeInIndex = 1; name = sha256.c; path = ../CempKdf/vendor/scrypt/libcperciva/alg/sha256.c; sourceTree = "<group>"; };
+		4FE9CE2EBB5BDBEFDB09F927 /* CempImagePickerTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImagePickerTests.m; sourceTree = "<group>"; };
 		56E51A3FEF6B5B8F350BCD70 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/CoreGraphics.framework; sourceTree = DEVELOPER_DIR; };
 		5709B34CF0A7D63546082F79 /* Pods-CempMobile.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CempMobile.release.xcconfig"; path = "Target Support Files/Pods-CempMobile/Pods-CempMobile.release.xcconfig"; sourceTree = "<group>"; };
 		583D6CAF3974A5794712F94C /* argon2.c */ = {isa = PBXFileReference; includeInIndex = 1; name = argon2.c; path = ../CempKdf/vendor/argon2/src/argon2.c; sourceTree = "<group>"; };
 		59869FD2180D951B86C09C98 /* ImageIO.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ImageIO.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/ImageIO.framework; sourceTree = DEVELOPER_DIR; };
 		5DCACB8F33CDC322A6C60F78 /* libPods-CempMobile.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-CempMobile.a"; sourceTree = BUILT_PRODUCTS_DIR; };
+		64027EB5BD3DE648D0AB2C20 /* CempImagePickerEngine.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = CempImagePickerEngine.h; sourceTree = "<group>"; };
 		665157A24D374604C8CD4199 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = CempMobile/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = CempMobile/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		86A186C2311F896485ACCE21 /* ref.c */ = {isa = PBXFileReference; includeInIndex = 1; name = ref.c; path = ../CempKdf/vendor/argon2/src/ref.c; sourceTree = "<group>"; };
 		A2C098E97E269EDB23F0D354 /* vectors.txt */ = {isa = PBXFileReference; includeInIndex = 1; name = vectors.txt; path = "../../../tools/kdf-c-core/vectors.txt"; sourceTree = SOURCE_ROOT; };
 		B0448BB021990E66ED70F437 /* CempImageCodecTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImageCodecTests.m; sourceTree = "<group>"; };
+		B5DB4DD37FC9F25EBDAC8137 /* CempImagePickerEngine.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImagePickerEngine.m; sourceTree = "<group>"; };
 		B8B4A927C878E7F3A85FB2ED /* CempKdfCore.c */ = {isa = PBXFileReference; includeInIndex = 1; name = CempKdfCore.c; path = ../CempKdf/CempKdfCore.c; sourceTree = "<group>"; };
 		BFB4FD51C5B8A03BAE2D06E1 /* CempKdf.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempKdf.m; sourceTree = "<group>"; };
 		C01522814E1C0C38F1D77702 /* CempKdfCore.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = CempKdfCore.h; sourceTree = "<group>"; };
 		C31F3C33B7027F3090B09CCA /* ref.c */ = {isa = PBXFileReference; includeInIndex = 1; name = ref.c; path = vendor/argon2/src/ref.c; sourceTree = "<group>"; };
+		C55FDED485EAA31F53EDAB73 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/UIKit.framework; sourceTree = DEVELOPER_DIR; };
 		C70A543C820087BB3F06A92D /* CempMobileTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CempMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C70DFE18D571B3ACEF47A021 /* PROVENANCE.md */ = {isa = PBXFileReference; includeInIndex = 1; path = PROVENANCE.md; sourceTree = "<group>"; };
 		CD122E826CAFF00E42F4AACD /* CempImageCodecEngine.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = CempImageCodecEngine.h; sourceTree = "<group>"; };
@@ -95,6 +107,7 @@
 		F344768B0B859694A685B67C /* encoding.c */ = {isa = PBXFileReference; includeInIndex = 1; name = encoding.c; path = vendor/argon2/src/encoding.c; sourceTree = "<group>"; };
 		F540415EE0E0615043A6E35F /* sha256.c */ = {isa = PBXFileReference; includeInIndex = 1; name = sha256.c; path = vendor/scrypt/libcperciva/alg/sha256.c; sourceTree = "<group>"; };
 		FBFDCAE329E66A471EB06974 /* blake2b.c */ = {isa = PBXFileReference; includeInIndex = 1; name = blake2b.c; path = vendor/argon2/src/blake2/blake2b.c; sourceTree = "<group>"; };
+		FD5795BD756AE43162704E43 /* PhotosUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PhotosUI.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/PhotosUI.framework; sourceTree = DEVELOPER_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -106,6 +119,7 @@
 				F4161AEDA0E178B01C36C5A0 /* ImageIO.framework in Frameworks */,
 				2E22610A99F8EA5E9026A4E9 /* CoreGraphics.framework in Frameworks */,
 				9E92C78FBB38E9CACCD79E2F /* MobileCoreServices.framework in Frameworks */,
+				9C36EBBA42E51331A0B8478A /* PhotosUI.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -118,6 +132,7 @@
 				E6445DC5BF97A9658211FF48 /* ImageIO.framework in Frameworks */,
 				ED9470F46D73F86E103BBB2E /* CoreGraphics.framework in Frameworks */,
 				BAC52793DD2875C1AE4E541A /* MobileCoreServices.framework in Frameworks */,
+				B6AA2B72D6D9F04C61DB092B /* UIKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -153,6 +168,8 @@
 				A2C098E97E269EDB23F0D354 /* vectors.txt */,
 				ECC6167411A64E05D46F13D4 /* CempImageCodecEngine.m */,
 				B0448BB021990E66ED70F437 /* CempImageCodecTests.m */,
+				1905F92A0F948D07DB54C935 /* CempImagePickerEngine.m */,
+				4FE9CE2EBB5BDBEFDB09F927 /* CempImagePickerTests.m */,
 			);
 			name = CempMobileTests;
 			path = CempMobileTests;
@@ -176,8 +193,21 @@
 				59869FD2180D951B86C09C98 /* ImageIO.framework */,
 				56E51A3FEF6B5B8F350BCD70 /* CoreGraphics.framework */,
 				3422FCC4026C90D9BE92E40E /* MobileCoreServices.framework */,
+				FD5795BD756AE43162704E43 /* PhotosUI.framework */,
+				C55FDED485EAA31F53EDAB73 /* UIKit.framework */,
 			);
 			name = iOS;
+			sourceTree = "<group>";
+		};
+		55926F598DC7A7F59833F725 /* CempImagePicker */ = {
+			isa = PBXGroup;
+			children = (
+				3B5273A8715B0609BA956A64 /* CempImagePicker.m */,
+				B5DB4DD37FC9F25EBDAC8137 /* CempImagePickerEngine.m */,
+				64027EB5BD3DE648D0AB2C20 /* CempImagePickerEngine.h */,
+			);
+			name = CempImagePicker;
+			path = CempImagePicker;
 			sourceTree = "<group>";
 		};
 		832341AE1AAA6A7D00B99B32 /* Libraries */ = {
@@ -198,6 +228,7 @@
 				D7AC0F9D0DF5FE158DEE1450 /* CempKdf */,
 				218FA06A83ABE40317F1964E /* CempMobileTests */,
 				8AD8E5E85F4375F149121066 /* CempImageCodec */,
+				55926F598DC7A7F59833F725 /* CempImagePicker */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -441,6 +472,8 @@
 				F30B4430904328B3FF67B38D /* insecure_memzero.c in Sources */,
 				FE33B4E1826A6572531CAF78 /* CempImageCodec.m in Sources */,
 				A4BD7AC5EC00E0352219BA18 /* CempImageCodecEngine.m in Sources */,
+				A94EE0C18EAE82698A6483F2 /* CempImagePicker.m in Sources */,
+				5A14FC6F217C153515DEA426 /* CempImagePickerEngine.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -461,6 +494,8 @@
 				AA56F14A400E0DEC084945BB /* CempKdfTests.m in Sources */,
 				194FA86B7BF9C66F1E6A311A /* CempImageCodecEngine.m in Sources */,
 				DCBFB10EE371871101DEC4B2 /* CempImageCodecTests.m in Sources */,
+				6241E90D16A8D7B558E0DB03 /* CempImagePickerEngine.m in Sources */,
+				0D873120F3F8D08E2E0491D4 /* CempImagePickerTests.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

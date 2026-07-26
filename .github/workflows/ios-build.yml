@@ -38,27 +38,39 @@ jobs:
         with:
           ruby-version: "3.3"
 
+      # The pin alone does nothing without a `pod` installed FOR that Ruby —
+      # otherwise PATH falls through to the runner's homebrew CocoaPods,
+      # which still runs under 3.4 (observed on run 30202050162: the pinned
+      # step was present yet the failure log shows "Ruby : ruby 3.4.10").
+      - name: CocoaPods for the pinned Ruby
+        run: gem install cocoapods --no-document
+
       # pod install must run with CWD = apps/android/ios: use_native_modules!
       # shells out to `node -e "...require('@react-native-community/cli')..."`
       # which resolves from the process CWD, and pnpm does not hoist the CLI
       # to the repo-root node_modules.
       - name: CocoaPods install
         working-directory: apps/android/ios
+        env:
+          # The "null byte" flake is encoding-sensitive (Pathname#realdirpath
+          # on globbed paths); CocoaPods requires a UTF-8 locale.
+          LANG: en_US.UTF-8
+          LC_ALL: en_US.UTF-8
         run: |
           set -o pipefail
           # CocoaPods intermittently dies with "pathname contains null byte"
           # in PodsProjectGenerator (upstream flake CocoaPods/CocoaPods#12798,
           # "hit or miss" on the macos runners) — retry with a clean Pods
           # state before giving up.
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5; do
             if pod install 2>&1 | tee "$RUNNER_TEMP/pod-install.log"; then
               exit 0
             fi
-            echo "pod install failed (attempt $attempt of 3), cleaning Pods state" >&2
+            echo "pod install failed (attempt $attempt of 5), cleaning Pods state" >&2
             rm -rf Pods Podfile.lock
             sleep 5
           done
-          echo "pod install failed after 3 attempts" >&2
+          echo "pod install failed after 5 attempts" >&2
           exit 1
 
       - name: xcodebuild (unsigned, simulator)

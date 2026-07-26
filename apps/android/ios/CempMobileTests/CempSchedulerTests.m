@@ -4,7 +4,9 @@
  * Task 3 mapping against the Android CempSchedulerModule contract:
  *
  *   - periodic → BGAppRefreshTaskRequest under com.cempmobile.sync.tick,
- *     earliestBeginDate from intervalMs, network flag honored
+ *     earliestBeginDate from intervalMs (BGAppRefreshTaskRequest has no
+ *     network constraint — the WorkManager requiresNetwork flag has no iOS
+ *     mapping; the one-shot's BGProcessingTaskRequest carries it instead)
  *   - one-shot → BGProcessingTaskRequest under the shared
  *     com.cempmobile.sync.oneshot, earliestBeginDate from delayMs, network
  *     required (Kotlin constraints)
@@ -109,16 +111,11 @@
   XCTAssertTrue([request isKindOfClass:BGAppRefreshTaskRequest.class]);
   XCTAssertEqualObjects(request.identifier, CempSchedulerPeriodicIdentifier);
   XCTAssertEqualObjects(request.identifier, @"com.cempmobile.sync.tick");
-  XCTAssertTrue(request.requiresNetworkConnectivity);
+  // BGAppRefreshTaskRequest carries no network constraint (iOS has no
+  // mapping for the WorkManager requiresNetwork flag — see the engine).
   NSTimeInterval delta =
       [request.earliestBeginDate timeIntervalSinceDate:[NSDate date]];
   XCTAssertTrue(delta > 890 && delta <= 900, @"delta was %f", delta);
-}
-
-- (void)testPeriodicNetworkFlagOff {
-  [self schedulePeriodic:60000 requiresNetwork:NO replaceExisting:YES];
-  BGTaskRequest *request = _gateway.submitted.firstObject;
-  XCTAssertFalse(request.requiresNetworkConnectivity);
 }
 
 - (void)testKeepIsIdempotentUpdateReplaces {
@@ -149,7 +146,7 @@
   // Any JS id maps to the shared one-shot identifier (documented v1
   // coalescing — the fired tick is generic).
   XCTAssertEqualObjects(request.identifier, CempSchedulerOneShotIdentifier);
-  XCTAssertTrue(request.requiresNetworkConnectivity);
+  XCTAssertTrue(((BGProcessingTaskRequest *)request).requiresNetworkConnectivity);
   NSTimeInterval delta =
       [request.earliestBeginDate timeIntervalSinceDate:[NSDate date]];
   XCTAssertTrue(delta > 20 && delta <= 30, @"delta was %f", delta);
@@ -157,11 +154,14 @@
 
 - (void)testCancelPassthrough {
   [_engine cancelWithIdentifier:@"route-scan:retry"];
-  XCTAssertEqualObjects(_gateway.cancelled, @[ CempSchedulerOneShotIdentifier ]);
+  NSArray<NSString *> *afterOneShot = @[ CempSchedulerOneShotIdentifier ];
+  XCTAssertEqualObjects(_gateway.cancelled, afterOneShot);
   [_engine cancelPeriodic];
-  XCTAssertEqualObjects(_gateway.cancelled,
-                        @[ CempSchedulerOneShotIdentifier,
-                           CempSchedulerPeriodicIdentifier ]);
+  // Bound first: a comma inside @[...] would split the XCTAssert macro's
+  // arguments (the preprocessor does not group square brackets).
+  NSArray<NSString *> *expected =
+      @[ CempSchedulerOneShotIdentifier, CempSchedulerPeriodicIdentifier ];
+  XCTAssertEqualObjects(_gateway.cancelled, expected);
 }
 
 - (void)testTaskCompletionBookkeeping {
@@ -204,7 +204,6 @@
   BGTaskRequest *resubmitted = _gateway.submitted[1];
   XCTAssertTrue([resubmitted isKindOfClass:BGAppRefreshTaskRequest.class]);
   XCTAssertEqualObjects(resubmitted.identifier, CempSchedulerPeriodicIdentifier);
-  XCTAssertTrue(resubmitted.requiresNetworkConnectivity);
 }
 
 - (void)testTickIdsStartAtOneAndIncrement {

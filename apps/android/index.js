@@ -4,15 +4,15 @@
 // - TextEncoder/TextDecoder: Hermes (RN 0.83) has neither.
 import "react-native-get-random-values";
 import "fast-text-encoding";
-import { AppRegistry, Platform } from "react-native";
+import { AppRegistry } from "react-native";
 import { App } from "./src/App";
 import { backgroundSyncTask } from "./src/background-sync";
 
 AppRegistry.registerComponent("CempMobile", () => App);
 
-// HeadlessJS is Android-only. The iOS BGTaskScheduler bridge (CempScheduler)
-// delivers ticks through its own path, so there is no headless task to
-// register on iOS.
-if (Platform.OS === "android") {
-  AppRegistry.registerHeadlessTask("CempBackgroundSync", () => backgroundSyncTask);
-}
+// The background-sync headless task registers on BOTH platforms: Android's
+// WorkManager tick invokes it via HeadlessJS, and the iOS BGTaskScheduler
+// bridge (CempScheduler) delivers ticks to the exact same entry via
+// AppRegistry.startHeadlessTask. The task itself null-guards the container
+// and signals completion through CempHeadlessTask (present on both).
+AppRegistry.registerHeadlessTask("CempBackgroundSync", () => backgroundSyncTask);

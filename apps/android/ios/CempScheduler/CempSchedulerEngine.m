@@ -38,7 +38,10 @@ NS_ASSUME_NONNULL_BEGIN
       initWithIdentifier:CempSchedulerPeriodicIdentifier];
   request.earliestBeginDate =
       [NSDate dateWithTimeIntervalSinceNow:intervalMs / 1000.0];
-  request.requiresNetworkConnectivity = requiresNetwork;
+  // NOTE: BGAppRefreshTaskRequest has no network/power constraint (only
+  // BGProcessingTaskRequest does) — the WorkManager requiresNetwork flag has
+  // no iOS mapping for the periodic tick; it is stored for the resubmission
+  // path but not applied. The OS decides the cadence (ios-prep Task 3).
   BOOL submitted = [_gateway submitTaskRequest:request error:error];
   if (submitted) {
     [_lock lock];
@@ -117,10 +120,12 @@ NS_ASSUME_NONNULL_BEGIN
   [_lock unlock];
 
   __weak CempSchedulerEngine *weakSelf = self;
+  __weak id<CempSchedulerTaskHandle> weakHandle = handle;
   handle.expirationHandler = ^{
     // Out of background time with no JS finish signal: complete with
-    // failure so the system does not kill the app mid-task.
-    [weakSelf completeHandle:handle withSuccess:NO];
+    // failure so the system does not kill the app mid-task. (weakHandle:
+    // the handle owns this block — a strong capture would be a cycle.)
+    [weakSelf completeHandle:weakHandle withSuccess:NO];
   };
 
   if ([identifier isEqualToString:CempSchedulerPeriodicIdentifier]) {

@@ -415,6 +415,31 @@ export class MessagingService {
     format?: ImageEncodeFormat;
     timeoutMs?: number;
   }): Promise<{ messageTxHash: string }> {
+    // Desync guard (final review): a UI retry after the message tx was already
+    // journaled/broadcast (e.g. commit timeout on attempt 1) must NOT re-run
+    // the chunk pipeline — that would re-upload every chunk cell under a NEW
+    // encryption key while the on-chain manifest still names the attempt-1
+    // chunks, orphaning the new ones. When a `message:<logicalMessageId>`
+    // record is already in flight, skip the chunk work entirely and let
+    // `publishText`'s resume path drive the journaled tx to commit instead.
+    // The attachments row is deliberately left untouched here: the attempt-1
+    // manifest is the truth.
+    const journaled = await this.#outgoingTxs.findLatestByPurpose(
+      `message:${input.logicalMessageId}`,
+    );
+    if (
+      journaled !== undefined &&
+      (journaled.state === "submitted" || journaled.state === "committed")
+    ) {
+      const resumed = await this.#publisher.publishText({
+        messageRowId: input.messageRowId,
+        logicalMessageId: input.logicalMessageId,
+        text: input.caption ?? "",
+        recipientProfileIdHex: input.recipientProfileIdHex,
+        receiptRequest: 1,
+      });
+      return { messageTxHash: resumed.txHash };
+    }
     if (this.#createImageCodec === undefined) {
       throw new Error("publishImage: no image codec configured for this platform");
     }

@@ -55,6 +55,24 @@ const STATUS_LABEL: Record<BubbleStatus, string> = {
 
 type Props = NativeStackScreenProps<RootStackParamList, "Chat">;
 
+/**
+ * C-2: true when a publication failure happened AFTER broadcast (e.g. a
+ * commit timeout) — the tx is honestly in flight, so the row must NOT be
+ * marked failed (workers only heal pending/committed). Duck-typed like
+ * send()'s userMessage check below, so no @cemp/ckb import is needed here.
+ */
+function isPostBroadcastError(e: unknown): boolean {
+  return e instanceof Error && "broadcast" in e && (e as { broadcast: unknown }).broadcast === true;
+}
+
+/** Rule 15: prefer the jargon-free userMessage over the coded `code: …` text. */
+function publishErrorText(e: unknown, fallback: string): string {
+  if (e instanceof Error && "userMessage" in e) {
+    return String((e as { userMessage: unknown }).userMessage);
+  }
+  return e instanceof Error ? e.message : fallback;
+}
+
 export function ChatScreen({ route }: Props): React.JSX.Element {
   const { conversationId } = route.params;
   const container = useAppContainer();
@@ -77,6 +95,9 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
   // Double-tap guard: attach/send/retry all publish; a second tap while one is
   // in flight must not start a parallel publish of the same (or a second) row.
   const publishBusy = useRef(false);
+  // Synchronous in-flight guard for loadFull (downloadStates is async React
+  // state — a fast double-tap would otherwise fire two downloads).
+  const downloadsInFlight = useRef(new Set<number>());
 
   async function reload(): Promise<void> {
     const list = await container.repositories.messages.listByConversation(conversationId, {
@@ -142,11 +163,13 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
     } catch (e) {
       // ImageTooLargeError / decode / capacity all arrive here already
       // jargon-free. If the row was already inserted, mark it failed —
-      // never leave it stuck at queued/"sending".
-      if (row !== undefined) {
+      // never leave it stuck at queued/"sending". C-2: EXCEPT when the
+      // failure happened after broadcast — that row is honestly pending and
+      // the pending-tx/stranded heal advances it on commit.
+      if (row !== undefined && !isPostBroadcastError(e)) {
         await container.repositories.messages.transitionState(row.id, "failed");
       }
-      setPublishError(e instanceof Error ? e.message : "Couldn't send that image.");
+      setPublishError(publishErrorText(e, "Couldn't send that image."));
     } finally {
       publishBusy.current = false;
     }
@@ -155,6 +178,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
 
   /** Tap-to-download an incoming image (7A: keep thumbnail, offer retry on failure). */
   async function loadFull(messageId: number, manifest: codec.AttachmentManifestV1): Promise<void> {
+    if (downloadsInFlight.current.has(messageId)) return; // double-tap: one download at a time
+    downloadsInFlight.current.add(messageId);
     setDownloadState(messageId, "loading");
     try {
       const full = await container.messaging.downloadImageAttachment(messageId, manifest);
@@ -166,6 +191,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
       setDownloadState(messageId, "loaded");
     } catch {
       setDownloadState(messageId, "error");
+    } finally {
+      downloadsInFlight.current.delete(messageId);
     }
   }
 
@@ -208,9 +235,14 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
         });
       }
     } catch (e) {
-      // Same contract as attachImage: never leave the row stuck at queued.
-      await container.repositories.messages.transitionState(item.id, "failed");
-      setPublishError(e instanceof Error ? e.message : "Couldn't resend that message.");
+      // Same contract as attachImage: never leave the row stuck at queued —
+      // but a post-broadcast failure (C-2) leaves the honestly-pending row
+      // alone for the workers to heal. Rule 15: show the jargon-free
+      // userMessage, not PublicationError's coded `code: …` message.
+      if (!isPostBroadcastError(e)) {
+        await container.repositories.messages.transitionState(item.id, "failed");
+      }
+      setPublishError(publishErrorText(e, "Couldn't resend that message."));
     } finally {
       publishBusy.current = false;
     }
@@ -297,18 +329,30 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
           const label = STATUS_LABEL[bubble.status];
           const attachment = attachmentsByMessage.get(item.id);
           if (attachment !== undefined && attachment.manifest !== null) {
-            const manifest = codec.decodeAttachmentManifestV1(attachment.manifest);
-            return (
-              <ImageBubble
-                outgoing={outgoing}
-                manifest={manifest}
-                downloadState={downloadStates.get(item.id) ?? "idle"}
-                full={fullImages.get(item.id)}
-                statusLabel={label}
-                canRetry={bubble.canRetry}
-                onTap={() => void loadFull(item.id, manifest)}
-              />
-            );
+            // Rule 4: the manifest blob is untrusted input — a corrupted one
+            // must not crash the whole chat screen at render time. Fall back
+            // to the plain bubble path ("[image]" + status) instead.
+            let manifest: codec.AttachmentManifestV1 | null = null;
+            try {
+              manifest = codec.decodeAttachmentManifestV1(attachment.manifest);
+            } catch {
+              manifest = null;
+            }
+            if (manifest !== null) {
+              return (
+                <ImageBubble
+                  outgoing={outgoing}
+                  manifest={manifest}
+                  downloadState={downloadStates.get(item.id) ?? "idle"}
+                  full={fullImages.get(item.id)}
+                  statusLabel={label}
+                  canRetry={bubble.canRetry}
+                  // Outgoing images are sealed to the recipient — sender-side
+                  // download can never succeed, so the tap is a no-op.
+                  onTap={outgoing ? () => {} : () => void loadFull(item.id, manifest)}
+                />
+              );
+            }
           }
           return (
             <Pressable
@@ -377,6 +421,7 @@ function ImageBubble({
   const presentation = imageBubbleState({
     hasThumbnail: manifest.thumbnail != null,
     download: downloadState,
+    outgoing,
   });
   const declaredMimeType = new TextDecoder().decode(manifest.mime_type);
   const thumbnailUri =

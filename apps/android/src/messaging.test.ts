@@ -18,10 +18,15 @@
  * call in `init()` is ever deleted again, this test fails.
  */
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { CempClient, type LiveCellStatus } from "@cemp/ckb";
+import { CempClient, MessagePublisher, type LiveCellStatus } from "@cemp/ckb";
 import { CKB_TESTNET, codec } from "@cemp/core";
 import { EphemeralSoftwareKeyStore, MemoryVaultStorage, SecureVaultImpl } from "@cemp/secure-vault";
-import { ContactRepository, ConversationRepository, MessageRepository } from "@cemp/database";
+import {
+  ContactRepository,
+  ConversationRepository,
+  MessageRepository,
+  OutgoingTransactionRepository,
+} from "@cemp/database";
 import { NodeSqliteAdapter } from "@cemp/database/node";
 import { InMemoryScheduler } from "@cemp/sync";
 import { NoopNotifier } from "@cemp/ui";
@@ -189,6 +194,102 @@ describe("MessagingService.deriveIncomingAttachmentKey (Task 15a receive-side cr
       const derivedKey = await service.deriveIncomingAttachmentKey(row.id);
       expect(Array.from(derivedKey)).toEqual(Array.from(sendKey));
       expect(derivedKey.length).toBe(32);
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+describe("MessagingService.publishImage desync guard (retry after broadcast)", () => {
+  /**
+   * A journaled `message:<logicalMessageId>` record in submitted/committed
+   * state means attempt 1 already broadcast the manifest message tx naming
+   * the attempt-1 chunks. A retry must skip the chunk pipeline (re-uploading
+   * under a new key would orphan the new chunks) and only drive the
+   * publisher's resume path — and must NOT rewrite the attachments row.
+   */
+  async function guardedService(state: "submitted" | "committed") {
+    const vault = await unlockedTestVault();
+    const db = new NodeSqliteAdapter();
+    // No createImageCodec on purpose: reaching the chunk path would throw
+    // "no image codec configured", so a passing test proves the guard
+    // short-circuited BEFORE any chunk work.
+    const service = await MessagingService.init({
+      vault,
+      db,
+      notifier: new NoopNotifier(),
+      scheduler: new InMemoryScheduler(),
+    });
+    const outgoingTxs = new OutgoingTransactionRepository(db);
+    await outgoingTxs.record({
+      txHash: `0x${"cd".repeat(32)}`,
+      purpose: "message:img-logical-1",
+      state,
+      submittedAtMs: Date.now(),
+    });
+    return { db, service };
+  }
+
+  it.each(["submitted", "committed"] as const)(
+    "skips chunk work and resumes via publishText when the message tx is %s",
+    async (state) => {
+      const { db, service } = await guardedService(state);
+      const publishText = vi.spyOn(MessagePublisher.prototype, "publishText").mockResolvedValue({
+        txHash: `0x${"cd".repeat(32)}`,
+        outPoint: { txHash: `0x${"cd".repeat(32)}`, index: 0 },
+        committed: true,
+        resumed: true,
+      });
+      onTestFinished(() => {
+        publishText.mockRestore();
+      });
+
+      try {
+        const result = await service.publishImage({
+          messageRowId: 1,
+          logicalMessageId: "img-logical-1",
+          recipientProfileIdHex: "ab".repeat(32),
+          sourceBytes: new Uint8Array([1, 2, 3]),
+          caption: "hello",
+        });
+
+        expect(result.messageTxHash).toBe(`0x${"cd".repeat(32)}`);
+        expect(publishText).toHaveBeenCalledTimes(1);
+        expect(publishText).toHaveBeenCalledWith({
+          messageRowId: 1,
+          logicalMessageId: "img-logical-1",
+          text: "hello",
+          recipientProfileIdHex: "ab".repeat(32),
+          receiptRequest: 1,
+        });
+      } finally {
+        await db.close();
+      }
+    },
+  );
+
+  it("defaults the resume text to an empty caption", async () => {
+    const { db, service } = await guardedService("submitted");
+    const publishText = vi.spyOn(MessagePublisher.prototype, "publishText").mockResolvedValue({
+      txHash: `0x${"cd".repeat(32)}`,
+      outPoint: { txHash: `0x${"cd".repeat(32)}`, index: 0 },
+      committed: true,
+      resumed: true,
+    });
+    onTestFinished(() => {
+      publishText.mockRestore();
+    });
+
+    try {
+      await service.publishImage({
+        messageRowId: 1,
+        logicalMessageId: "img-logical-1",
+        recipientProfileIdHex: "ab".repeat(32),
+        sourceBytes: new Uint8Array([1, 2, 3]),
+      });
+      expect(publishText).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "" }) as unknown as Record<string, unknown>,
+      );
     } finally {
       await db.close();
     }

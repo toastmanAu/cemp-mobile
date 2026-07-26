@@ -146,7 +146,7 @@
   // Any JS id maps to the shared one-shot identifier (documented v1
   // coalescing — the fired tick is generic).
   XCTAssertEqualObjects(request.identifier, CempSchedulerOneShotIdentifier);
-  XCTAssertTrue(request.requiresNetworkConnectivity);
+  XCTAssertTrue(((BGProcessingTaskRequest *)request).requiresNetworkConnectivity);
   NSTimeInterval delta =
       [request.earliestBeginDate timeIntervalSinceDate:[NSDate date]];
   XCTAssertTrue(delta > 20 && delta <= 30, @"delta was %f", delta);

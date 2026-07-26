@@ -401,3 +401,19 @@ composition root serves both platforms; iOS gets the mirrored bridge classes
 primary sync path), no-op notification permission; headless task registers
 on Android only. 639 vitest; iOS Metro bundle verified (10.9 MB, headless
 registration constant-folded out on iOS).
+
+## Phase 12 remote part 4 (2026-07-27): BGTaskScheduler bridge GREEN + iOS wiring complete
+
+CempScheduler iOS module (feat/ios-bgtask, merged 46615da; CI runs
+30205313844 + 30206378364, 21/21 native tests): exact Kotlin bridge surface;
+periodic → BGAppRefreshTaskRequest with resubmission (one-shot tasks,
+emulated periodicity), one-shots → BGProcessingTaskRequest (requiresNetwork
+applied there only — BGAppRefreshTaskRequest has no such constraint);
+fired tasks deliver to AppRegistry.startHeadlessTask("CempBackgroundSync") —
+the SAME entry as Android, so index.js now registers the headless task on
+BOTH platforms (213cf76, closing the integration gap the app-wiring branch
+had introduced). No runtime → immediate native completion; 30 s grace;
+expiration → failure. ios-prep remaining: CI simulator boot smoke, then
+device deployment (signing secrets + first-device smoke list). CI notes:
+UTF-8 locale + 5 retries for the CocoaPods null-byte flake; gem install
+cocoapods under the pinned Ruby 3.3 (the bare pin was ineffective).

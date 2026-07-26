@@ -94,6 +94,7 @@ test_target.resources_build_phase.add_file_reference(vectors_ref)
 
 test_target.build_configurations.each do |config|
   config.build_settings.merge!(
+    'PRODUCT_NAME' => 'CempMobileTests',
     'PRODUCT_BUNDLE_IDENTIFIER' => 'com.cempmobile.tests',
     'GENERATE_INFOPLIST_FILE' => 'YES',
     'CODE_SIGNING_ALLOWED' => 'NO',

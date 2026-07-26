@@ -666,6 +666,7 @@
 				);
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.cempmobile.tests;
+				PRODUCT_NAME = CempMobileTests;
 				SDKROOT = iphoneos;
 			};
 			name = Debug;
@@ -693,6 +694,7 @@
 				);
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.cempmobile.tests;
+				PRODUCT_NAME = CempMobileTests;
 				SDKROOT = iphoneos;
 				VALIDATE_PRODUCT = YES;
 			};

@@ -357,3 +357,20 @@ gzip-encoded advisory responses that pnpm 10.32.1's audit fetch cannot decode
 closure via `pnpm ls --prod --recursive` (identical scope), bulk advisory
 endpoint with accept-encoding: identity (sidesteps the bug), same high+ bar.
 556 prod packages scanned, gate PASSED locally.
+
+## Phase 12 remote part 2 (2026-07-26): iOS Core Image codec GREEN
+
+CempImageCodec native module (feat/ios-image-codec, merged 7baaabc; CI run
+30193124060, one run to green): legacy RCTBridgeModule mirroring the Android
+bridge contract exactly (no JS changes); ImageIO two-pass sampled decode
+(longest edge ≤ 2560, OOM-proof), EXIF orientation baked natively,
+CGImageDestination-only output (strip by construction), NSLock handle
+registry with fresh-buffer alias-safe resize, JPEG encode with quality
+control. 7 codec XCTests + 4 KDF vectors pass on an iPhone simulator. WEBP
+VERDICT: ImageIO (iOS 26.5 simulator) does NOT encode webp (decode works) —
+encode("webp") throws the pinned CempImageCodecErrorWebPUnsupported; iOS
+sends default to JPEG (protocol-legal; ios-prep amended). Auto-accepted
+either-way test contract covers devices whose ImageIO does encode webp.
+Remaining ios-prep: PHPicker bridge, BGTaskScheduler bridge, keystore/
+storage iOS adapters, iOS app-container wiring, device deployment (needs
+signing secrets).

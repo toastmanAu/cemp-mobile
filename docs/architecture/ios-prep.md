@@ -87,6 +87,17 @@ platform-neutral in `@cemp/images`; only the `ImageCodec` primitives
   `CIContext`, `CGImageDestination` encode to WebP/JPEG (WebP encode needs a
   bundled encoder — if unavailable, JPEG is the v1 fallback and the format
   field records it, which the protocol already supports).
+  **DONE 2026-07-26** (`apps/android/ios/CempImageCodec/`, exact Android
+  bridge contract — no JS changes): ImageIO two-pass decode
+  (bounds → `CGImageSourceCreateThumbnailAtIndex`, longest edge ≤ 2560),
+  orientation baked via `kCGImageSourceCreateThumbnailWithTransform`,
+  CGImageDestination-only output, NSLock handle registry (fresh-buffer
+  resize, alias-safe). 7 codec XCTests + the KDF vectors green on a
+  simulator (CI run 30193124060). **WebP verdict: ImageIO on iOS 26.5
+  simulator does NOT ENCODE webp** (decode is fine) — `encode("webp")`
+  throws the pinned `CempImageCodecErrorWebPUnsupported`; the v1 send policy
+  on iOS requests JPEG (protocol-legal; manifest records the mime). If a
+  device ImageIO does encode webp, the code path uses it.
 - **iOS codec contract (from T17 + the delta re-review — these are hard
   requirements, not suggestions):** two-pass sampled decode (bounds pass →
   `inSampleSize`-equivalent, longest edge ≤ 2560 px) so a 50 MP photo can't
@@ -153,8 +164,9 @@ it that way).
    flag CONFIRMED honored in the pod build (`[OP-SQLITE] using SQLCipher`);
    the on-device plaintext-header check is a first-device item.
 4. BGTaskScheduler bridge for the `@cemp/sync` Scheduler seam (Task 3).
-5. Core Image codec module (Task 5 — contract updated above) + a JPEG-only
-   fallback profile.
+5. ~~Core Image codec module (Task 5)~~ — DONE (see Task 5 above; JPEG
+   encode v1, WebP decode only). Remaining image piece: the iOS picker
+   (PHPicker bridge with the Android contract's byte cap).
 6. iPhone pairing for debug (`idevicepair` + `ideviceinfo` are present on
    this machine; a CI-built dev-signed `.ipa` installs from Linux via
    `xtool install` — needs the signing secrets, NOT yet on this repo:

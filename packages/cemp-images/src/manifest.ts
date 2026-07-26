@@ -12,6 +12,7 @@
  */
 
 import { codec } from "@cemp/core";
+import { sniffImageFormat } from "./codec.js";
 import { ATTACHMENT_CHUNK_BYTES } from "./encrypt.js";
 import { DEFAULT_IMAGE_LIMITS, type ImageLimits } from "./limits.js";
 
@@ -132,6 +133,25 @@ export function checkManifest(
   const mime = new TextDecoder().decode(manifest.mime_type);
   if (mime !== "image/webp" && mime !== "image/jpeg" && mime !== "image/png") {
     return fail(`unsupported mime type ${mime}`);
+  }
+  // Fail closed on the crypto version (rule 13): the only attachment
+  // encryption this build speaks is AES-256-GCM (family 0x03, parameter 1) —
+  // a manifest declaring anything else is rejected HERE, not at GCM auth.
+  if (
+    manifest.encryption_algorithm.family !== 0x03 ||
+    manifest.encryption_algorithm.parameter !== 1
+  ) {
+    return fail("unsupported attachment encryption algorithm");
+  }
+  // The thumbnail auto-renders with no tap and no trust gate, so it gets the
+  // same content check as the full image: magic bytes must match the
+  // declared mime (sender-controlled bytes → native decoder).
+  if (manifest.thumbnail != null) {
+    const sniffed = sniffImageFormat(manifest.thumbnail);
+    const declared = mime.slice("image/".length);
+    if (sniffed === "unknown" || sniffed !== declared) {
+      return fail("thumbnail content does not match the declared mime type");
+    }
   }
   return { ok: true };
 }

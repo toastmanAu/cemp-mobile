@@ -3,8 +3,10 @@
  * storage costs ~1 CKB per byte, so an image locks roughly its own size in CKB.
  * This estimates the required locked capacity BEFORE building the tx, so an
  * under-funded wallet fails fast with no stranded pending row. The real tx
- * build enforces exact capacity; this is a conservative UPPER bound so it never
- * blocks an affordable send.
+ * build enforces exact capacity; this is a conservative UPPER bound: it never
+ * gives a false "OK" (an affordable-on-paper send can't strand mid-build),
+ * at the price of occasionally refusing a send that just barely fit (the
+ * margin is small — per-chunk overhead + a 1 CKB fee reserve).
  */
 
 import { ATTACHMENT_CHUNK_BYTES } from "./encrypt.js";

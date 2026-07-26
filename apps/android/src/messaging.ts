@@ -540,7 +540,12 @@ export class MessagingService {
       recipientKemSecretKey: this.#bundle.mlKem.secretKey,
       ownProfileId: this.#senderProfileId,
     });
-    return decrypted.attachmentKey;
+    try {
+      return decrypted.attachmentKey;
+    } finally {
+      // Only the key leaves this scope; the decrypted payload copy is wiped.
+      decrypted.payloadBytes.fill(0);
+    }
   }
 
   /**

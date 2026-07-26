@@ -21,6 +21,7 @@
  */
 
 import { buildReclaimTx, type CempMessageTypeRef } from "./builders.js";
+import type { TransactionLike } from "@ckb-ccc/core";
 import { CempCkbError, type CempClient } from "./client.js";
 import type { IncomingTextMessage } from "./incoming.js";
 import {
@@ -217,11 +218,19 @@ export class ResponseLifecycle {
     if (journaled !== undefined && journaled.state === "submitted") {
       const ids = parseReclaimPurpose(journaled.purpose);
       try {
-        await resumeJournaledBroadcast(
+        const outcome = await resumeJournaledBroadcast(
           this.#deps.client,
           { txHash: journaled.txHash, txHex: journaled.txHex },
           { ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) },
         );
+        // A rebroadcast re-spends the journaled inputs: mark them so the next
+        // build cannot re-select them (the F-1 double-spend gap one layer up).
+        if (outcome === "rebroadcast" && journaled.txHex !== null) {
+          await trackBroadcastSpend(
+            this.#deps.signer,
+            JSON.parse(journaled.txHex) as TransactionLike,
+          );
+        }
       } catch (e) {
         if (!(e instanceof JournaledAbandonedError)) {
           throw e;

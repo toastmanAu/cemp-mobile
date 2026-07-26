@@ -63,6 +63,11 @@ function bytesToHex(bytes: Uint8Array): string {
 
 function hexToBytes(hex: string): Uint8Array {
   const bare = hex.startsWith("0x") ? hex.slice(2) : hex;
+  // Strict: chain/RPC hex is hostile input (rule 4) — reject odd lengths and
+  // non-hex outright rather than coercing garbage to zero bytes.
+  if (bare.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(bare)) {
+    throw new Error(`workers: invalid hex string of length ${bare.length}`);
+  }
   const out = new Uint8Array(bare.length / 2);
   for (let i = 0; i < out.length; i++) {
     out[i] = Number.parseInt(bare.slice(2 * i, 2 * i + 2), 16);

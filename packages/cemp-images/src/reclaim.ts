@@ -13,6 +13,7 @@
  */
 
 import { buildReclaimTx, type CempMessageTypeRef } from "@cemp/ckb";
+import type { TransactionLike } from "@ckb-ccc/core";
 import {
   JournaledAbandonedError,
   resumeJournaledBroadcast,
@@ -83,13 +84,18 @@ export async function reclaimAttachmentGroup(
   const journaled = await store.findLatestOutgoingTxByPurposePrefix(purpose);
   if (journaled !== undefined && journaled.state === "submitted") {
     try {
-      await resumeJournaledBroadcast(
+      const outcome = await resumeJournaledBroadcast(
         client,
         { txHash: journaled.txHash, txHex: journaled.txHex ?? null },
         {
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
         },
       );
+      // A rebroadcast re-spends the journaled inputs: mark them so the next
+      // build cannot re-select them (the F-1 double-spend gap one layer up).
+      if (outcome === "rebroadcast" && journaled.txHex != null) {
+        await trackBroadcastSpend(signer, JSON.parse(journaled.txHex) as TransactionLike);
+      }
       // Review I-6: exactly one caller wins submitted→committed; only the
       // winner funds/releases capacity (no double-release across engines).
       const won = await store.markOutgoingTxStateIf(

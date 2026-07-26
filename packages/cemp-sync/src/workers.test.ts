@@ -198,7 +198,16 @@ function validDiscoveryManifest(
 ): codec.AttachmentManifestV1 {
   const base = codec.buildAttachmentManifest({ seed, withThumbnail, chunkCount });
   const encryptedSize = BigInt(chunkCount) * 32_768n;
-  return { ...base, plaintext_size: encryptedSize - 16n, encrypted_size: encryptedSize };
+  // checkManifest sniffs thumbnail content against the declared mime — the
+  // codec fixture's fill bytes would fail, so use real WEBP magic.
+  const thumbnail = withThumbnail ? new Uint8Array(128).fill(0x74) : undefined;
+  thumbnail?.set([0x52, 0x49, 0x46, 0x46, 0x76, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50], 0);
+  return {
+    ...base,
+    plaintext_size: encryptedSize - 16n,
+    encrypted_size: encryptedSize,
+    thumbnail,
+  };
 }
 
 function makeTransport(cells: unknown[]): JsonRpcTransport {

@@ -128,6 +128,10 @@ describe("encrypt + chunks", () => {
 
 function validManifestInput(): Parameters<typeof buildAttachmentManifest>[0] {
   const encryptedSize = 50_000;
+  // Real WEBP magic — checkManifest sniffs thumbnail content against the
+  // declared mime (sender-controlled bytes → native decoder).
+  const thumbnail = new Uint8Array(100).fill(2);
+  thumbnail.set([0x52, 0x49, 0x46, 0x46, 0x5e, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50], 0);
   return {
     attachmentId: new Uint8Array(16).fill(1),
     chunkOutpoints: [
@@ -139,7 +143,7 @@ function validManifestInput(): Parameters<typeof buildAttachmentManifest>[0] {
     mimeType: "image/webp",
     width: 960,
     height: 640,
-    thumbnail: new Uint8Array(100).fill(2),
+    thumbnail,
     contentHash: new Uint8Array(32).fill(3),
     cipherHash: new Uint8Array(32).fill(4),
     encryptionNonce: new Uint8Array(12).fill(5),
@@ -175,6 +179,16 @@ describe("manifest", () => {
     expect(check({ width: 2000, height: 2000 })).toMatch(/longest-edge/);
     expect(check({ thumbnail: new Uint8Array(40_000) })).toMatch(/thumbnail/);
     expect(check({ mimeType: "image/gif" })).toMatch(/mime/);
+    // Crypto version fails closed (rule 13); thumbnail content is sniffed
+    // against the declared mime (it auto-renders with no trust gate).
+    expect(check({ mimeType: "image/jpeg" })).toMatch(/thumbnail content/);
+    expect(check({ thumbnail: new Uint8Array(100).fill(2) })).toMatch(/thumbnail content/);
+    const decoded = codec.decodeAttachmentManifestV1(
+      codec.encodeAttachmentManifestV1(buildAttachmentManifest(base)),
+    );
+    expect(
+      checkManifest({ ...decoded, encryption_algorithm: { family: 0x03, parameter: 2 } }).reason,
+    ).toMatch(/encryption algorithm/);
   });
 });
 

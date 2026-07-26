@@ -1,0 +1,112 @@
+name: iOS Build (validate)
+
+# Remote macOS iteration loop for the Phase 12 iOS target: compiles the RN
+# iOS app on macos-26 WITHOUT signing (CODE_SIGNING_ALLOWED=NO) so native
+# work needs no App Store secrets. Dispatch-only — macOS minutes are spent
+# deliberately. Release/signing mode comes with device deployment (see
+# docs/architecture/ios-prep.md).
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  # Temporary while this file lives only on feat/ios-target: workflow_dispatch
+  # requires the workflow on the default branch, so pushes to the branch drive
+  # the iteration loop instead. Remove the push trigger once merged to main.
+  push:
+    branches: [feat/ios-target]
+    paths:
+      - .github/workflows/ios-build.yml
+      - apps/android/ios/**
+      - apps/android/package.json
+      - apps/android/metro.config.js
+      - apps/android/react-native.config.js
+      - tools/kdf-c-core/**
+      - pnpm-lock.yaml
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The iOS pods consume the same workspace install as every other gate
+      # (react-native resolves through the pnpm store from the Podfile).
+      - run: pnpm install --frozen-lockfile
+
+      # pod install must run with CWD = apps/android/ios: use_native_modules!
+      # shells out to `node -e "...require('@react-native-community/cli')..."`
+      # which resolves from the process CWD, and pnpm does not hoist the CLI
+      # to the repo-root node_modules.
+      - name: CocoaPods install
+        working-directory: apps/android/ios
+        run: |
+          set -o pipefail
+          # CocoaPods intermittently dies with "pathname contains null byte"
+          # in PodsProjectGenerator (upstream flake CocoaPods/CocoaPods#12798,
+          # "hit or miss" on the macos runners) — retry with a clean Pods
+          # state before giving up.
+          for attempt in 1 2 3; do
+            if pod install 2>&1 | tee "$RUNNER_TEMP/pod-install.log"; then
+              exit 0
+            fi
+            echo "pod install failed (attempt $attempt of 3), cleaning Pods state" >&2
+            rm -rf Pods Podfile.lock
+            sleep 5
+          done
+          echo "pod install failed after 3 attempts" >&2
+          exit 1
+
+      - name: xcodebuild (unsigned, simulator)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -workspace apps/android/ios/CempMobile.xcworkspace \
+            -scheme CempMobile \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      # Conformance gate for the CempKdf native module: runs the CempMobileTests
+      # XCTest (tools/kdf-c-core/vectors.txt through the module's C core) on a
+      # booted iPhone simulator, unsigned.
+      - name: xcodebuild test (CempKdf vectors, simulator)
+        run: |
+          set -o pipefail
+          UDID=$(xcrun simctl list devices available -j | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.name | contains("iPhone"))] | last | .udid')
+          if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
+            echo "No available iPhone simulator found" >&2
+            exit 1
+          fi
+          echo "Using simulator: $UDID"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcodebuild test \
+            -workspace apps/android/ios/CempMobile.xcworkspace \
+            -scheme CempMobile \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$UDID" \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_TESTABILITY=YES 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log"
+
+      - name: Upload build logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-build-logs-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/pod-install.log
+            ${{ runner.temp }}/xcodebuild.log
+            ${{ runner.temp }}/xcodebuild-test.log
+          if-no-files-found: warn
+          retention-days: 14

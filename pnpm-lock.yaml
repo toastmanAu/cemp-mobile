@@ -7,6 +7,11 @@ settings:
 overrides:
   brace-expansion: 5.0.8
 
+patchedDependencies:
+  minimatch@3.1.5:
+    hash: f848a995d3de3b694b379116f498bda3c47721989bce60676e2d219710d34781
+    path: patches/minimatch@3.1.5.patch
+
 importers:
 
   .:
@@ -112,6 +117,9 @@ importers:
         specifier: 20.0.0
         version: 20.0.0(typescript@5.9.3)
       '@react-native-community/cli-platform-android':
+        specifier: 20.0.0
+        version: 20.0.0
+      '@react-native-community/cli-platform-ios':
         specifier: 20.0.0
         version: 20.0.0
       '@react-native/babel-preset':
@@ -5915,7 +5923,7 @@ snapshots:
       fs.realpath: 1.0.0
       inflight: 1.0.6
       inherits: 2.0.4
-      minimatch: 3.1.5
+      minimatch: 3.1.5(patch_hash=f848a995d3de3b694b379116f498bda3c47721989bce60676e2d219710d34781)
       once: 1.4.0
       path-is-absolute: 1.0.1
 
@@ -6502,7 +6510,7 @@ snapshots:
     dependencies:
       brace-expansion: 5.0.8
 
-  minimatch@3.1.5:
+  minimatch@3.1.5(patch_hash=f848a995d3de3b694b379116f498bda3c47721989bce60676e2d219710d34781):
     dependencies:
       brace-expansion: 5.0.8
 
@@ -7049,7 +7057,7 @@ snapshots:
     dependencies:
       '@istanbuljs/schema': 0.1.6
       glob: 7.2.3
-      minimatch: 3.1.5
+      minimatch: 3.1.5(patch_hash=f848a995d3de3b694b379116f498bda3c47721989bce60676e2d219710d34781)
 
   throat@5.0.0: {}
 

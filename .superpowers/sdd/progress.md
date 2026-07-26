@@ -378,3 +378,19 @@ signing secrets).
 Follow-up (2026-07-26): pinned Ruby 3.3 in ios-build.yml (dca25b2) after the
 CocoaPods null-byte flake (CocoaPods/CocoaPods#12798) burned all 3 retries on
 main; ios-build on main green since (run 30194390437).
+
+## Phase 12 remote part 3 (2026-07-26): iOS PHPicker bridge GREEN
+
+CempImagePicker native module (feat/ios-image-picker, merged 47d18eb; CI run
+30199108844, 13/13 tests): PHPickerViewController bridge mirroring the
+Android pick() → hex|null contract exactly (native-image-picker.ts +
+pick-result.ts unchanged). Two-layer structure per precedent: React-free
+CempImagePickerEngine (single in-flight pending-promise with supersede
+rejection, late-result drop, invalidate() rejects pending — the Android
+fixes ported), thin PHPicker shell. 64 MB byte cap; results loaded as raw
+public.data — NO transcoding/re-encode (the codec pipeline owns that);
+result bound to the completion captured at arrival (race fix). PHPicker
+presentation on a real device is a first-device checklist item. Image-side
+native modules are now COMPLETE on iOS (kdf, codec, picker). Remaining:
+BGTaskScheduler bridge, keystore/storage adapters + app-container wiring,
+device deployment.

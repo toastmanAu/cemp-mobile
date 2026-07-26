@@ -165,8 +165,12 @@ it that way).
    the on-device plaintext-header check is a first-device item.
 4. BGTaskScheduler bridge for the `@cemp/sync` Scheduler seam (Task 3).
 5. ~~Core Image codec module (Task 5)~~ — DONE (see Task 5 above; JPEG
-   encode v1, WebP decode only). Remaining image piece: the iOS picker
-   (PHPicker bridge with the Android contract's byte cap).
+   encode v1, WebP decode only). ~~The iOS picker~~ — DONE 2026-07-26
+   (`apps/android/ios/CempImagePicker/`, PHPicker bridge, exact Android
+   `pick() → hex|null` contract, 64 MB cap, atomic pending-promise with
+   supersede + invalidate rejection, original `public.data` bytes — no
+   transcoding; headless engine XCTests green, CI run 30199108844;
+   presentation itself is a first-device item).
 6. iPhone pairing for debug (`idevicepair` + `ideviceinfo` are present on
    this machine; a CI-built dev-signed `.ipa` installs from Linux via
    `xtool install` — needs the signing secrets, NOT yet on this repo:

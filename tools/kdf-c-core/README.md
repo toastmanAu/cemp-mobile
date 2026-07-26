@@ -27,10 +27,10 @@ vendor/scrypt/   Tarsnap scrypt reference implementation (subset)
 
 ## Vendored sources
 
-| Library | Upstream | Pinned at | Commit | License |
-|---|---|---|---|---|
-| argon2 | https://github.com/P-H-C/phc-winner-argon2 | tag `20190702` | `62358ba2123abd17fccf2a108a301d4b52c01a7c` | CC0 1.0 / Apache 2.0 (dual; see `vendor/argon2/LICENSE`) |
-| scrypt | https://github.com/Tarsnap/scrypt | tag `1.3.3` | `041a2126130c3d1e7e2b8facb218c6c017b6890a` | BSD-2-Clause (see `vendor/scrypt/COPYRIGHT`) |
+| Library | Upstream                                   | Pinned at      | Commit                                     | License                                                  |
+| ------- | ------------------------------------------ | -------------- | ------------------------------------------ | -------------------------------------------------------- |
+| argon2  | https://github.com/P-H-C/phc-winner-argon2 | tag `20190702` | `62358ba2123abd17fccf2a108a301d4b52c01a7c` | CC0 1.0 / Apache 2.0 (dual; see `vendor/argon2/LICENSE`) |
+| scrypt  | https://github.com/Tarsnap/scrypt          | tag `1.3.3`    | `041a2126130c3d1e7e2b8facb218c6c017b6890a` | BSD-2-Clause (see `vendor/scrypt/COPYRIGHT`)             |
 
 Both were fetched with `git clone --depth 1 --branch <tag>` and trimmed to
 the files needed to build; `.git`, tests, build systems, and docs were

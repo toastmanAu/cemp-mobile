@@ -350,3 +350,10 @@ Remaining ios-prep items: BGTaskScheduler bridge, Core Image codec, device
 deployment (needs signing secrets + first-device smoke list in ios-prep.md).
 Android re-verified after the dep changes (compileDebugKotlin OK; 633
 vitest).
+
+CI audit gate replaced (2026-07-26): the npm registry started returning
+gzip-encoded advisory responses that pnpm 10.32.1's audit fetch cannot decode
+(100% reproducible locally + CI). New gate `tools/audit-deps/audit.mjs`: prod
+closure via `pnpm ls --prod --recursive` (identical scope), bulk advisory
+endpoint with accept-encoding: identity (sidesteps the bug), same high+ bar.
+556 prod packages scanned, gate PASSED locally.

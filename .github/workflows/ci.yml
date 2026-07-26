@@ -38,7 +38,9 @@ jobs:
         run: pnpm exec prettier --check .
 
       - name: Dependency audit (high severity and above)
-        run: pnpm audit --prod --audit-level=high
+        # tools/audit-deps/audit.mjs: same --prod closure + high-severity bar,
+        # identity encoding (registry gzip responses break pnpm 10.32.1 audit).
+        run: node tools/audit-deps/audit.mjs
 
   contracts:
     runs-on: ubuntu-latest

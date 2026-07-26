@@ -15,7 +15,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "audit:deps": "pnpm audit --prod --audit-level=high"
+    "audit:deps": "node tools/audit-deps/audit.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -8,3 +8,7 @@
  */
 
 export const VECTOR_FORMAT_VERSION = 1;
+
+// The typed suite registry + platform-neutral loaders (Phase 12 task 6) —
+// the single conformance entry point for every runtime.
+export * from "./suites.js";

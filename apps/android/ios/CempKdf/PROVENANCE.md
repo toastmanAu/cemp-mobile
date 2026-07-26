@@ -6,8 +6,8 @@ tree because the Xcode workspace build must see the sources inside the app
 project; `tools/` stays the canonical validation environment (Linux gcc
 harness, `run-vectors.sh`).
 
-| Library | Upstream                                   | Pinned at      | Commit                                     | License                                       |
-| ------- | ------------------------------------------ | -------------- | ------------------------------------------ | --------------------------------------------- |
+| Library | Upstream                                   | Pinned at      | Commit                                     | License                                        |
+| ------- | ------------------------------------------ | -------------- | ------------------------------------------ | ---------------------------------------------- |
 | argon2  | https://github.com/P-H-C/phc-winner-argon2 | tag `20190702` | `62358ba2123abd17fccf2a108a301d4b52c01a7c` | CC0 1.0 / Apache 2.0 (`vendor/argon2/LICENSE`) |
 | scrypt  | https://github.com/Tarsnap/scrypt          | tag `1.3.3`    | `041a2126130c3d1e7e2b8facb218c6c017b6890a` | BSD-2-Clause (`vendor/scrypt/COPYRIGHT`)       |
 

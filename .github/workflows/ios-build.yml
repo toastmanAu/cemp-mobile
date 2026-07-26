@@ -42,10 +42,15 @@ jobs:
       # (react-native resolves through the pnpm store from the Podfile).
       - run: pnpm install --frozen-lockfile
 
+      # pod install must run with CWD = apps/android/ios: use_native_modules!
+      # shells out to `node -e "...require('@react-native-community/cli')..."`
+      # which resolves from the process CWD, and pnpm does not hoist the CLI
+      # to the repo-root node_modules.
       - name: CocoaPods install
+        working-directory: apps/android/ios
         run: |
           set -o pipefail
-          pod install --project-directory=apps/android/ios 2>&1 | tee "$RUNNER_TEMP/pod-install.log"
+          pod install 2>&1 | tee "$RUNNER_TEMP/pod-install.log"
 
       - name: xcodebuild (unsigned, simulator)
         run: |

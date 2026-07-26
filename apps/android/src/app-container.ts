@@ -1,11 +1,12 @@
 /**
  * Application composition root (spec §4.2 service boundaries).
  *
- * Builds the platform seams (AsyncStorage vault storage, Android Keystore,
- * SQLCipher), opens the vault, and — once unlocked — opens the encrypted
- * database with the vault's database key and constructs the repositories the
- * screens bind to. Testnet-only by construction: all chain access goes
- * through `CKB_TESTNET` from @cemp/core (AGENTS.md rule 11).
+ * Builds the platform seams (AsyncStorage vault storage, the platform
+ * keystore, SQLCipher — see platform/seams.ts), opens the vault, and — once
+ * unlocked — opens the encrypted database with the vault's database key and
+ * constructs the repositories the screens bind to. Testnet-only by
+ * construction: all chain access goes through `CKB_TESTNET` from @cemp/core
+ * (AGENTS.md rule 11).
  *
  * State model mirrors the vault: "loading" → "uninitialized" | "locked" →
  * "ready". A 1-second poll observes the vault's own auto-lock timer (spec
@@ -22,15 +23,12 @@ import {
 } from "@cemp/database";
 import { SecureVaultImpl } from "@cemp/secure-vault";
 import type { Notifier } from "@cemp/ui";
-import { AndroidKeychainKeyStore } from "./platform/android-keystore";
-import { AndroidNotifier, requestNotificationPermission } from "./platform/android-notifier";
 import { MessagingService } from "./messaging";
-import { NativeImageCodec } from "./platform/native-image-codec";
-import { NativeKdfEngine } from "./platform/native-kdf";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
 import { createRouteTagCache } from "./platform/route-tag-cache";
+import { platformSeams } from "./platform/seams";
+import type { PlatformSeams } from "./platform/seams-core";
 import { AsyncStorageVaultStorage } from "./platform/vault-storage";
-import { WorkManagerScheduler } from "./platform/work-manager-scheduler";
 import { bytesToHex } from "./platform/hex";
 import { isVaultUsable } from "./vault-liveness";
 
@@ -46,8 +44,9 @@ export interface AppRepositories {
 
 export class AppContainer {
   readonly vault: SecureVaultImpl;
-  readonly notifier: Notifier = new AndroidNotifier();
+  readonly notifier: Notifier;
 
+  #seams: PlatformSeams;
   #db: OpSqlCipherAdapter | null = null;
   #repositories: AppRepositories | null = null;
   #messaging: MessagingService | null = null;
@@ -62,19 +61,22 @@ export class AppContainer {
     return AppContainer.#current;
   }
 
-  private constructor(vault: SecureVaultImpl) {
+  private constructor(vault: SecureVaultImpl, seams: PlatformSeams) {
     this.vault = vault;
+    this.#seams = seams;
+    this.notifier = seams.createNotifier();
   }
 
   static async init(): Promise<AppContainer> {
+    const seams = platformSeams();
     const vault = await SecureVaultImpl.open({
       storage: new AsyncStorageVaultStorage(),
-      keystore: new AndroidKeychainKeyStore(),
+      keystore: seams.createKeyStore(),
       // Native Bouncy Castle KDF — noble argon2/scrypt is unusably slow
       // under Hermes (see kdf.ts in cemp-secure-vault).
-      kdfEngine: new NativeKdfEngine(),
+      kdfEngine: seams.createKdfEngine(),
     });
-    const container = new AppContainer(vault);
+    const container = new AppContainer(vault, seams);
     container.#setState(vault.state === "uninitialized" ? "uninitialized" : "locked");
     AppContainer.#current = container;
     return container;
@@ -178,13 +180,13 @@ export class AppContainer {
         vault: this.vault,
         db: this.#db,
         notifier: this.notifier,
-        scheduler: new WorkManagerScheduler(),
-        createImageCodec: () => new NativeImageCodec(),
+        scheduler: this.#seams.createScheduler(),
+        createImageCodec: this.#seams.createImageCodec,
       });
     }
     this.#setState("ready");
     this.#startPoll();
-    void requestNotificationPermission();
+    void this.#seams.requestNotificationPermission();
     void this.#refreshRouteTags();
   }
 
@@ -230,7 +232,7 @@ export class AppContainer {
     // own terms (WorkManagerScheduler swallows a missing native module or a
     // rejected native call, so its promise never rejects) — awaited here only
     // to sequence it ahead of the vault wipe below, never to gate it.
-    await new WorkManagerScheduler().cancelPeriodic();
+    await this.#seams.createScheduler().cancelPeriodic();
     // The route-tag cache is the ONE keystore artifact whose pointer lives
     // outside the vault file, so `vault.wipe()` (which deletes the vault file
     // and resets the default keychain service) does not make it unreachable.

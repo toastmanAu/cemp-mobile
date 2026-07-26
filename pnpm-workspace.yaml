@@ -2,3 +2,8 @@ packages:
   - "apps/*"
   - "packages/*"
   - "tools/*"
+
+# Security-patch exemption (GHSA-mh99-v99m-4gvg): the global minimumReleaseAge
+# gate would otherwise pin the vulnerable brace-expansion <=5.0.7.
+minimumReleaseAgeExclude:
+  - brace-expansion

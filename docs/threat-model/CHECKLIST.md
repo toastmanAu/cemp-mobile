@@ -65,7 +65,7 @@ repository are marked OPEN with their owner.
 13. **Log redaction** — `redactSecrets` (`packages/cemp-crypto/src/redact.ts`):
     ≥128-char hex and ≥6-word BIP39 runs masked; tx hashes/ids preserved. ✅
 14. **Dependency vulnerability scanning** — `pnpm audit:deps`
-    (`pnpm audit --prod --audit-level=high`), run 2026-07-18: 2 findings,
+    (`pnpm audit --prod --audit-level=high`). Re-run 2026-07-26: HIGH `brace-expansion` ≤5.0.7 (build tooling only) forced to 5.0.8 via pnpm override + `minimumReleaseAgeExclude`; remaining 2 findings below the gate, both OFF the crypto/signing path (2026-07-18):
     both OFF the crypto/signing path: `fast-xml-parser` <5.7.0 (moderate,
     RN CLI build tooling), `elliptic` ≤6.6.1 (low, transitive via
     @ckb-ccc/core joyid packages — CEMP signs with ML-DSA only, secp256k1 is

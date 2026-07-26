@@ -30,6 +30,11 @@ jobs:
       # (react-native resolves through the pnpm store from the Podfile).
       - run: pnpm install --frozen-lockfile
 
+      # Metro resolves the @cemp/* workspace packages through their
+      # "exports" maps, which point at dist/ (tsc output) — without this the
+      # boot-smoke bundle fails with "invalid package.json configuration".
+      - run: pnpm build
+
       # Pin Ruby: the macos runner's default Ruby intermittently kills
       # CocoaPods with "pathname contains null byte"
       # (CocoaPods/CocoaPods#12798 — reports say 3.2/3.3 are unaffected).
@@ -106,6 +111,100 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             ENABLE_TESTABILITY=YES 2>&1 | tee "$RUNNER_TEMP/xcodebuild-test.log"
 
+      # Boot smoke: the first end-to-end proof the app actually BOOTS on iOS.
+      # Metro runs on the runner (the simulator reaches the runner's
+      # localhost directly — no adb-reverse equivalent); the Debug build's
+      # RCTBundleURLProvider defaults to localhost:8081. Fail conditions are
+      # deliberately behavioural, not pixel-based (v1 has no UI automation —
+      # the screenshot artifact is for human review): the app process must
+      # stay alive, Metro must actually serve the bundle to the app (the
+      # T17 F-3 lesson), and no crash signature may appear.
+      - name: Metro (background, for boot smoke)
+        working-directory: apps/android
+        run: |
+          nohup npx react-native start --port 8081 --verbose > "$RUNNER_TEMP/metro.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/metro.pid"
+          for i in $(seq 1 30); do
+            if curl -sf "http://localhost:8081/status" | grep -q "packager-status:running"; then
+              echo "Metro is up (pid $(cat "$RUNNER_TEMP/metro.pid"))"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Metro did not come up within 60s" >&2
+          tail -50 "$RUNNER_TEMP/metro.log" >&2
+          exit 1
+
+      - name: Simulator boot smoke (install, launch, assert)
+        run: |
+          UDID=$(xcrun simctl list devices available -j | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.name | contains("iPhone"))] | last | .udid')
+          if [ -z "$UDID" ] || [ "$UDID" = "null" ]; then
+            echo "No available iPhone simulator found" >&2
+            exit 1
+          fi
+          echo "Using simulator: $UDID (same device as the test step)"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+
+          APP=$(ls -d "$HOME"/Library/Developer/Xcode/DerivedData/CempMobile-*/Build/Products/Debug-iphonesimulator/CempMobile.app)
+          echo "Installing $APP"
+          xcrun simctl install "$UDID" "$APP"
+
+          touch "$RUNNER_TEMP/smoke-marker"
+          xcrun simctl launch "$UDID" com.cempmobile
+
+          # Assertion 1: Metro really serves the JS bundle TO THE APP. The
+          # request URL is /index.bundle; Metro's own log line is
+          # "BUNDLE ./index.js" once bundling starts — accept either.
+          bundle_served=0
+          for i in $(seq 1 90); do
+            if grep -qiE "index\.bundle|BUNDLE +\./index" "$RUNNER_TEMP/metro.log"; then
+              bundle_served=1
+              echo "Metro received the app's bundle request"
+              break
+            fi
+            sleep 2
+          done
+          if [ "$bundle_served" != "1" ]; then
+            echo "FAIL: Metro never received the app's bundle request" >&2
+            tail -30 "$RUNNER_TEMP/metro.log" >&2
+            exit 1
+          fi
+
+          # A bundle that errors leaves the app on a redbox — that is a boot
+          # failure even though the process stays alive.
+          if grep -q "ERROR" "$RUNNER_TEMP/metro.log"; then
+            echo "FAIL: Metro failed to build the bundle" >&2
+            grep -A8 "ERROR" "$RUNNER_TEMP/metro.log" | head -40 >&2
+            exit 1
+          fi
+
+          # Let the JS settle, then Assertion 2: the process is still alive.
+          sleep 15
+          if ! xcrun simctl spawn "$UDID" launchctl list | grep -q "UIKitApplication:com.cempmobile"; then
+            echo "FAIL: app process is not alive after bundle load" >&2
+            exit 1
+          fi
+          echo "App process alive after bundle load + 15s"
+
+          # Assertion 3: no crash signature (fresh crash report, or an
+          # uncaught-exception line in the app's system log).
+          if find "$HOME/Library/Logs/DiagnosticReports" -name "CempMobile*" -newer "$RUNNER_TEMP/smoke-marker" | grep -q .; then
+            echo "FAIL: crash report written since app launch" >&2
+            find "$HOME/Library/Logs/DiagnosticReports" -name "CempMobile*" -newer "$RUNNER_TEMP/smoke-marker" >&2
+            exit 1
+          fi
+          xcrun simctl spawn "$UDID" log show --last 10m --style compact \
+            --predicate 'process == "CempMobile"' > "$RUNNER_TEMP/sim-app.log" 2>&1 || true
+          if grep -q "Terminating app due to uncaught exception" "$RUNNER_TEMP/sim-app.log"; then
+            echo "FAIL: uncaught-exception signature in the app log" >&2
+            grep -B2 -A5 "Terminating app due to uncaught exception" "$RUNNER_TEMP/sim-app.log" >&2
+            exit 1
+          fi
+
+          xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/smoke.png"
+          echo "Boot smoke PASSED (screenshot at $RUNNER_TEMP/smoke.png)"
+
       - name: Upload build logs
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
@@ -115,5 +214,8 @@ jobs:
             ${{ runner.temp }}/pod-install.log
             ${{ runner.temp }}/xcodebuild.log
             ${{ runner.temp }}/xcodebuild-test.log
+            ${{ runner.temp }}/metro.log
+            ${{ runner.temp }}/sim-app.log
+            ${{ runner.temp }}/smoke.png
           if-no-files-found: warn
           retention-days: 14

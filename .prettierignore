@@ -12,3 +12,8 @@ node_modules/
 
 # Generated golden vectors — byte-parity with their generators (CI diffs them)
 packages/cemp-test-vectors/vectors/*.json
+
+# Xcode owns asset-catalog metadata: it rewrites Contents.json in its own
+# style (" : " spacing) on every catalog edit, so formatting it here just
+# guarantees the next Xcode touch turns CI red again.
+**/*.xcassets/**/Contents.json

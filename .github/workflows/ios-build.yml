@@ -83,6 +83,10 @@ jobs:
             fi
             echo "pod install failed (attempt $attempt of 5), cleaning Pods state" >&2
             rm -rf Pods Podfile.lock
+            # The download cache survives `rm -rf Pods`: a poisoned spec
+            # tarball in it makes EVERY retry fail identically (seen
+            # 2026-07-28 — 5/5 identical null-byte failures).
+            pod cache clean --all 2>/dev/null || rm -rf "$HOME/Library/Caches/CocoaPods"
             sleep 5
           done
           echo "pod install failed after 5 attempts" >&2

@@ -462,3 +462,32 @@ declaration. Fixed by pinning UIUserInterfaceStyle=Light (403d272; rebuild
 run 30362333748, reinstalled). FOLLOW-UP (Android): the same hardcoded
 colors mean dark-mode Android devices likely hit the same issue — force
 light theme in the AndroidManifest or schedule the real dark-mode design.
+
+## iOS device-build turnaround fix (2026-07-29): 57 min timeout -> 13 min green
+
+Two device dispatches (30367121836, 30372013830) died on the workflow's
+55-min cap mid-Archive, so the vault-password-confirm (47eb948) and app-icon
+(0e86b54) commits never reached the phone. Not a regression: the same steps
+went green in 38 min on run 30362333748 — the later runners just drew ~35%
+slower (simulator build 16m06s -> 21m31s, tests 6m29s -> 8m15s, archive
+13m22s -> killed at 23m28s) and the leftover headroom could not absorb it.
+
+Root cause was structural, not variance: `xcodebuild (unsigned, simulator)`
+and `xcodebuild test` had no `if:` gate, so a device dispatch spent ~30 min
+building and testing a simulator slice it then discarded, before Archive
+even started. Gated both to validate mode + raised the cap to 90 (51bcee1);
+Archive is self-contained (own `xcodebuild archive`, Release,
+generic/platform=iOS, no shared derived data) so nothing was lost. The
+CempKdf conformance gate still runs on every validate dispatch.
+
+Also unblocked main's CI (ac998d5): the icon commit failed format:check on
+Images.xcassets/AppIcon.appiconset/Contents.json — Xcode rewrites catalog
+metadata in its own " : " style on every edit, so it is now prettier-ignored
+rather than reformatted (which would just re-break on the next icon change).
+
+Result: run 30379085342 green in 13m13s, cempmobile-dev-32.ipa (9.95 MB)
+downloaded to ~/Downloads/cempmobile-ios/. Verified to carry the AppIcon
+set, embedded.mobileprovision, _CodeSignature and a 5.1 MB main.jsbundle.
+PENDING: `xtool install` to Phills Phone (attached, 00008130-000E155E1021401C)
+— first device look at the app icon, vault password confirmation at creation,
+and the reset-wallet escape on the locked screen.

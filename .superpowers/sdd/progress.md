@@ -436,3 +436,20 @@ in the Apple account — user action), release-bundle boot variant
 (main.jsbundle embedded, untested), first-device checklist (runtime
 CempKdf smoke, vault round-trip, op-sqlite header check, PHPicker
 presentation, real BGTask delivery).
+
+## Device deployment provisioning (2026-07-28): dev-signed IPA built, ready to install
+
+Fully automated from Linux (no portal clicking): used the ASC API key already
+in xtool's local store to (a) mint an RSA-2048 development certificate via
+the ASC API (id YJ7NFLAXK2, private key never left the box, packaged as p12),
+(b) create development profile cempmobile-dev (C6WNLJ795Z, ACTIVE, App ID
+com.cempmobile + Phills Phone iPhone 15 Pro), (c) set all 8 signing secrets
+on the repo via gh. ios-build.yml gained a `device` mode (a8bf2a6): dev-signed
+Release archive + development-export IPA artifact. CocoaPods null-byte flake:
+5/5 identical failures traced to the poisoned DOWNLOAD cache (survives
+rm -rf Pods) — retry loop now also `pod cache clean --all` (c0573b2); the
+next build went green first try (run 30344485060, cempmobile-dev-28.ipa,
+9.1 MB). Install path: `xtool install` over USB (pending: phone attached).
+First-device checklist (ios-prep.md): runtime CempKdf smoke, vault create/
+unlock round-trip, op-sqlite plaintext-header check, PHPicker presentation,
+BGTask delivery observation.

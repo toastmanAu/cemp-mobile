@@ -8,6 +8,11 @@
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
 	<string>CellSend</string>
+	<!-- The app's styling is light-theme only (hardcoded text colors, no
+	     dark palette yet) — pin light until dark mode is designed, or the
+	     system dark background renders text invisible (first-device find). -->
+	<key>UIUserInterfaceStyle</key>
+	<string>Light</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

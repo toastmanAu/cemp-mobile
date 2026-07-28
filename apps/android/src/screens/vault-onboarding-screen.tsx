@@ -14,12 +14,15 @@ import { MOBILE_VAULT_KDF } from "../platform/kdf";
 export function VaultOnboardingScreen(): React.JSX.Element {
   const container = useAppContainer();
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [mnemonicInput, setMnemonicInput] = useState("");
   const [createdWords, setCreatedWords] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const passwordOk = password.length >= 8;
+  // Password is chosen once per vault and unrecoverable by design — require
+  // it twice so a typo can't brick a fresh wallet (first-device find).
+  const passwordOk = password.length >= 8 && password === confirmPassword;
 
   async function run(action: () => Promise<void>): Promise<void> {
     setBusy(true);
@@ -49,6 +52,7 @@ export function VaultOnboardingScreen(): React.JSX.Element {
           onPress={() => {
             setCreatedWords(null);
             setPassword("");
+            setConfirmPassword("");
             void container.afterVaultUnlock();
           }}
         />
@@ -68,6 +72,17 @@ export function VaultOnboardingScreen(): React.JSX.Element {
         placeholder="vault password"
         autoComplete="off"
       />
+      <TextInput
+        style={styles.input}
+        secureTextEntry
+        value={confirmPassword}
+        onChangeText={setConfirmPassword}
+        placeholder="confirm vault password"
+        autoComplete="off"
+      />
+      {confirmPassword.length > 0 && password !== confirmPassword ? (
+        <Text style={styles.error}>Passwords don't match.</Text>
+      ) : null}
       <Button
         title="Create new wallet (12 words)"
         disabled={!passwordOk || busy}
@@ -116,6 +131,7 @@ export function VaultOnboardingScreen(): React.JSX.Element {
             });
             setMnemonicInput("");
             setPassword("");
+            setConfirmPassword("");
             await container.afterVaultUnlock();
           })
         }

@@ -13,6 +13,7 @@ export function UnlockScreen(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
+  const [armingReset, setArmingReset] = useState(false);
 
   useEffect(() => {
     container.vault
@@ -71,6 +72,38 @@ export function UnlockScreen(): React.JSX.Element {
         </>
       ) : null}
       {error !== null ? <Text style={styles.error}>{error}</Text> : null}
+      <View style={styles.resetArea} />
+      {armingReset ? (
+        <>
+          <Text style={styles.resetWarning}>
+            Resetting permanently erases the wallet on this device. If you don't have the recovery
+            phrase written down, it cannot be recovered.
+          </Text>
+          <Button
+            title="RESET WALLET"
+            color="#b00020"
+            disabled={busy}
+            onPress={() =>
+              void (async () => {
+                setBusy(true);
+                try {
+                  await container.wipe();
+                } finally {
+                  setBusy(false);
+                  setArmingReset(false);
+                }
+              })()
+            }
+          />
+          <Button title="Cancel" disabled={busy} onPress={() => setArmingReset(false)} />
+        </>
+      ) : (
+        <Button
+          title="Forgot password? Reset wallet"
+          disabled={busy}
+          onPress={() => setArmingReset(true)}
+        />
+      )}
     </View>
   );
 }
@@ -81,4 +114,6 @@ const styles = StyleSheet.create({
   input: { borderWidth: 1, borderColor: "#999", borderRadius: 8, padding: 10 },
   spacer: { height: 8 },
   error: { color: "#b00020", textAlign: "center" },
+  resetArea: { height: 24 },
+  resetWarning: { color: "#b00020", textAlign: "center", fontSize: 12 },
 });

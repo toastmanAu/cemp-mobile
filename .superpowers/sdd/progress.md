@@ -453,3 +453,12 @@ next build went green first try (run 30344485060, cempmobile-dev-28.ipa,
 First-device checklist (ios-prep.md): runtime CempKdf smoke, vault create/
 unlock round-trip, op-sqlite plaintext-header check, PHPicker presentation,
 BGTask delivery observation.
+
+First on-device launch (2026-07-28, Phills Phone iPhone 15 Pro): the
+dev-signed IPA installed + launched successfully (provisioning → CI signing →
+xtool install all proven). First bug found: iOS dark mode rendered the app
+black-on-black — every screen uses hardcoded dark text colors with no theme
+declaration. Fixed by pinning UIUserInterfaceStyle=Light (403d272; rebuild
+run 30362333748, reinstalled). FOLLOW-UP (Android): the same hardcoded
+colors mean dark-mode Android devices likely hit the same issue — force
+light theme in the AndroidManifest or schedule the real dark-mode design.

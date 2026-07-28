@@ -25,7 +25,10 @@ on:
 jobs:
   build:
     runs-on: macos-26
-    timeout-minutes: 55
+    # 55 was too tight even for the green 38-min run: macOS runner draws vary
+    # by ~35%, and the cap fired mid-Archive twice. 90 leaves real headroom on
+    # a slow draw for both modes.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -92,7 +95,14 @@ jobs:
           echo "pod install failed after 5 attempts" >&2
           exit 1
 
+      # validate-only: a device dispatch archives for a real iPhone and throws
+      # the simulator slice away, so paying ~16-22 min to build it (plus ~7-8
+      # min of simulator tests below) only burns the archive's headroom. Runs
+      # 30367121836 + 30372013830 both died on the 55-min cap INSIDE Archive
+      # for exactly that reason — same steps as the 38-min green run 30362333748,
+      # just a ~35% slower runner draw.
       - name: xcodebuild (unsigned, simulator)
+        if: ${{ inputs.mode == 'validate' }}
         run: |
           set -o pipefail
           xcodebuild build \
@@ -107,6 +117,7 @@ jobs:
       # XCTest (tools/kdf-c-core/vectors.txt through the module's C core) on a
       # booted iPhone simulator, unsigned.
       - name: xcodebuild test (CempKdf vectors, simulator)
+        if: ${{ inputs.mode == 'validate' }}
         run: |
           set -o pipefail
           UDID=$(xcrun simctl list devices available -j | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.name | contains("iPhone"))] | last | .udid')

@@ -7,9 +7,9 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v8: attachments.attachment_key — incoming attachment keys persisted at
-    // discovery (sender-reclaim griefing fix).
-    expect(SCHEMA_VERSION).toBe(8);
+    // v9: local_settings key/value table — first key `my_display_name` for
+    // the share-sheet caption (contact sharing).
+    expect(SCHEMA_VERSION).toBe(9);
   });
 
   it("covers the spec §11 core tables", () => {

@@ -51,8 +51,44 @@ describe("encodeGreyscalePng", () => {
     expect(meta.format).toBe("png");
     expect(meta.width).toBe(2);
     expect(meta.height).toBe(2);
+    // Verify the PNG encodes as greyscale (1 channel, b-w color space).
+    // This catches IHDR colour-type regressions before sharp converts it.
+    expect(meta.channels).toBe(1);
+    expect(meta.space).toBe("b-w");
     // sharp.grayscale() ensures the image stays in greyscale format before extracting raw bytes
     const raw = await sharp(Buffer.from(png)).grayscale().raw().toBuffer();
     expect([...raw]).toEqual([0, 255, 255, 0]);
+  });
+
+  it("handles multi-block deflate streams for large images", async () => {
+    // zlibStored splits data into MAX_STORED_BLOCK (65535 byte) chunks.
+    // An image with raw size > 65535 bytes tests the multi-block path.
+    // raw size = (width + 1) * height (filter byte per scanline).
+    // Use 300 × 230 → (300 + 1) × 230 = 69,230 bytes > 65,535.
+    const { default: sharp } = await import("sharp");
+    const width = 300;
+    const height = 230;
+    const pixelCount = width * height;
+
+    // Create alternating pattern: checkerboard-like for visual variety in test.
+    const pixels = new Uint8Array(pixelCount);
+    for (let i = 0; i < pixelCount; i++) {
+      pixels[i] = (i % 2) * 255; // alternates 0, 255, 0, 255, ...
+    }
+
+    const png = encodeGreyscalePng(pixels, width, height);
+
+    // Verify metadata.
+    const meta = await sharp(Buffer.from(png)).metadata();
+    expect(meta.format).toBe("png");
+    expect(meta.width).toBe(width);
+    expect(meta.height).toBe(height);
+    expect(meta.channels).toBe(1);
+    expect(meta.space).toBe("b-w");
+
+    // Verify pixel round-trip: decode and check the original pattern.
+    const raw = await sharp(Buffer.from(png)).grayscale().raw().toBuffer();
+    expect(raw.length).toBe(pixelCount);
+    expect([...raw]).toEqual([...pixels]);
   });
 });

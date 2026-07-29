@@ -49,13 +49,23 @@ export function VaultOnboardingScreen(): React.JSX.Element {
         </View>
         <Button
           title="I have written it down"
-          onPress={() => {
-            setCreatedWords(null);
-            setPassword("");
-            setConfirmPassword("");
-            void container.afterVaultUnlock();
-          }}
+          disabled={busy}
+          onPress={() =>
+            void run(async () => {
+              // Open the wallet BEFORE discarding the phrase and password.
+              // The old order cleared them first and fired this unawaited, so
+              // a failure here (a database left by a previous wallet, which
+              // cannot be decrypted) silently returned the user to an EMPTY
+              // create form — which also disabled Import, because Import
+              // requires both password fields. Device finding, 2026-07-29.
+              await container.afterVaultUnlock();
+              setCreatedWords(null);
+              setPassword("");
+              setConfirmPassword("");
+            })
+          }
         />
+        {error !== null ? <Text style={styles.error}>{error}</Text> : null}
       </ScrollView>
     );
   }
@@ -129,10 +139,13 @@ export function VaultOnboardingScreen(): React.JSX.Element {
             await container.vault.importMnemonic(words, password, undefined, {
               kdf: MOBILE_VAULT_KDF,
             });
+            // Same ordering rule as the create path: clear only once the
+            // wallet is actually open, so a failure leaves the typed phrase
+            // and password on screen to retry rather than wiping the form.
+            await container.afterVaultUnlock();
             setMnemonicInput("");
             setPassword("");
             setConfirmPassword("");
-            await container.afterVaultUnlock();
           })
         }
       />

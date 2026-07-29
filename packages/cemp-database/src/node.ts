@@ -10,6 +10,7 @@
  * uses. See the package README's "Encryption" section.
  */
 
+import { rm } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import type { SqlParams, SqlRow, SqlRunResult, SqliteAdapter } from "./adapter.js";
 import { AsyncMutex } from "./async-mutex.js";
@@ -36,9 +37,12 @@ function toRunResult(raw: {
 export class NodeSqliteAdapter implements SqliteAdapter {
   readonly #db: DatabaseSync;
   readonly #txMutex = new AsyncMutex();
+  /** null for ":memory:" — there is no file to delete on destroy(). */
+  readonly #path: string | null;
   #closed = false;
 
   constructor(options: NodeSqliteOptions = {}) {
+    this.#path = options.path !== undefined && options.path !== ":memory:" ? options.path : null;
     this.#db = new DatabaseSync(options.path ?? ":memory:");
     // Foreign keys are enforced for every repository write.
     this.#db.exec("PRAGMA foreign_keys = ON");
@@ -119,5 +123,19 @@ export class NodeSqliteAdapter implements SqliteAdapter {
       }
       return Promise.resolve();
     });
+  }
+
+  async destroy(): Promise<void> {
+    await this.close();
+    if (this.#path === null) {
+      return;
+    }
+    // node:sqlite writes -wal/-shm siblings in WAL mode; leaving them behind
+    // would let a stale journal resurrect pages into the fresh database.
+    await Promise.all(
+      [this.#path, `${this.#path}-wal`, `${this.#path}-shm`].map((file) =>
+        rm(file, { force: true }),
+      ),
+    );
   }
 }

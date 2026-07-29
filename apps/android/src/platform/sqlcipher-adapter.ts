@@ -45,15 +45,18 @@ function toRunResult(result: QueryResult): SqlRunResult {
 export class OpSqlCipherAdapter implements SqliteAdapter {
   readonly #db: DB;
   readonly #txMutex = new AsyncMutex();
+  /** Retained so destroy() can delete the file even after close(). */
+  readonly #name: string;
   #closed = false;
 
-  private constructor(db: DB) {
+  private constructor(db: DB, name: string) {
     this.#db = db;
+    this.#name = name;
   }
 
   static open(options: OpSqlCipherOptions): OpSqlCipherAdapter {
     const db = open({ name: options.name, encryptionKey: options.encryptionKeyHex });
-    return new OpSqlCipherAdapter(db);
+    return new OpSqlCipherAdapter(db, options.name);
   }
 
   #assertOpen(): void {
@@ -132,6 +135,41 @@ export class OpSqlCipherAdapter implements SqliteAdapter {
         this.#db.close();
         this.#closed = true;
       }
+      return Promise.resolve();
+    });
+  }
+
+  /**
+   * Close the handle and delete the database file (op-sqlite `DB#delete`).
+   *
+   * The file is encrypted with a key derived from the wallet seed, so it is
+   * only readable by the wallet that created it. Wiping a wallet without
+   * deleting this file strands an undecryptable database that the NEXT
+   * wallet trips over — SQLCipher "hmac check failed for pgno=1", which the
+   * app surfaced as a wrong-password error (device finding, 2026-07-29).
+   *
+   * Takes the same mutex as `close()` for the same reason, and is idempotent:
+   * a destroy after a close still removes the file.
+   */
+  async destroy(): Promise<void> {
+    await this.#txMutex.runExclusive(() => {
+      // op-sqlite's delete() needs a LIVE handle — it closes and unlinks in
+      // one step. Closing first and deleting after silently leaves the file,
+      // which is precisely the orphan this method exists to remove, so the
+      // ordering here is load-bearing rather than stylistic.
+      if (this.#closed) {
+        // Idempotent path: re-open purely as a means of deletion. Any key
+        // works because deleting never reads a page (see AppContainer
+        // #resetLocalData), and the file may legitimately be gone already.
+        try {
+          open({ name: this.#name, encryptionKey: "00".repeat(32) }).delete();
+        } catch {
+          // Already deleted, or never existed — the intended end state.
+        }
+        return Promise.resolve();
+      }
+      this.#db.delete();
+      this.#closed = true;
       return Promise.resolve();
     });
   }

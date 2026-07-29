@@ -60,4 +60,15 @@ export interface SqliteAdapter {
 
   /** Close the database. Further calls reject. */
   close(): Promise<void>;
+
+  /**
+   * Close the database AND delete its backing file. Idempotent.
+   *
+   * Required because the database is encrypted with a key derived from the
+   * wallet seed, so it does not survive the wallet: `close()` alone leaves a
+   * file that the NEXT wallet cannot decrypt, and SQLCipher then fails the
+   * page-1 HMAC check on open. Wiping a wallet must destroy its database, not
+   * merely disconnect from it.
+   */
+  destroy(): Promise<void>;
 }

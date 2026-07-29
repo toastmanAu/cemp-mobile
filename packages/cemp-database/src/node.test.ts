@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -202,5 +203,54 @@ describe("NodeSqliteAdapter#close vs in-flight transaction", () => {
     const db = new NodeSqliteAdapter();
     await db.close();
     await expect(db.close()).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * `destroy()` exists because a database encrypted with a wallet-derived key
+ * OUTLIVES the wallet: `close()` leaves the file on disk, so the next wallet
+ * — with a different seed, hence a different key — meets a file it cannot
+ * decrypt (SQLCipher "hmac check failed for pgno=1", observed on device
+ * 2026-07-29). Closing is not enough; the file itself has to go.
+ */
+describe("NodeSqliteAdapter#destroy", () => {
+  it("removes the database file, so a reopen starts empty", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cemp-destroy-"));
+    tempDirs.push(dir);
+    const path = join(dir, "cemp.db");
+
+    const db = new NodeSqliteAdapter({ path });
+    await db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
+    await db.run("INSERT INTO t (id) VALUES (1)");
+    await db.destroy();
+
+    expect(existsSync(path)).toBe(false);
+
+    // A fresh adapter on the same path is a NEW database, not the old one.
+    const reopened = new NodeSqliteAdapter({ path });
+    try {
+      await expect(reopened.all("SELECT id FROM t")).rejects.toThrow();
+    } finally {
+      await reopened.close();
+    }
+  });
+
+  it("is idempotent: destroy() twice, and after close(), both resolve", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cemp-destroy-idem-"));
+    tempDirs.push(dir);
+    const path = join(dir, "cemp.db");
+
+    const db = new NodeSqliteAdapter({ path });
+    await db.destroy();
+    await expect(db.destroy()).resolves.toBeUndefined();
+
+    const closed = new NodeSqliteAdapter({ path });
+    await closed.close();
+    await expect(closed.destroy()).resolves.toBeUndefined();
+  });
+
+  it("destroys an in-memory database without touching the filesystem", async () => {
+    const db = new NodeSqliteAdapter();
+    await expect(db.destroy()).resolves.toBeUndefined();
   });
 });

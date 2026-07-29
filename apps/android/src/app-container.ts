@@ -34,6 +34,13 @@ import { isVaultUsable } from "./vault-liveness";
 
 export type AppContainerState = "loading" | "uninitialized" | "locked" | "ready";
 
+/**
+ * The local encrypted database. Named in ONE place because open and destroy
+ * must agree: a destroy that misses the file leaves it for the next wallet,
+ * which cannot decrypt it (the 2026-07-29 device bug).
+ */
+const DATABASE_NAME = "cemp.db";
+
 export interface AppRepositories {
   readonly contacts: ContactRepository;
   readonly conversations: ConversationRepository;
@@ -225,7 +232,11 @@ export class AppContainer {
 
   async wipe(): Promise<void> {
     this.#stopPoll();
-    await this.#closeDatabase();
+    // DESTROY, not close: the database is encrypted with a key derived from
+    // the wallet seed, so it dies with the wallet. Merely closing it leaves a
+    // file the next wallet cannot decrypt, and the app reported that as a
+    // wrong password (device finding, 2026-07-29).
+    await this.resetLocalData();
     // Stop the periodic tick BEFORE wiping: otherwise WorkManager keeps waking
     // a wiped identity and the locked probe keeps querying its route tags and
     // posting notifications for it. `cancelPeriodic()` is best-effort on its
@@ -277,7 +288,7 @@ export class AppContainer {
     const dbKey = await this.vault.getDatabaseKey();
     try {
       this.#db = OpSqlCipherAdapter.open({
-        name: "cemp.db",
+        name: DATABASE_NAME,
         encryptionKeyHex: bytesToHex(dbKey),
       });
     } finally {
@@ -304,5 +315,42 @@ export class AppContainer {
       await this.#db.close();
       this.#db = null;
     }
+  }
+
+  /**
+   * Delete the local database FILE, keeping the wallet intact.
+   *
+   * Two callers: `wipe()` (the database belongs to the wallet being erased)
+   * and the unlock screen's "Reset local data" escape, for a device already
+   * holding a database from an earlier wallet — the state that made a
+   * correct password look wrong (SQLCipher page-1 HMAC failure).
+   *
+   * Deliberately does NOT need the real database key. Deleting a file is not
+   * reading it: op-sqlite hands back a handle whatever key it is given
+   * (SQLCipher only fails at the first page read), so a throwaway key is
+   * enough to obtain one and call `destroy()`. That matters because the most
+   * important caller — "Forgot password? Reset wallet" on the LOCKED screen —
+   * has no way to derive the real key, and a wipe that cannot delete the
+   * database would strand the orphan this whole fix exists to prevent.
+   */
+  async resetLocalData(): Promise<void> {
+    this.#messaging?.dispose();
+    this.#messaging = null;
+    this.#repositories = null;
+
+    const open = this.#db;
+    this.#db = null;
+    if (open !== null) {
+      await open.destroy();
+      return;
+    }
+    // No live handle (locked vault, or a restart since the failed open): take
+    // one purely as a means of deletion. If the file is absent this creates
+    // and immediately removes an empty database — the intended end state.
+    const throwaway = OpSqlCipherAdapter.open({
+      name: DATABASE_NAME,
+      encryptionKeyHex: "00".repeat(32),
+    });
+    await throwaway.destroy();
   }
 }

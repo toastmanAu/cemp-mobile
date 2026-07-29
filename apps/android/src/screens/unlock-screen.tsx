@@ -14,6 +14,9 @@ export function UnlockScreen(): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [armingReset, setArmingReset] = useState(false);
+  /** The vault opened but its local database did not — offers the escape. */
+  const [localDataBroken, setLocalDataBroken] = useState(false);
+  const [armingLocalReset, setArmingLocalReset] = useState(false);
 
   useEffect(() => {
     container.vault
@@ -26,15 +29,47 @@ export function UnlockScreen(): React.JSX.Element {
       });
   }, [container]);
 
+  /**
+   * Unlocking is TWO steps that fail for unrelated reasons, and conflating
+   * them is how a correct password got reported as wrong for hours on device
+   * (2026-07-29): the vault opened fine, then the local database — encrypted
+   * with a PREVIOUS wallet's key — failed its SQLCipher page-1 HMAC check,
+   * and the single catch blamed the password. Attribute each step honestly.
+   */
   async function attempt(action: () => Promise<void>): Promise<void> {
     setBusy(true);
     setError(null);
+    setLocalDataBroken(false);
     try {
       await action();
-      await container.afterVaultUnlock();
     } catch {
       // VaultError codes stay on the wire; the user sees one honest sentence.
       setError("Unlock failed — check the password and try again.");
+      setBusy(false);
+      return;
+    }
+    // Past this line the wallet IS open. Nothing that fails below is the
+    // password's fault, and saying so sends the user round an unwinnable loop.
+    try {
+      await container.afterVaultUnlock();
+    } catch {
+      setError("Wallet unlocked, but this device's local data could not be opened.");
+      setLocalDataBroken(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Delete the unreadable local database and finish opening the wallet. */
+  async function resetLocalData(): Promise<void> {
+    setBusy(true);
+    try {
+      await container.resetLocalData();
+      await container.afterVaultUnlock();
+      setError(null);
+      setLocalDataBroken(false);
+    } catch {
+      setError("Could not reset local data on this device.");
     } finally {
       setBusy(false);
     }
@@ -72,6 +107,32 @@ export function UnlockScreen(): React.JSX.Element {
         </>
       ) : null}
       {error !== null ? <Text style={styles.error}>{error}</Text> : null}
+      {localDataBroken ? (
+        armingLocalReset ? (
+          <>
+            <Text style={styles.resetWarning}>
+              This erases messages and contacts stored on this device. Your wallet and recovery
+              phrase are NOT affected.
+            </Text>
+            <Button
+              title="RESET LOCAL DATA"
+              color="#b00020"
+              disabled={busy}
+              onPress={() => {
+                setArmingLocalReset(false);
+                void resetLocalData();
+              }}
+            />
+            <Button title="Cancel" disabled={busy} onPress={() => setArmingLocalReset(false)} />
+          </>
+        ) : (
+          <Button
+            title="Reset local data (keeps your wallet)"
+            disabled={busy}
+            onPress={() => setArmingLocalReset(true)}
+          />
+        )
+      ) : null}
       <View style={styles.resetArea} />
       {armingReset ? (
         <>
@@ -88,6 +149,11 @@ export function UnlockScreen(): React.JSX.Element {
                 setBusy(true);
                 try {
                   await container.wipe();
+                } catch {
+                  // Never silent: a wipe that half-failed leaves state the
+                  // next wallet trips over, and an unawaited rejection here
+                  // is what hid the original database fault.
+                  setError("Reset failed — the wallet on this device was not fully erased.");
                 } finally {
                   setBusy(false);
                   setArmingReset(false);

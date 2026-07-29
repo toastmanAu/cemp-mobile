@@ -33,7 +33,13 @@ import {
   type DownloadedAttachment,
   type ImageEncodeFormat,
 } from "@cemp/images";
-import { CKB_TESTNET, codec, deriveRouteTag, formatFingerprint } from "@cemp/core";
+import {
+  CKB_TESTNET,
+  codec,
+  deriveRouteTag,
+  formatFingerprint,
+  type ContactBundleV1,
+} from "@cemp/core";
 import {
   decryptEnvelope,
   deriveIdentityKeys,
@@ -315,6 +321,31 @@ export class MessagingService {
       mlDsaPublicKey: this.#bundle.mlDsa.publicKey,
       mlKemPublicKey: this.#bundle.mlKem.publicKey,
     });
+  }
+
+  /**
+   * This device's contact bundle (spec §5.4) — the QR payload for contact
+   * exchange. Null until a profile is published: three of the five fields
+   * come from the on-chain profile cell, so no card can exist before it.
+   */
+  async myContactBundle(): Promise<ContactBundleV1 | null> {
+    const profileIdHex = await this.myProfileId();
+    if (profileIdHex === null) {
+      return null;
+    }
+    const fingerprint = await this.myFingerprint();
+    if (fingerprint === null) {
+      return null;
+    }
+    const id = this.identity();
+    return {
+      profileTypeId: `0x${profileIdHex}`,
+      lockScriptHash: id.lockScriptHash,
+      address: id.address,
+      fingerprint,
+      // Rule 11: never construct a bundle for a network this build is not on.
+      network: CKB_TESTNET.name,
+    };
   }
 
   /** Publish this device's profile cell (requires a funded wallet). */

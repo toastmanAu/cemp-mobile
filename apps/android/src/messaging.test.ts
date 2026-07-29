@@ -19,7 +19,7 @@
  */
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { CempClient, MessagePublisher, type LiveCellStatus } from "@cemp/ckb";
-import { CKB_TESTNET, codec } from "@cemp/core";
+import { CKB_TESTNET, codec, decodeContactBundle, encodeContactBundle } from "@cemp/core";
 import { EphemeralSoftwareKeyStore, MemoryVaultStorage, SecureVaultImpl } from "@cemp/secure-vault";
 import {
   AttachmentRepository,
@@ -27,6 +27,7 @@ import {
   ConversationRepository,
   MessageRepository,
   OutgoingTransactionRepository,
+  ProfileRepository,
 } from "@cemp/database";
 import { NodeSqliteAdapter } from "@cemp/database/node";
 import { InMemoryScheduler } from "@cemp/sync";
@@ -50,6 +51,39 @@ async function unlockedTestVault(): Promise<SecureVaultImpl> {
   // createWithNewMnemonic ends in the unlocked state.
   await vault.createWithNewMnemonic(12, "messaging-test-password", { kdf: TINY_KDF });
   return vault;
+}
+
+/**
+ * Build a real `MessagingService` (same composition `init()` uses everywhere
+ * else in this file) and, when `publishedProfile` is given, seed an active
+ * profile row directly through `ProfileRepository` — the same repository
+ * `myProfileId`/`myFingerprint` read from — so the service observes a
+ * published profile without needing a real on-chain publish. The DB is
+ * closed automatically at the end of the test.
+ */
+async function makeTestService(opts: {
+  publishedProfile: string | null;
+}): Promise<MessagingService> {
+  const vault = await unlockedTestVault();
+  const db = new NodeSqliteAdapter();
+  onTestFinished(() => db.close());
+  const service = await MessagingService.init({
+    vault,
+    db,
+    notifier: new NoopNotifier(),
+    scheduler: new InMemoryScheduler(),
+  });
+  if (opts.publishedProfile !== null) {
+    const accountRow = await db.get("SELECT id FROM accounts LIMIT 1");
+    const accountId = Number(accountRow!.id);
+    await new ProfileRepository(db).create({
+      accountId,
+      profileIdHex: opts.publishedProfile,
+      typeIdHex: opts.publishedProfile,
+      state: "active",
+    });
+  }
+  return service;
 }
 
 describe("MessagingService.init background scheduling", () => {
@@ -362,5 +396,30 @@ describe("MessagingService.publishImage desync guard (retry after broadcast)", (
     } finally {
       await db.close();
     }
+  });
+});
+
+describe("myContactBundle", () => {
+  it("returns null when no profile has been published", async () => {
+    const service = await makeTestService({ publishedProfile: null });
+    expect(await service.myContactBundle()).toBeNull();
+  });
+
+  it("composes a testnet bundle from the published profile", async () => {
+    const service = await makeTestService({ publishedProfile: "aa".repeat(32) });
+    const bundle = await service.myContactBundle();
+
+    expect(bundle).not.toBeNull();
+    expect(bundle!.network).toBe("ckb_testnet");
+    expect(bundle!.profileTypeId).toBe(`0x${"aa".repeat(32)}`);
+    expect(bundle!.lockScriptHash).toBe(service.identity().lockScriptHash);
+    expect(bundle!.address).toBe(service.identity().address);
+    expect(bundle!.fingerprint).toBe(await service.myFingerprint());
+  });
+
+  it("produces a bundle the existing decoder accepts", async () => {
+    const service = await makeTestService({ publishedProfile: "bb".repeat(32) });
+    const bundle = await service.myContactBundle();
+    expect(decodeContactBundle(encodeContactBundle(bundle!))).toEqual(bundle);
   });
 });

@@ -682,7 +682,24 @@ git commit -m "feat(qr): render a contact bundle as a shareable QR PNG"
 
 ---
 
-### Task 5: `local_settings` table and repository
+### Task 5: settings repository
+
+> **SUPERSEDED IN PART (2026-07-30, owner ruling).** This task originally created
+> a new `local_settings` table at schema v9. During implementation a dormant,
+> structurally identical `settings` table was found — present since schema v1
+> (`migrate.ts`), already in `TABLE_NAMES`, and read or written by no code, with
+> no spec document reserving it.
+>
+> Because migrations are append-only, adding `local_settings` would permanently
+> carry two identical key/value tables with one dead forever. The ruling is to
+> **reuse the dormant `settings` table and ship no schema change at all**:
+> `SCHEMA_VERSION` stays at 8, there is no migration 9, and `TABLE_NAMES` is
+> unchanged. The device database stays valid at v8.
+>
+> `LocalSettingsRepository` and `MY_DISPLAY_NAME_KEY` keep the names below —
+> Task 7 depends on them — and only the table their SQL targets changes to
+> `settings`. Ignore the migration and `SCHEMA_VERSION` steps in this task;
+> everything else stands.
 
 **Files:**
 

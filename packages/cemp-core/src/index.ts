@@ -16,3 +16,4 @@ export * from "./qr/png.js";
 export * as codec from "./codec/index.js";
 
 export * from "./qr/matrix.js";
+export * from "./qr/card-image.js";

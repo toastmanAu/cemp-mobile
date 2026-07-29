@@ -25,10 +25,11 @@ to forward.
   poorly once a messaging app has recompressed the image.
 - **In-app contact messages.** Forwarding travels via the OS share sheet, so
   no new message content type and no card-bubble rendering.
-- **Deep-link handling.** Registering the `cemp://` URL scheme on both
-  platforms plus a `Linking` handler is deferred. The share caption still
-  carries the link as copyable text, and the scan screen accepts a pasted
-  link, which covers the fallback case with zero platform configuration.
+- **Deep-link handling.** Registering a URL scheme on both platforms plus a
+  `Linking` handler is deferred. The payload is bundle JSON rather than a URI,
+  so there is no link to tap in any case: the share caption carries the bundle
+  text and the scan screen accepts it pasted, which covers the
+  scan-failed fallback with zero platform configuration.
 - **Third-party introductions** ("forward Bob's card to Carol").
 
 ## Decisions

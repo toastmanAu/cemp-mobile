@@ -17,3 +17,7 @@ packages/cemp-test-vectors/vectors/*.json
 # style (" : " spacing) on every catalog edit, so formatting it here just
 # guarantees the next Xcode touch turns CI red again.
 **/*.xcassets/**/Contents.json
+
+# Subagent-driven-development per-plan scratch workspaces (git-ignored briefs,
+# reports and diffs). The tracked .superpowers/sdd/progress.md stays checked.
+.superpowers/sdd/*/

@@ -20,6 +20,7 @@
 		31FFA489DF09A20167DC1A92 /* CempScheduler.m in Sources */ = {isa = PBXBuildFile; fileRef = 2A8E6C61EBF5007863B3B19E /* CempScheduler.m */; };
 		33FFF5BC7B94516A9144E263 /* encoding.c in Sources */ = {isa = PBXBuildFile; fileRef = F344768B0B859694A685B67C /* encoding.c */; };
 		342F161A391629C2FE41E575 /* CempSchedulerEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = F5844455C38825EE568CC77F /* CempSchedulerEngine.m */; };
+		34CB849B985B4B1ED2D1FD62 /* CempShare.m in Sources */ = {isa = PBXBuildFile; fileRef = A70FBE641511A0050799AC6B /* CempShare.m */; };
 		3E4F8B8A1F250BBD7ADA6A45 /* crypto_scrypt-ref.c in Sources */ = {isa = PBXBuildFile; fileRef = 110379211318E1F8F6D0DCCB /* crypto_scrypt-ref.c */; };
 		46768DA30D9264A4B3D24173 /* core.c in Sources */ = {isa = PBXBuildFile; fileRef = 11021983D1B7385C99ABE4FE /* core.c */; };
 		4ADB3568E4D54CDA4486B72F /* blake2b.c in Sources */ = {isa = PBXBuildFile; fileRef = 2CC2E7CBF063A5B123A04F6C /* blake2b.c */; };
@@ -97,6 +98,7 @@
 		86A186C2311F896485ACCE21 /* ref.c */ = {isa = PBXFileReference; includeInIndex = 1; name = ref.c; path = ../CempKdf/vendor/argon2/src/ref.c; sourceTree = "<group>"; };
 		97D2E43DDD693EF9D2A06AF4 /* CempSchedulerTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempSchedulerTests.m; sourceTree = "<group>"; };
 		A2C098E97E269EDB23F0D354 /* vectors.txt */ = {isa = PBXFileReference; includeInIndex = 1; name = vectors.txt; path = "../../../tools/kdf-c-core/vectors.txt"; sourceTree = SOURCE_ROOT; };
+		A70FBE641511A0050799AC6B /* CempShare.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempShare.m; sourceTree = "<group>"; };
 		B0448BB021990E66ED70F437 /* CempImageCodecTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImageCodecTests.m; sourceTree = "<group>"; };
 		B5DB4DD37FC9F25EBDAC8137 /* CempImagePickerEngine.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImagePickerEngine.m; sourceTree = "<group>"; };
 		B8B4A927C878E7F3A85FB2ED /* CempKdfCore.c */ = {isa = PBXFileReference; includeInIndex = 1; name = CempKdfCore.c; path = ../CempKdf/CempKdfCore.c; sourceTree = "<group>"; };
@@ -265,6 +267,7 @@
 				8AD8E5E85F4375F149121066 /* CempImageCodec */,
 				55926F598DC7A7F59833F725 /* CempImagePicker */,
 				398BEEC5E3DF7B46D7C2306D /* CempScheduler */,
+				86F9D8DE16DFC07561D1FDFB /* CempShare */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -278,6 +281,15 @@
 				C70A543C820087BB3F06A92D /* CempMobileTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		86F9D8DE16DFC07561D1FDFB /* CempShare */ = {
+			isa = PBXGroup;
+			children = (
+				A70FBE641511A0050799AC6B /* CempShare.m */,
+			);
+			name = CempShare;
+			path = CempShare;
 			sourceTree = "<group>";
 		};
 		8AD8E5E85F4375F149121066 /* CempImageCodec */ = {
@@ -513,6 +525,7 @@
 				31FFA489DF09A20167DC1A92 /* CempScheduler.m in Sources */,
 				342F161A391629C2FE41E575 /* CempSchedulerEngine.m in Sources */,
 				D776C5574DB43953F3BE7D6D /* CempHeadlessTask.m in Sources */,
+				34CB849B985B4B1ED2D1FD62 /* CempShare.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

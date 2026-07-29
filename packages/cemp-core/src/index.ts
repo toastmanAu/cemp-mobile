@@ -13,3 +13,5 @@ export * from "./profile-trust.js";
  * the logical interfaces in `envelope.js`.
  */
 export * as codec from "./codec/index.js";
+
+export * from "./qr/matrix.js";

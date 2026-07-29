@@ -26,7 +26,7 @@ describe("LocalSettingsRepository", () => {
     await repo.set(MY_DISPLAY_NAME_KEY, "Phill");
     await repo.set(MY_DISPLAY_NAME_KEY, "Phillip");
     expect(await repo.get(MY_DISPLAY_NAME_KEY)).toBe("Phillip");
-    const rows = await db.all("SELECT key FROM local_settings");
+    const rows = await db.all("SELECT key FROM settings");
     expect(rows).toHaveLength(1);
   });
 

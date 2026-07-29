@@ -27,11 +27,9 @@
  *   is encrypted). Chain re-derivation depended on the sender-reclaimable
  *   message cell (rule 9), which let the sender permanently brick the
  *   receiver's tap-to-download after ack.
- * - 9: local settings (contact sharing) — local_settings key/value table,
- *   first key `my_display_name` for the share-sheet caption.
  */
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 8;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [
@@ -53,6 +51,5 @@ export const TABLE_NAMES = [
   "network_endpoints",
   "security_events",
   "settings",
-  "local_settings",
 ] as const;
 export type TableName = (typeof TABLE_NAMES)[number];

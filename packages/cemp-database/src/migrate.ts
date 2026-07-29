@@ -236,16 +236,6 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "attachments: persist the incoming attachment key (sender-reclaim griefing fix)",
     statements: ["ALTER TABLE attachments ADD COLUMN attachment_key BLOB"],
   },
-  {
-    version: 9,
-    description: "local settings (contact sharing)",
-    statements: [
-      `CREATE TABLE local_settings (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-)`,
-    ],
-  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

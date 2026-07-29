@@ -33,13 +33,14 @@ to forward.
 
 ## Decisions
 
-| Question                  | Decision                                       | Why                                                                                                                                                                            |
-| ------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Forward transport         | OS share sheet only                            | Reaches people not yet on CellSend; avoids a new message content type entirely                                                                                                 |
-| Card payload              | Profile id + display name                      | Contacts arrive with an editable name instead of raw hex; still a low-density QR                                                                                               |
-| Share artifact            | QR PNG + text caption                          | The image is what makes "scan from a forwarded photo" possible at all; the caption is the copyable fallback                                                                    |
-| Camera implementation     | Own native module, house style                 | Matches CempKdf / CempImageCodec / CempImagePicker / CempScheduler; no new JS dependency and no new CocoaPods surface on a CI whose `pod install` is already the flakiest step |
-| "My display name" storage | New `local_settings` table in the encrypted DB | Reusable for later preferences; consistent with contacts living in the encrypted DB                                                                                            |
+| Question                  | Decision                                              | Why                                                                                                                                                                            |
+| ------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Forward transport         | OS share sheet only                                   | Reaches people not yet on CellSend; avoids a new message content type entirely                                                                                                 |
+| Card payload              | The EXISTING `ContactBundleV1` (spec §5.4), unchanged | It is already "the QR payload for contact exchange", already fuzz-tested, and carries the fingerprint and network that a hand-rolled URI would have dropped                    |
+| Display name              | Rides in the share caption, never in the QR           | Keeps a spec'd, fuzz-tested wire format untouched — no v2, no v1/v2 compatibility branch, no re-fuzzing                                                                        |
+| Share artifact            | QR PNG + text caption                                 | The image is what makes "scan from a forwarded photo" possible at all; the caption is the copyable fallback                                                                    |
+| Camera implementation     | Own native module, house style                        | Matches CempKdf / CempImageCodec / CempImagePicker / CempScheduler; no new JS dependency and no new CocoaPods surface on a CI whose `pod install` is already the flakiest step |
+| "My display name" storage | New `local_settings` table in the encrypted DB        | Reusable for later preferences; consistent with contacts living in the encrypted DB                                                                                            |
 
 ### Rejected alternative: pure-JS QR decoding
 
@@ -54,38 +55,59 @@ multi-megabyte RGBA buffer across as hex. Decoding stays native.
 Four layers, split so that everything except camera access and the share sheet
 is RN-free and unit-testable:
 
-| Layer                  | Location                                                                            | Tested by |
-| ---------------------- | ----------------------------------------------------------------------------------- | --------- |
-| Card codec             | `packages/cemp-core/src/contact-card.ts`                                            | vitest    |
-| QR matrix + PNG writer | `packages/cemp-core/src/qr/`                                                        | vitest    |
-| Native seams           | `apps/android/src/platform/native-qr-scanner.ts`, `native-share.ts` (+ Kotlin/ObjC) | device    |
-| Screens                | `apps/android/src/screens/`                                                         | device    |
+| Layer                  | Location                                                                            | Tested by        |
+| ---------------------- | ----------------------------------------------------------------------------------- | ---------------- |
+| Card codec             | `packages/cemp-core/src/contact-bundle.ts` — **exists, unchanged**                  | vitest (already) |
+| Own-bundle assembly    | `MessagingService#myContactBundle()`                                                | vitest           |
+| QR matrix + PNG writer | `packages/cemp-core/src/qr/`                                                        | vitest           |
+| Native seams           | `apps/android/src/platform/native-qr-scanner.ts`, `native-share.ts` (+ Kotlin/ObjC) | device           |
+| Screens                | `apps/android/src/screens/`                                                         | device           |
 
-Card parsing is the security-sensitive component: a scanned QR is
-attacker-controlled input (AGENTS.md rule 4). It lives where vitest can hammer
-it with hostile cases.
+### Card format — reuse, do not invent
 
-### Card format
+`packages/cemp-core/src/contact-bundle.ts` already defines the contact-exchange
+payload and describes itself as "the QR payload for contact exchange"
+(spec §5.4, Phase 5 task 9). It is implemented, exercised by
+`hardening-fuzz.test.ts` and `profile-security.test.ts`, and has **no UI
+consumer** — the missing piece is exactly the QR, share and scan surface this
+design adds.
 
+```json
+{
+  "protocol": "cemp-contact",
+  "version": 1,
+  "network": "ckb_testnet",
+  "profileTypeId": "0x…64hex",
+  "lockScriptHash": "0x…64hex",
+  "address": "ckt1…",
+  "fingerprint": "XXXX-XXXX-…-XXXX"
+}
 ```
-cemp://contact?v=1&id=<64 lowercase hex>&n=<url-encoded display name>
-```
 
-- `v` — format version. Present so a future field cannot silently misparse on
-  an older client; an unknown version is rejected with a distinct message.
-- `id` — the contact's public profile id, exactly 64 lowercase hex characters.
-- `n` — display name, URL-encoded, maximum 64 characters after decoding.
-  Optional: a card without `n` parses successfully and leaves the name blank.
+`encodeContactBundle(bundle)` produces the QR text;
+`decodeContactBundle(text, expectedNetwork = CKB_TESTNET.name)` parses a scan
+and already rejects unknown protocol/version, wrong network (rule 11), bad
+hex/bech32 shapes and non-canonical fingerprints. **No new codec is written.**
 
-`encodeContactCard(card): string` and `parseContactCard(text): ParsedCard`
-round-trip. `parseContactCard` validates scheme, host, version, id length and
-charset, and name length, rejecting anything else.
+An earlier draft of this design proposed a bespoke `cemp://contact?v=1&id=&n=`
+URI. It was rejected on discovery of the above: it dropped the `fingerprint`
+(losing the `profile-trust.ts` verification path), dropped `network` (letting a
+testnet build accept a mainnet contact, breaking rule 11), dropped
+`lockScriptHash` and `address`, and identified contacts by profile id rather
+than profile Type ID.
 
-The two directions treat an over-long name differently, deliberately: `encode`
-**truncates** to 64 characters, because the input is the user's own name and
-refusing to build their card would be obstructive; `parse` **rejects**, because
-the input is attacker-controlled and silently accepting an oversized field is
-how parsers grow holes.
+### Building your own bundle
+
+`MessagingService` already exposes every field: `identity()` returns `address`
+and `lockScriptHash`, `myProfileId()` returns the profile Type ID, and
+`myFingerprint()` returns the display-form fingerprint. A new
+`myContactBundle(): Promise<ContactBundleV1 | null>` composes them, returning
+`null` when no profile has been published.
+
+That `null` is a real user-facing state, not an error: **a card cannot exist
+before the profile is published**, because three of its five fields come from
+the on-chain profile. The My Card screen must handle it by directing the user
+to Settings → Publish my profile.
 
 ### QR encoding and PNG output
 
@@ -143,19 +165,24 @@ lives in the encrypted database for consistency with all other user data.
 
 **Share:**
 
-1. My Card screen reads `my_display_name` and the published profile id.
-2. `encodeContactCard()` builds the URI; the QR encoder builds a module matrix;
-   the PNG writer emits image bytes.
+1. My Card screen calls `myContactBundle()`. If it returns `null`, the screen
+   shows "Publish your profile first" and links to Settings — no QR is drawn.
+2. `encodeContactBundle()` produces the QR text; the QR encoder builds a module
+   matrix; the PNG writer emits image bytes.
 3. The matrix renders on screen for in-person scanning.
-4. `[Share]` calls `CempShare.shareImage(pngHex, caption)`.
+4. `[Share]` reads `my_display_name` for the caption and calls
+   `CempShare.shareImage(pngHex, caption)`. The caption carries the name and
+   the bundle JSON; the QR carries the bundle alone.
 
 **Receive:**
 
-1. Scan screen offers _Scan with camera_, _Scan from photo_, and _Paste link_.
+1. Scan screen offers _Scan with camera_, _Scan from photo_, and _Paste code_.
 2. Camera → `scanWithCamera()`. Photo → `pickImage()` (existing) →
    `scanImage(hex)`. Paste → the text box directly.
-3. `parseContactCard()` validates the result.
-4. On success the add-contact form opens prefilled with an editable name.
+3. `decodeContactBundle(text)` validates the result, rejecting wrong-network
+   bundles per rule 11.
+4. On success the add-contact form opens with an **empty, required** name field
+   and the fingerprint shown for out-of-band verification.
 5. Saving writes through `ContactRepository`.
 
 ## Error handling
@@ -164,16 +191,22 @@ Each of these is a distinct user-visible state, never a swallowed throw. This
 matters here specifically: the 2026-07-29 vault bug showed that collapsing
 unrelated failures into one message sends the user round an unwinnable loop.
 
-| Condition                         | Behaviour                                                    |
-| --------------------------------- | ------------------------------------------------------------ |
-| Not a `cemp://contact` URI        | "That isn't a CellSend contact code."                        |
-| Unknown version                   | "This code was made by a newer version of CellSend."         |
-| Malformed id (length or charset)  | "That contact code is damaged."                              |
-| Profile id already in contacts    | Offer to open the existing contact; never create a duplicate |
-| Profile id is the user's own      | "That's your own card."                                      |
-| No code found in the chosen image | "No contact code found in that image."                       |
-| Camera permission denied          | Honest message naming the permission                         |
-| Share sheet cancelled             | Silent, not an error                                         |
+| Condition                              | Behaviour                                                                    |
+| -------------------------------------- | ---------------------------------------------------------------------------- |
+| No profile published yet (own card)    | "Publish your profile first" + link to Settings; no QR drawn                 |
+| Not a `cemp-contact` bundle            | "That isn't a CellSend contact code."                                        |
+| Unknown protocol or version            | "This code was made by a newer version of CellSend."                         |
+| **Wrong network** (mainnet on testnet) | "That contact is on a different network." — rule 11, never silently accepted |
+| Malformed hex, bech32 or fingerprint   | "That contact code is damaged."                                              |
+| `profileTypeId` already in contacts    | Offer to open the existing contact; never create a duplicate                 |
+| `profileTypeId` is the user's own      | "That's your own card."                                                      |
+| No code found in the chosen image      | "No contact code found in that image."                                       |
+| Camera permission denied               | Honest message naming the permission                                         |
+| Share sheet cancelled                  | Silent, not an error                                                         |
+
+The first six are all raised by the existing `decodeContactBundle`, which
+throws a single error type. Mapping its failure reasons onto these distinct
+messages is UI work in the scan screen, not new validation logic.
 
 Camera and photo-library usage require `NSCameraUsageDescription` and
 `NSPhotoLibraryUsageDescription` (iOS `Info.plist`) and `CAMERA` (Android
@@ -184,14 +217,16 @@ are part of the first implementation task, not an afterthought.
 
 **Unit (vitest), on Linux:**
 
-- Card codec: encode/parse round-trip; missing name; unicode and
-  percent-encoded names; over-length name; wrong scheme, host, and version;
-  id of wrong length or containing non-hex; empty and junk input.
-- QR encoder: matrix output checked against known-answer vectors for the exact
-  payload lengths this feature produces.
+- Card codec: **no new tests** — `contact-bundle.ts` is unchanged and already
+  covered by `hardening-fuzz.test.ts` and `profile-security.test.ts`.
+- `myContactBundle()`: returns `null` with no published profile; composes all
+  five fields correctly when one exists; network is always the configured one.
+- QR encoder: matrix output checked against known-answer vectors at the exact
+  payload size a real bundle produces (~250–300 characters, materially denser
+  than the rejected URI — this is the size that must be proven scannable).
 - PNG writer: header, IHDR dimensions, and CRC validity; output decodes with an
   independent reader.
-- Duplicate and self-card detection, given a contact list.
+- Duplicate and self-card detection by `profileTypeId`, given a contact list.
 
 **Device checklist** (the parts vitest cannot reach):
 
@@ -212,9 +247,12 @@ work, not optional verification.
 - **MLKit barcode scanning adds an Android dependency.** It is a Google Play
   Services library; size and availability on devices without Play Services need
   checking during implementation. ZXing is the fallback.
-- **Recompression fidelity is unproven.** Whether a QR survives WhatsApp-grade
-  recompression at the chosen module size is an empirical question; device
-  checklist item 4 is the gate, and the module size may need raising.
+- **Recompression fidelity is unproven, and the payload got bigger.** The
+  bundle JSON is roughly 250–300 characters against the ~90 of the rejected
+  URI, so the QR is materially denser and less tolerant of compression
+  artefacts. Whether it survives WhatsApp-grade recompression is an empirical
+  question; device checklist item 4 is the gate, and module size rises before
+  anything else changes.
 - **Profile-id lookup is a public-RPC read.** Adding a contact resolves the id
   through `https://testnet.ckb.dev`, so the endpoint operator learns which
   profile ids a user resolves. Pre-existing, not introduced here, but worth

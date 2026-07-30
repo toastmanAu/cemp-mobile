@@ -27,13 +27,21 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Live camera QR scan (design's camera-path scan). Binds a CameraX analyser
  * that feeds luminance frames straight to ZXing — no MLKit, matching
- * CempQrScannerModule.scanImage's still-image path. Cancel (back press or a
- * denied CAMERA permission) finishes with RESULT_CANCELED so the caller
- * resolves null rather than treating it as an error.
+ * CempQrScannerModule.scanImage's still-image path. Cancel (back press)
+ * finishes with RESULT_CANCELED so the caller resolves null. A denied CAMERA
+ * permission finishes with the distinct RESULT_PERMISSION_DENIED so
+ * CempQrScannerModule can reject with "qr-permission-denied" instead of
+ * silently resolving null — the spec's error table requires an honest
+ * message naming the permission, which a plain cancel can't distinguish.
  */
 class QrScannerActivity : AppCompatActivity() {
   companion object {
     const val EXTRA_TEXT = "qr_text"
+    /**
+     * A camera permission that is denied or permanently denied ("don't ask
+     * again"). Distinct from Activity.RESULT_OK (-1) and RESULT_CANCELED (0).
+     */
+    const val RESULT_PERMISSION_DENIED = 2
     // Arbitrary but distinct from CempQrScannerModule's REQUEST_CODE_BASE and
     // CempImagePickerModule's REQUEST_CODE (0xC0DE) — this is a permission
     // request code, a different ActivityCompat callback from either, but kept
@@ -71,9 +79,17 @@ class QrScannerActivity : AppCompatActivity() {
     if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
       startCamera()
     } else {
-      // A denied permission is a cancel, not a crash: the JS side resolves null
-      // and the screen keeps its photo and paste options.
-      finishWith(null)
+      // A denied permission is not a crash, but it is also not a silent
+      // cancel: this single callback covers BOTH the "just tapped Deny at
+      // the system dialog" case and the "permanently denied, don't ask
+      // again" case, because requestPermissions() delivers the latter to
+      // this same callback immediately, with no dialog shown at all (that
+      // is what "onCreate's already-denied launch path" resolves to — there
+      // is no separate code site for it). Either way, finish with the
+      // distinct RESULT_PERMISSION_DENIED so CempQrScannerModule can reject
+      // with "qr-permission-denied" instead of resolving null, letting the
+      // screen show an honest message naming the camera permission.
+      finishPermissionDenied()
     }
   }
 
@@ -132,6 +148,12 @@ class QrScannerActivity : AppCompatActivity() {
     } else {
       setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_TEXT, text))
     }
+    finish()
+  }
+
+  /** Distinct from a plain cancel — see RESULT_PERMISSION_DENIED's doc comment. */
+  private fun finishPermissionDenied() {
+    setResult(RESULT_PERMISSION_DENIED)
     finish()
   }
 

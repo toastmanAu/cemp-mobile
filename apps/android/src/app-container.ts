@@ -39,6 +39,23 @@ import { isVaultUsable } from "./vault-liveness";
 export type AppContainerState = "loading" | "uninitialized" | "locked" | "ready";
 
 /**
+ * Result of {@link AppContainer.scanContactFromPhoto}, distinguishing three
+ * outcomes that collapsing into one `null` used to hide from the user:
+ * the photo picker was cancelled (silent — the user changed their mind),
+ * a photo was chosen but no QR code was found in it (its own message —
+ * "No contact code found in that image.", per the design spec's
+ * error-handling table), and a code was found (carries the decoded text
+ * onward to classification). Collapsing "cancelled" and "no-code" was the
+ * plan's original design; it is wrong here for the same reason the
+ * 2026-07-29 vault bug is in this file's own doc comment — a photo with no
+ * code in it left the button flickering with no feedback at all.
+ */
+export type ScanFromPhotoResult =
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "no-code" }
+  | { readonly kind: "text"; readonly text: string };
+
+/**
  * The local encrypted database. Named in ONE place because open and destroy
  * must agree: a destroy that misses the file leaves it for the next wallet,
  * which cannot decrypt it (the 2026-07-29 device bug).
@@ -322,13 +339,21 @@ export class AppContainer {
     return await scanWithCamera();
   }
 
-  /** Let the user pick a photo and decode a QR from it. Null if none found or cancelled. */
-  async scanContactFromPhoto(): Promise<string | null> {
+  /**
+   * Let the user pick a photo and decode a QR from it. See
+   * {@link ScanFromPhotoResult} for why "picker cancelled" and "no code in
+   * the photo" are kept apart rather than both collapsing to `null`.
+   */
+  async scanContactFromPhoto(): Promise<ScanFromPhotoResult> {
     const bytes = await pickImage();
     if (bytes === null) {
-      return null;
+      return { kind: "cancelled" };
     }
-    return await scanImageForQr(bytes);
+    const text = await scanImageForQr(bytes);
+    if (text === null) {
+      return { kind: "no-code" };
+    }
+    return { kind: "text", text };
   }
 
   async #closeDatabase(): Promise<void> {

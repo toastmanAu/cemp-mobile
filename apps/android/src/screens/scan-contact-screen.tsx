@@ -23,7 +23,9 @@ import { Button, ScrollView, StyleSheet, Text, TextInput, View } from "react-nat
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { classifyScannedCard, normalizeProfileId, type ScanOutcome } from "@cemp/core";
+import type { ScanFromPhotoResult } from "../app-container";
 import { useAppContainer, type RootStackParamList } from "../navigation";
+import { CameraPermissionDeniedError } from "../platform/native-qr-scanner";
 
 function unreadableMessage(outcome: ScanOutcome & { kind: "unreadable" }): string {
   switch (outcome.reason) {
@@ -77,8 +79,10 @@ export function ScanContactScreen(): React.JSX.Element {
   const handleScanned = useCallback(
     async (text: string | null): Promise<void> => {
       if (text === null) {
-        // Cancel — a dismissed camera, no photo chosen, or an image with no
-        // code in it — is a normal outcome, not an error.
+        // Cancel — a dismissed camera, or the paste box was somehow empty —
+        // is a normal outcome, not an error. The photo path no longer routes
+        // its own "cancelled" / "no code found" outcomes through here; see
+        // runPhotoScan and ScanFromPhotoResult.
         return;
       }
 
@@ -138,8 +142,14 @@ export function ScanContactScreen(): React.JSX.Element {
     let text: string | null;
     try {
       text = await container.scanContactWithCamera();
-    } catch {
-      if (mountedRef.current) setScanError("Could not open the camera scanner.");
+    } catch (error: unknown) {
+      if (mountedRef.current) {
+        setScanError(
+          error instanceof CameraPermissionDeniedError
+            ? "Camera permission is off. Enable the Camera permission for CellSend in your device Settings, then try again."
+            : "Could not open the camera scanner.",
+        );
+      }
       if (mountedRef.current) setBusy(false);
       return;
     }
@@ -154,15 +164,25 @@ export function ScanContactScreen(): React.JSX.Element {
     setBusy(true);
     setScanError(null);
     setClassifyError(null);
-    let text: string | null;
+    let outcome: ScanFromPhotoResult;
     try {
-      text = await container.scanContactFromPhoto();
+      outcome = await container.scanContactFromPhoto();
     } catch {
       if (mountedRef.current) setScanError("Could not read a code from that photo.");
       if (mountedRef.current) setBusy(false);
       return;
     }
-    await handleScanned(text);
+    if (outcome.kind === "cancelled") {
+      // The user changed their mind in the photo picker — silent, not an error.
+      if (mountedRef.current) setBusy(false);
+      return;
+    }
+    if (outcome.kind === "no-code") {
+      if (mountedRef.current) setScanError("No contact code found in that image.");
+      if (mountedRef.current) setBusy(false);
+      return;
+    }
+    await handleScanned(outcome.text);
     if (mountedRef.current) setBusy(false);
   }, [busy, container, handleScanned]);
 

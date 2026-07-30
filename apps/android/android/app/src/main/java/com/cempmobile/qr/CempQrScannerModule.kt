@@ -141,8 +141,15 @@ class CempQrScannerModule(reactContext: ReactApplicationContext) :
     val current = pending.get() ?: return
     if (current.requestCode != requestCode) return
     if (!pending.compareAndSet(current, null)) return
-    // Cancel — including a denied camera permission — resolves null, not an
-    // error: the screen keeps its photo and paste options.
+    // Plain cancel (back press, no usable camera) resolves null, not an
+    // error: the screen keeps its photo and paste options. A denied camera
+    // permission is deliberately NOT folded into that same null — it rejects
+    // with a distinct code so the screen can show an honest message naming
+    // the permission instead of doing nothing (spec's error-handling table).
+    if (resultCode == QrScannerActivity.RESULT_PERMISSION_DENIED) {
+      current.promise.reject("qr-permission-denied", "camera permission was denied")
+      return
+    }
     if (resultCode != Activity.RESULT_OK) {
       current.promise.resolve(null)
       return

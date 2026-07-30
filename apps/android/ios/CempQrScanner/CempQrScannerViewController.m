@@ -90,6 +90,22 @@
 }
 
 /**
+ * Belt-and-braces settle for any dismissal this class did not itself
+ * initiate. With `UIModalPresentationFullScreen` (set by the presenter in
+ * CempQrScanner.m) there is no interactive swipe gesture, so in practice
+ * every dismissal already goes through `finishWith:`/`finishWithPermissionDenied`
+ * before this fires. `finishWith:`'s `atomic_exchange` guard makes this a
+ * no-op on every path that already settled, so it cannot double-settle a
+ * normal exit — it only matters for a dismissal this class never saw
+ * coming.
+ */
+- (void)viewDidDisappear:(BOOL)animated
+{
+  [super viewDidDisappear:animated];
+  [self finishWith:nil];
+}
+
+/**
  * Checks camera authorization before touching AVCaptureSession at all.
  * AVCaptureDeviceInput/canAddInput: do NOT fail for a denied camera — the
  * input constructs fine and the session simply delivers no frames, which
@@ -120,7 +136,7 @@
           if (granted) {
             [self setUpAndStartSession];
           } else {
-            [self finishWith:nil]; // denial is a cancel
+            [self finishWithPermissionDenied];
           }
         });
       }];
@@ -128,7 +144,7 @@
     }
     case AVAuthorizationStatusDenied:
     case AVAuthorizationStatusRestricted: {
-      [self finishWith:nil];
+      [self finishWithPermissionDenied];
       break;
     }
   }
@@ -157,7 +173,14 @@
   _preview = [AVCaptureVideoPreviewLayer layerWithSession:_session];
   _preview.videoGravity = AVLayerVideoGravityResizeAspectFill;
   _preview.frame = self.view.layer.bounds;
-  [self.view.layer addSublayer:_preview];
+  // insertSublayer:atIndex:0, not addSublayer: — addSublayer: appends on
+  // top, which would render the preview above the Cancel button's backing
+  // layer (added earlier, in viewDidLoad). A bare CALayer doesn't
+  // participate in UIView hit-testing, so the button stayed tappable but
+  // invisible under the preview. Inserting at index 0 keeps the preview
+  // beneath everything already in self.view.layer's sublayers, i.e. below
+  // the Cancel button.
+  [self.view.layer insertSublayer:_preview atIndex:0];
 
   // startRunning blocks; keep it off the main queue, and use the private
   // serial _sessionQueue (not the global concurrent queue) so a
@@ -209,20 +232,14 @@
   }
 }
 
-/** Fires onResult exactly once, whatever path got here. */
-- (void)finishWith:(NSString *_Nullable)text
+/**
+ * Stops the capture session if one was ever started, off the main thread.
+ * Shared by every settle path (`finishWith:` and
+ * `finishWithPermissionDenied`) so the session teardown discipline —
+ * documented in `setUpAndStartSession`'s comment — lives in one place.
+ */
+- (void)stopSessionIfNeeded
 {
-  // atomic_exchange is the check-and-set: it sets _finished to true and
-  // returns whatever was there before, in one indivisible operation. That
-  // is what makes this race-free now — not thread confinement (this is
-  // still always called from the main thread, but setUpAndStartSession's
-  // dispatched startRunning block reads _finished from a background
-  // queue with no ordering guarantee against this write, so the flag
-  // itself has to be safe to read cross-thread, not just written from a
-  // single thread).
-  if (atomic_exchange(&_finished, true)) {
-    return; // already settled.
-  }
   AVCaptureSession *session = _session;
   if (session != nil) {
     // stopRunning blocks configuring/tearing down capture hardware,
@@ -238,10 +255,49 @@
       [session stopRunning];
     });
   }
+}
+
+/** Fires onResult exactly once, whatever path got here. */
+- (void)finishWith:(NSString *_Nullable)text
+{
+  // atomic_exchange is the check-and-set: it sets _finished to true and
+  // returns whatever was there before, in one indivisible operation. That
+  // is what makes this race-free now — not thread confinement (this is
+  // still always called from the main thread, but setUpAndStartSession's
+  // dispatched startRunning block reads _finished from a background
+  // queue with no ordering guarantee against this write, so the flag
+  // itself has to be safe to read cross-thread, not just written from a
+  // single thread).
+  if (atomic_exchange(&_finished, true)) {
+    return; // already settled.
+  }
+  [self stopSessionIfNeeded];
   void (^handler)(NSString *_Nullable) = self.onResult;
   self.onResult = nil;
+  self.onPermissionDenied = nil;
   if (handler != nil) {
     handler(text);
+  }
+}
+
+/**
+ * Fires onPermissionDenied exactly once, instead of onResult, when the
+ * camera permission is denied or restricted. Shares the same atomic
+ * `_finished` guard as `finishWith:` — permission-denied and every other
+ * settle path race the same flag, so only one of them can ever fire for a
+ * given presentation.
+ */
+- (void)finishWithPermissionDenied
+{
+  if (atomic_exchange(&_finished, true)) {
+    return; // already settled.
+  }
+  [self stopSessionIfNeeded];
+  void (^handler)(void) = self.onPermissionDenied;
+  self.onResult = nil;
+  self.onPermissionDenied = nil;
+  if (handler != nil) {
+    handler();
   }
 }
 

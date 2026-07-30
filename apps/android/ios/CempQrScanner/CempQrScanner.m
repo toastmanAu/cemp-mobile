@@ -6,11 +6,15 @@
  *   NativeModules.CempQrScanner.scanImage(bytesHex) -> Promise<string | null>
  *   NativeModules.CempQrScanner.scanWithCamera()     -> Promise<string | null>
  *
- * null covers both "no code in the image" and "user cancelled the camera
- * (including a denied permission)" — those are normal outcomes, not errors.
- * A genuinely undecodable input (bad hex, unreadable image bytes) rejects.
- * Never log decoded payloads (AGENTS.md rule 2) — only static strings appear
- * in reject messages.
+ * null covers both "no code in the image" and "user cancelled the camera" —
+ * those are normal outcomes, not errors. A denied/restricted camera
+ * permission rejects with the distinct code "qr-permission-denied" rather
+ * than resolving null, so the JS seam can surface an honest message naming
+ * the permission instead of silently doing nothing (see
+ * CempQrScannerViewController's onPermissionDenied). A genuinely
+ * undecodable input (bad hex, unreadable image bytes) rejects with
+ * "qr-decode-error". Never log decoded payloads (AGENTS.md rule 2) — only
+ * static strings appear in reject messages.
  */
 
 #import <CoreImage/CoreImage.h>
@@ -100,6 +104,18 @@ RCT_EXPORT_METHOD(scanWithCamera:(RCTPromiseResolveBlock)resolve
         resolve(text);
       }];
     };
+    vc.onPermissionDenied = ^{
+      [presenter dismissViewControllerAnimated:YES completion:^{
+        reject(@"qr-permission-denied", @"camera permission was denied", nil);
+      }];
+    };
+    // Full-screen, not the UIModalPresentationAutomatic (pageSheet) default:
+    // a pageSheet is interactively swipe-to-dismissible, and no code here
+    // observes that gesture — a swipe-down would leave scanWithCamera's
+    // promise permanently unsettled (busy stuck true on the JS side).
+    // Full-screen removes the gesture entirely and matches the Android
+    // side's full-screen scanner Activity.
+    vc.modalPresentationStyle = UIModalPresentationFullScreen;
     [presenter presentViewController:vc animated:YES completion:nil];
   });
 }

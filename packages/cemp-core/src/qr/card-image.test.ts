@@ -4,11 +4,16 @@ import { qrMatrix } from "./matrix.js";
 import { contactCardPng } from "./card-image.js";
 import { encodeContactBundle } from "../contact-bundle.js";
 
+// Realistic field widths (see matrix.test.ts): address is a bech32m ckt1…
+// string over 1+32+1+37 = 71 bytes (MLDSA_V2_SIZES.lockArgs = 37) = 124
+// chars; fingerprint is 8 groups of 4 hex chars (FINGERPRINT_BYTES = 16) = 39
+// chars. This keeps the PNG dimensions asserted below matched to the
+// production QR version (81x81 modules), not a smaller stand-in.
 const BUNDLE: ContactBundleV1 = {
   profileTypeId: `0x${"ab".repeat(32)}`,
   lockScriptHash: `0x${"cd".repeat(32)}`,
-  address: `ckt1${"q".repeat(95)}`,
-  fingerprint: "ABCD-EFGH-IJKL-MNOP-QRST-UVWX",
+  address: `ckt1${"q".repeat(120)}`,
+  fingerprint: "AB12-CD34-EF56-1234-5678-9ABC-DEF0-1122",
   network: "ckb_testnet",
 };
 

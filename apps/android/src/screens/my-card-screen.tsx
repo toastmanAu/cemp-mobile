@@ -8,14 +8,17 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { Button, Image, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import type { ContactBundleV1 } from "@cemp/core";
 import { contactCardPng, encodeContactBundle } from "@cemp/core";
 import { MY_DISPLAY_NAME_KEY } from "@cemp/database";
-import { useAppContainer } from "../navigation";
+import { useAppContainer, type RootStackParamList } from "../navigation";
 import { bytesToBase64 } from "../platform/base64";
 
 export function MyCardScreen(): React.JSX.Element {
   const container = useAppContainer();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [bundle, setBundle] = useState<ContactBundleV1 | null>(null);
   const [pngBase64, setPngBase64] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
@@ -135,6 +138,10 @@ export function MyCardScreen(): React.JSX.Element {
           Your card is built from your on-chain profile. Publish your profile in Settings first,
           then come back here.
         </Text>
+        <Button
+          title="Go to Settings"
+          onPress={() => navigation.navigate("Main", { screen: "Settings" })}
+        />
       </View>
     );
   }

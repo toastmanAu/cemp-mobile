@@ -9,7 +9,9 @@
  * Backed by the `settings` table, NOT a table named `local_settings` — this
  * is deliberate, not a naming bug. `settings (key TEXT PRIMARY KEY, value
  * TEXT NOT NULL)` has existed since schema v1 (spec §11) and was never read
- * or written by any code path. Adding a second, identical `local_settings`
+ * or written by any application code path (it is used as a test fixture in
+ * `migrate.test.ts`, key `"theme"`, against an isolated temp DB — no
+ * production collision). Adding a second, identical `local_settings`
  * table would mean shipping a migration (append-only, so permanent) that
  * duplicates a table already sitting there unused. This repository adopts
  * the dormant v1 table instead: zero schema change, database stays at

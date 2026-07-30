@@ -11,8 +11,11 @@
 #   - repoints the CempMobile scheme's existing CempMobileTests
 #     TestableReference at the new target UUID
 #
-# Run once from the ios directory (requires the xcodeproj gem, which ships
-# with CocoaPods):  ruby scripts/add-kdf-targets.rb
+# Run once from the ios directory: ruby scripts/add-kdf-targets.rb
+#
+# Requires the xcodeproj gem. It ships with CocoaPods on macOS; on Linux
+# install it standalone with `gem install --user-install xcodeproj`, then put
+# `$(ruby -e 'puts Gem.user_dir')/bin` on PATH.
 # The resulting project.pbxproj + xcscheme changes are committed; this
 # script does NOT run in CI. It aborts if the test target already exists.
 

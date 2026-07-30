@@ -121,9 +121,10 @@ matrix, not for rendering.
 The PNG writer is ~100 lines written in-repo, emitting 8-bit greyscale with
 **stored (uncompressed) deflate blocks** — valid PNG requiring no zlib
 dependency. Starting geometry: 8 physical pixels per QR module with a 4-module
-quiet zone, giving roughly a 300–400 px image. That figure is a starting point
-subject to device checklist item 4; if recompression breaks scanning, module
-size rises before anything else changes.
+quiet zone; the real bundle payload (measured below) encodes as an 81x81
+(version 16) matrix, giving a 712x712 px, ~507 KB image. That figure is a
+starting point subject to device checklist item 4; if recompression breaks
+scanning, module size rises before anything else changes.
 
 ### Native surface
 
@@ -223,7 +224,7 @@ are part of the first implementation task, not an afterthought.
 - `myContactBundle()`: returns `null` with no published profile; composes all
   five fields correctly when one exists; network is always the configured one.
 - QR encoder: matrix output checked against known-answer vectors at the exact
-  payload size a real bundle produces (~250–300 characters, materially denser
+  payload size a real bundle produces (427 characters, materially denser
   than the rejected URI — this is the size that must be proven scannable).
 - PNG writer: header, IHDR dimensions, and CRC validity; output decodes with an
   independent reader.
@@ -249,11 +250,12 @@ work, not optional verification.
   Services library; size and availability on devices without Play Services need
   checking during implementation. ZXing is the fallback.
 - **Recompression fidelity is unproven, and the payload got bigger.** The
-  bundle JSON is roughly 250–300 characters against the ~90 of the rejected
-  URI, so the QR is materially denser and less tolerant of compression
-  artefacts. Whether it survives WhatsApp-grade recompression is an empirical
-  question; device checklist item 4 is the gate, and module size rises before
-  anything else changes.
+  bundle JSON is 427 characters against the ~90 of the rejected URI, so the
+  QR is materially denser and less tolerant of compression artefacts —
+  encoding at ECC M as an 81x81 (version 16) matrix, an 8px/module, 4-module
+  quiet-zone PNG comes out 712x712 px (~507 KB). Whether it survives
+  WhatsApp-grade recompression is an empirical question; device checklist
+  item 4 is the gate, and module size rises before anything else changes.
 - **Profile-id lookup is a public-RPC read.** Adding a contact resolves the id
   through `https://testnet.ckb.dev`, so the endpoint operator learns which
   profile ids a user resolves. Pre-existing, not introduced here, but worth

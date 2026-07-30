@@ -10,8 +10,11 @@
 #     no React-free logic worth XCTest coverage (unlike the other modules).
 #     UIKit is already linked into CempMobile by default.
 #
-# Run once from the ios directory (requires the xcodeproj gem, which ships
-# with CocoaPods):  ruby scripts/add-share.rb
+# Run once from the ios directory: ruby scripts/add-share.rb
+#
+# Requires the xcodeproj gem. It ships with CocoaPods on macOS; on Linux
+# install it standalone with `gem install --user-install xcodeproj`, then put
+# `$(ruby -e 'puts Gem.user_dir')/bin` on PATH.
 # The resulting project.pbxproj change is committed; this script does NOT
 # run in CI. It aborts if the module is already wired in.
 

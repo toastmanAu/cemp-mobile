@@ -3,6 +3,7 @@
  */
 
 import { createContext, useContext } from "react";
+import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { AppContainer } from "./app-container";
 
 export type TabParamList = {
@@ -13,7 +14,7 @@ export type TabParamList = {
 };
 
 export type RootStackParamList = {
-  Main: undefined;
+  Main: NavigatorScreenParams<TabParamList> | undefined;
   Chat: { conversationId: number; title: string };
   ContactEdit: { contactId?: number };
   MyCard: undefined;

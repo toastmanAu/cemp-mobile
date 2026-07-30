@@ -10,11 +10,12 @@
  * up and downgrades to `duplicate` here, in the screen, keeping I/O out of the
  * tested core.
  *
- * Three semantically distinct failures get three separate try/catch blocks
- * and three separate messages — scanning, classifying, and saving fail for
- * unrelated reasons, and conflating them is the same shape that turned a
- * correct vault password into an hours-long false negative on the unlock
- * screen (see unlock-screen.tsx's `attempt`).
+ * Four semantically distinct failure points each get their own try/catch and
+ * their own message — scanning (camera/photo), checking self-identity
+ * (`myProfileId()`), the duplicate lookup (`getByProfileId()`), and saving
+ * all fail for unrelated reasons, and conflating any of them is the same
+ * shape that turned a correct vault password into an hours-long false
+ * negative on the unlock screen (see unlock-screen.tsx's `attempt`).
  */
 
 import React, { useCallback, useRef, useState } from "react";
@@ -62,9 +63,16 @@ export function ScanContactScreen(): React.JSX.Element {
    * Pass 2: only an addable card needs the database consulted, then
    * downgraded to duplicate here if a matching contact already exists.
    *
-   * Never throws by construction EXCEPT for the pass-2 repository lookup,
-   * which is real I/O — the caller wraps this call in its own try/catch so a
-   * lookup failure is reported distinctly from a scan failure.
+   * Never throws: the two I/O calls it makes — `myProfileId()` and
+   * `getByProfileId()` — each own their try/catch and set `classifyError`
+   * themselves, so a failure in either resolves the promise rather than
+   * rejecting it. Kept as two separate catches, not one shared "classify"
+   * catch: a messaging failure (the sync layer did not start) and a local
+   * database failure need different messages and, eventually, different user
+   * actions — the same reasoning that turned a correct vault password into
+   * an hours-long false negative on the unlock screen when its two
+   * independent failure points shared one catch (see
+   * unlock-screen.tsx:32-60's `attempt`).
    */
   const handleScanned = useCallback(
     async (text: string | null): Promise<void> => {
@@ -73,9 +81,20 @@ export function ScanContactScreen(): React.JSX.Element {
         // code in it — is a normal outcome, not an error.
         return;
       }
-      const myProfileIdHex = container.hasMessaging
-        ? await container.messaging.myProfileId()
-        : null;
+
+      let myProfileIdHex: string | null = null;
+      if (container.hasMessaging) {
+        try {
+          myProfileIdHex = await container.messaging.myProfileId();
+        } catch {
+          if (mountedRef.current) {
+            setClassifyError(
+              "The messaging system isn't running, so this scan couldn't be checked against your own profile. Try again shortly.",
+            );
+          }
+          return;
+        }
+      }
 
       const outcome = classifyScannedCard({
         text,
@@ -84,9 +103,17 @@ export function ScanContactScreen(): React.JSX.Element {
       });
 
       if (outcome.kind === "addable") {
-        const existing = await container.repositories.contacts.getByProfileId(
-          normalizeProfileId(outcome.bundle.profileTypeId),
-        );
+        let existing: { readonly id: number } | undefined;
+        try {
+          existing = await container.repositories.contacts.getByProfileId(
+            normalizeProfileId(outcome.bundle.profileTypeId),
+          );
+        } catch {
+          if (mountedRef.current) {
+            setClassifyError("Could not check this code against your saved contacts.");
+          }
+          return;
+        }
         if (existing !== undefined) {
           if (mountedRef.current) {
             setResult({
@@ -116,15 +143,10 @@ export function ScanContactScreen(): React.JSX.Element {
       if (mountedRef.current) setBusy(false);
       return;
     }
-    try {
-      await handleScanned(text);
-    } catch {
-      if (mountedRef.current) {
-        setClassifyError("Could not check the scanned code against your contacts.");
-      }
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
+    // handleScanned never throws (see its doc comment) — no catch needed
+    // here, only cleanup.
+    await handleScanned(text);
+    if (mountedRef.current) setBusy(false);
   }, [busy, container, handleScanned]);
 
   const runPhotoScan = useCallback(async (): Promise<void> => {
@@ -140,15 +162,8 @@ export function ScanContactScreen(): React.JSX.Element {
       if (mountedRef.current) setBusy(false);
       return;
     }
-    try {
-      await handleScanned(text);
-    } catch {
-      if (mountedRef.current) {
-        setClassifyError("Could not check the scanned code against your contacts.");
-      }
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
+    await handleScanned(text);
+    if (mountedRef.current) setBusy(false);
   }, [busy, container, handleScanned]);
 
   const runPasteScan = useCallback(async (): Promise<void> => {
@@ -156,16 +171,18 @@ export function ScanContactScreen(): React.JSX.Element {
     setBusy(true);
     setScanError(null);
     setClassifyError(null);
-    try {
-      await handleScanned(pasteText);
-    } catch {
-      if (mountedRef.current) {
-        setClassifyError("Could not check the pasted code against your contacts.");
-      }
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
+    await handleScanned(pasteText);
+    if (mountedRef.current) setBusy(false);
   }, [busy, pasteText, handleScanned]);
+
+  /** Clear a terminal outcome (self / duplicate / unreadable) and go back to the inputs. */
+  const scanAgain = useCallback(() => {
+    setResult(null);
+    setScanError(null);
+    setClassifyError(null);
+    setSaveError(null);
+    setDisplayName("");
+  }, []);
 
   const save = useCallback(async (): Promise<void> => {
     if (result === null || result.kind !== "addable" || busy) return;
@@ -216,6 +233,7 @@ export function ScanContactScreen(): React.JSX.Element {
         <Text style={styles.fingerprint}>{result.bundle.fingerprint}</Text>
         <Text style={styles.hint}>Network: {result.bundle.network}</Text>
         <Text>Scan a card from someone else's device to add them as a contact.</Text>
+        <Button title="Scan something else" onPress={scanAgain} />
       </View>
     );
   }
@@ -231,6 +249,7 @@ export function ScanContactScreen(): React.JSX.Element {
             navigation.navigate("ContactEdit", { contactId: result.existingContactId })
           }
         />
+        <Button title="Scan something else" onPress={scanAgain} />
       </View>
     );
   }
@@ -240,6 +259,7 @@ export function ScanContactScreen(): React.JSX.Element {
       <View style={styles.container}>
         <Text style={styles.title}>Couldn't read that code</Text>
         <Text style={styles.error}>{unreadableMessage(result)}</Text>
+        <Button title="Scan something else" onPress={scanAgain} />
       </View>
     );
   }

@@ -16,6 +16,10 @@ class CempShareModule(reactContext: ReactApplicationContext) :
   @ReactMethod
   fun shareImage(pngHex: String, caption: String, promise: Promise) {
     try {
+      // TRUSTED-INPUT ONLY (matches apps/android/src/platform/hex.ts): no
+      // validation here. Character.digit returns -1 for an invalid nibble,
+      // which folds silently into a garbage byte rather than failing — the
+      // only caller is this app's own bytesToHex, never untrusted input.
       val bytes = ByteArray(pngHex.length / 2) { i ->
         ((Character.digit(pngHex[i * 2], 16) shl 4) +
           Character.digit(pngHex[i * 2 + 1], 16)).toByte()
@@ -42,8 +46,8 @@ class CempShareModule(reactContext: ReactApplicationContext) :
       }
       reactApplicationContext.startActivity(chooser)
       promise.resolve(null)
-    } catch (e: Exception) {
-      promise.reject("share-error", "could not present the share sheet", e)
+    } catch (e: Throwable) {
+      promise.reject("share-error", "could not present the share sheet", if (e is Exception) e else null)
     }
   }
 }

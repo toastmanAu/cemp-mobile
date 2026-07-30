@@ -23,7 +23,7 @@ interface CempQrScannerNativeModule {
 function module(): CempQrScannerNativeModule {
   const m = NativeModules.CempQrScanner as CempQrScannerNativeModule | undefined;
   if (m === undefined) {
-    throw new Error("scanImageForQr: the CempQrScanner native module is not linked");
+    throw new Error("native-qr-scanner: the CempQrScanner native module is not linked");
   }
   return m;
 }

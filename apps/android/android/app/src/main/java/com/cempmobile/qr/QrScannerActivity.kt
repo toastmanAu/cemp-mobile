@@ -34,6 +34,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class QrScannerActivity : AppCompatActivity() {
   companion object {
     const val EXTRA_TEXT = "qr_text"
+    // Arbitrary but distinct from CempQrScannerModule's REQUEST_CODE_BASE and
+    // CempImagePickerModule's REQUEST_CODE (0xC0DE) — this is a permission
+    // request code, a different ActivityCompat callback from either, but kept
+    // distinct on general principle.
     private const val PERMISSION_REQUEST = 4801
   }
 

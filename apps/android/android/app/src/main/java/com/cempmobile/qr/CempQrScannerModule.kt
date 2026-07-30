@@ -14,6 +14,7 @@ import com.google.zxing.MultiFormatReader
 import com.google.zxing.ReaderException
 import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -30,11 +31,25 @@ import java.util.concurrent.atomic.AtomicReference
  * module implements ActivityEventListener directly and holds one pending
  * promise, because the activity result can arrive after the process was
  * paused — a synchronous return can't be assumed.
+ *
+ * Unlike the picker, each scan gets its own request code (see PendingScan
+ * below): scanWithCamera installs `pending` from the bridge thread while
+ * onActivityResult reads/clears it from the main thread, with no ordering
+ * guarantee between "a new scan starts" and "an old scan's activity
+ * finishes". Keying the swap on requestCode, not merely on "is something
+ * pending", stops a late result from activity A being delivered to the
+ * promise for scan B. CempImagePickerModule carries the un-keyed version of
+ * this race (a single shared REQUEST_CODE) — out of scope here, flagged for
+ * separate follow-up.
  */
 class CempQrScannerModule(reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext), ActivityEventListener {
 
-  private val pending = AtomicReference<Promise?>(null)
+  /** A single in-flight scan: the promise plus the request code it was launched with. */
+  private data class PendingScan(val requestCode: Int, val promise: Promise)
+
+  private val pending = AtomicReference<PendingScan?>(null)
+  private val nextRequestCode = AtomicInteger(0)
 
   init {
     reactContext.addActivityEventListener(this)
@@ -98,29 +113,41 @@ class CempQrScannerModule(reactContext: ReactApplicationContext) :
       promise.reject("qr-scan-error", "no foreground activity to launch the scanner")
       return
     }
-    // Install the new promise and reject any prior in-flight scan, atomically
-    // — matching CempImagePickerModule.pick, so a second call while one is
+    // Every scan gets its own request code so a stray onActivityResult from a
+    // still-finishing prior activity can never be mistaken for this scan's
+    // result (see the class doc). Wrapped into a small range above the base —
+    // only one scan is ever pending at a time, so this never needs to be
+    // large, just distinct from the immediately preceding scan(s).
+    val requestCode = REQUEST_CODE_BASE + (nextRequestCode.getAndIncrement() and REQUEST_CODE_MASK)
+    val scan = PendingScan(requestCode, promise)
+    // Install the new scan and reject any prior in-flight one, atomically —
+    // matching CempImagePickerModule.pick, so a second call while one is
     // already open settles (not orphans) the first promise.
-    val prior = pending.getAndSet(promise)
-    prior?.reject("qr-scan-cancelled", "superseded by a new scan")
+    val prior = pending.getAndSet(scan)
+    prior?.promise?.reject("qr-scan-cancelled", "superseded by a new scan")
     try {
-      activity.startActivityForResult(Intent(activity, QrScannerActivity::class.java), REQUEST_CODE)
+      activity.startActivityForResult(Intent(activity, QrScannerActivity::class.java), requestCode)
     } catch (e: Throwable) {
-      pending.compareAndSet(promise, null)
+      pending.compareAndSet(scan, null)
       promise.reject("qr-scan-error", "could not launch the camera scanner", if (e is Exception) e else null)
     }
   }
 
   override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
-    if (requestCode != REQUEST_CODE) return
-    val promise = pending.getAndSet(null) ?: return
+    // Read-then-swap rather than getAndSet(null): a result whose requestCode
+    // doesn't match the CURRENTLY pending scan belongs to an already-superseded
+    // one and must be dropped, not consumed into whatever promise happens to
+    // be sitting in `pending` right now.
+    val current = pending.get() ?: return
+    if (current.requestCode != requestCode) return
+    if (!pending.compareAndSet(current, null)) return
     // Cancel — including a denied camera permission — resolves null, not an
     // error: the screen keeps its photo and paste options.
     if (resultCode != Activity.RESULT_OK) {
-      promise.resolve(null)
+      current.promise.resolve(null)
       return
     }
-    promise.resolve(data?.getStringExtra(QrScannerActivity.EXTRA_TEXT))
+    current.promise.resolve(data?.getStringExtra(QrScannerActivity.EXTRA_TEXT))
   }
 
   override fun onNewIntent(intent: Intent) { /* not used */ }
@@ -132,13 +159,17 @@ class CempQrScannerModule(reactContext: ReactApplicationContext) :
    */
   override fun invalidate() {
     reactApplicationContext.removeActivityEventListener(this)
-    pending.getAndSet(null)?.reject(
+    pending.getAndSet(null)?.promise?.reject(
       "qr-scan-cancelled",
       "the camera scanner was closed before a result arrived",
     )
   }
 
   companion object {
-    private const val REQUEST_CODE = 4802
+    // Arbitrary but distinct from CempImagePickerModule's REQUEST_CODE
+    // (0xC0DE / 49374) and MainActivity's own request codes, so a result
+    // meant for this module is never mistaken for another module's.
+    private const val REQUEST_CODE_BASE = 0x4800
+    private const val REQUEST_CODE_MASK = 0xFF
   }
 }

@@ -64,10 +64,11 @@
 - (void)beginAuthorizationCheck
 {
   switch ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]) {
-    case AVAuthorizationStatusAuthorized:
+    case AVAuthorizationStatusAuthorized: {
       [self setUpAndStartSession];
       break;
-    case AVAuthorizationStatusNotDetermined:
+    }
+    case AVAuthorizationStatusNotDetermined: {
       // Triggers the system permission prompt (gated by
       // NSCameraUsageDescription in Info.plist).
       [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo
@@ -81,10 +82,12 @@
         });
       }];
       break;
+    }
     case AVAuthorizationStatusDenied:
-    case AVAuthorizationStatusRestricted:
+    case AVAuthorizationStatusRestricted: {
       [self finishWith:nil];
       break;
+    }
   }
 }
 

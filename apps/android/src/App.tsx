@@ -23,6 +23,7 @@ import { ChatsScreen } from "./screens/chats-screen";
 import { ContactEditScreen } from "./screens/contact-edit-screen";
 import { ContactsScreen } from "./screens/contacts-screen";
 import { MyCardScreen } from "./screens/my-card-screen";
+import { ScanContactScreen } from "./screens/scan-contact-screen";
 import { SettingsScreen } from "./screens/settings-screen";
 import { UnlockScreen } from "./screens/unlock-screen";
 import { VaultOnboardingScreen } from "./screens/vault-onboarding-screen";
@@ -142,6 +143,11 @@ export function App(): React.JSX.Element {
                 name="MyCard"
                 component={MyCardScreen}
                 options={{ title: "My contact card" }}
+              />
+              <Stack.Screen
+                name="ScanContact"
+                component={ScanContactScreen}
+                options={{ title: "Add by QR code" }}
               />
             </Stack.Navigator>
           </NavigationContainer>

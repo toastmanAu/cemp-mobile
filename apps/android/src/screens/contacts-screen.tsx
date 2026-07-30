@@ -56,6 +56,7 @@ export function ContactsScreen(): React.JSX.Element {
         <Button title="Add" onPress={() => navigation.navigate("ContactEdit", {})} />
       </View>
       <Button title="My contact card" onPress={() => navigation.navigate("MyCard")} />
+      <Button title="Add by QR code" onPress={() => navigation.navigate("ScanContact")} />
       <FlatList
         data={items as Contact[]}
         keyExtractor={(item) => String(item.id)}

@@ -25,6 +25,8 @@ import {
 import { SecureVaultImpl } from "@cemp/secure-vault";
 import type { Notifier } from "@cemp/ui";
 import { MessagingService } from "./messaging";
+import { pickImage } from "./platform/native-image-picker";
+import { scanImageForQr, scanWithCamera } from "./platform/native-qr-scanner";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
 import { shareImage } from "./platform/native-share";
 import { createRouteTagCache } from "./platform/route-tag-cache";
@@ -313,6 +315,20 @@ export class AppContainer {
   /** Present the OS share sheet for a contact card PNG. */
   async shareContactCard(png: Uint8Array, caption: string): Promise<void> {
     await shareImage(png, caption);
+  }
+
+  /** Present the native camera scanner. Null on cancel. */
+  async scanContactWithCamera(): Promise<string | null> {
+    return await scanWithCamera();
+  }
+
+  /** Let the user pick a photo and decode a QR from it. Null if none found or cancelled. */
+  async scanContactFromPhoto(): Promise<string | null> {
+    const bytes = await pickImage();
+    if (bytes === null) {
+      return null;
+    }
+    return await scanImageForQr(bytes);
   }
 
   async #closeDatabase(): Promise<void> {

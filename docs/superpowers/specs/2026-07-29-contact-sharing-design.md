@@ -1,7 +1,9 @@
 # Contact sharing via QR — design
 
 Date: 2026-07-29
-Status: approved (design), not yet planned or implemented
+Status: slice 1 (share path) IMPLEMENTED and device-verified 2026-07-30 — see
+`docs/superpowers/plans/2026-07-29-contact-sharing-slice-1-share.md`. Slices 2
+(photo scan + paste + add-contact flow) and 3 (camera) are still to be planned.
 
 ## Problem
 
@@ -34,14 +36,14 @@ to forward.
 
 ## Decisions
 
-| Question                  | Decision                                              | Why                                                                                                                                                                            |
-| ------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Forward transport         | OS share sheet only                                   | Reaches people not yet on CellSend; avoids a new message content type entirely                                                                                                 |
-| Card payload              | The EXISTING `ContactBundleV1` (spec §5.4), unchanged | It is already "the QR payload for contact exchange", already fuzz-tested, and carries the fingerprint and network that a hand-rolled URI would have dropped                    |
-| Display name              | Rides in the share caption, never in the QR           | Keeps a spec'd, fuzz-tested wire format untouched — no v2, no v1/v2 compatibility branch, no re-fuzzing                                                                        |
-| Share artifact            | QR PNG + text caption                                 | The image is what makes "scan from a forwarded photo" possible at all; the caption is the copyable fallback                                                                    |
-| Camera implementation     | Own native module, house style                        | Matches CempKdf / CempImageCodec / CempImagePicker / CempScheduler; no new JS dependency and no new CocoaPods surface on a CI whose `pod install` is already the flakiest step |
-| "My display name" storage | New `local_settings` table in the encrypted DB        | Reusable for later preferences; consistent with contacts living in the encrypted DB                                                                                            |
+| Question                  | Decision                                                         | Why                                                                                                                                                                                                                                                                                                               |
+| ------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Forward transport         | OS share sheet only                                              | Reaches people not yet on CellSend; avoids a new message content type entirely                                                                                                                                                                                                                                    |
+| Card payload              | The EXISTING `ContactBundleV1` (spec §5.4), unchanged            | It is already "the QR payload for contact exchange", already fuzz-tested, and carries the fingerprint and network that a hand-rolled URI would have dropped                                                                                                                                                       |
+| Display name              | Rides in the share caption, never in the QR                      | Keeps a spec'd, fuzz-tested wire format untouched — no v2, no v1/v2 compatibility branch, no re-fuzzing                                                                                                                                                                                                           |
+| Share artifact            | QR PNG + text caption                                            | The image is what makes "scan from a forwarded photo" possible at all; the caption is the copyable fallback                                                                                                                                                                                                       |
+| Camera implementation     | Own native module, house style                                   | Matches CempKdf / CempImageCodec / CempImagePicker / CempScheduler; no new JS dependency and no new CocoaPods surface on a CI whose `pod install` is already the flakiest step                                                                                                                                    |
+| "My display name" storage | The pre-existing dormant `settings` table (v1); NO schema change | Superseded the original "new `local_settings` table at v9" during implementation: a structurally identical `settings` table had existed since schema v1, unused by any application code. Migrations are append-only, so adding a duplicate would have carried one dead table forever. `SCHEMA_VERSION` stays at 8 |
 
 ### Rejected alternative: pure-JS QR decoding
 

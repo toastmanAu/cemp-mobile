@@ -2,8 +2,13 @@
 
 Date: 2026-07-29
 Status: slice 1 (share path) IMPLEMENTED and device-verified 2026-07-30 — see
-`docs/superpowers/plans/2026-07-29-contact-sharing-slice-1-share.md`. Slices 2
-(photo scan + paste + add-contact flow) and 3 (camera) are still to be planned.
+`docs/superpowers/plans/2026-07-29-contact-sharing-slice-1-share.md`.
+
+Slice 2 is the whole receive side: camera scan, photo scan, paste, and the
+add-contact flow. The original plan deferred the camera to a slice 3; that split
+was dropped on 2026-07-30 (owner decision) now that slice 1 proved the
+native-module pattern — one device-test pass beats two, and the camera is no
+longer speculative. There is no slice 3.
 
 ## Problem
 
@@ -195,18 +200,18 @@ Each of these is a distinct user-visible state, never a swallowed throw. This
 matters here specifically: the 2026-07-29 vault bug showed that collapsing
 unrelated failures into one message sends the user round an unwinnable loop.
 
-| Condition                              | Behaviour                                                                    |
-| -------------------------------------- | ---------------------------------------------------------------------------- |
-| No profile published yet (own card)    | "Publish your profile first" + link to Settings; no QR drawn                 |
-| Not a `cemp-contact` bundle            | "That isn't a CellSend contact code."                                        |
-| Unknown protocol or version            | "This code was made by a newer version of CellSend."                         |
-| **Wrong network** (mainnet on testnet) | "That contact is on a different network." — rule 11, never silently accepted |
-| Malformed hex, bech32 or fingerprint   | "That contact code is damaged."                                              |
-| `profileTypeId` already in contacts    | Offer to open the existing contact; never create a duplicate                 |
-| `profileTypeId` is the user's own      | "That's your own card."                                                      |
-| No code found in the chosen image      | "No contact code found in that image."                                       |
-| Camera permission denied               | Honest message naming the permission                                         |
-| Share sheet cancelled                  | Silent, not an error                                                         |
+| Condition                              | Behaviour                                                                                                                                                                               |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No profile published yet (own card)    | "Publish your profile first" + link to Settings; no QR drawn                                                                                                                            |
+| Not a `cemp-contact` bundle            | "That isn't a CellSend contact code."                                                                                                                                                   |
+| Unknown protocol or version            | "This code was made by a newer version of CellSend."                                                                                                                                    |
+| **Wrong network** (mainnet on testnet) | "That contact is on a different network." — rule 11, never silently accepted                                                                                                            |
+| Malformed hex, bech32 or fingerprint   | "That contact code is damaged."                                                                                                                                                         |
+| `profileTypeId` already in contacts    | Offer to open the existing contact; never create a duplicate                                                                                                                            |
+| `profileTypeId` is the user's own      | "That's your own card" — but SHOW the parsed fields (fingerprint, network) before refusing, so a self-scan is a real end-to-end decode test on one phone. Never creates a self-contact. |
+| No code found in the chosen image      | "No contact code found in that image."                                                                                                                                                  |
+| Camera permission denied               | Honest message naming the permission                                                                                                                                                    |
+| Share sheet cancelled                  | Silent, not an error                                                                                                                                                                    |
 
 The first six are all raised by the existing `decodeContactBundle`, which
 throws a single error type. Mapping its failure reasons onto these distinct
@@ -275,3 +280,30 @@ work, not optional verification.
   through `https://testnet.ckb.dev`, so the endpoint operator learns which
   profile ids a user resolves. Pre-existing, not introduced here, but worth
   recording while contacts are being designed.
+
+## Slice 2 implementation notes (decided 2026-07-30)
+
+Facts established while planning, so the plan does not re-derive them:
+
+- **Android** is minSdk 24, compileSdk 36, Kotlin 2.1.20, with **no camera or
+  barcode dependency present**. Both are new.
+- **iOS** targets 15.1. `Info.plist` currently declares only
+  `NSLocationWhenInUseUsageDescription` — there is **no camera usage
+  description**, and its absence is a hard crash on first camera use, not a
+  denied permission. Note the existing image picker needs no photo-library
+  description because `PHPickerViewController` (iOS 14+) does not require one;
+  the camera is different.
+- **The photo path needs no new picker.** `pickImage()`
+  (`apps/android/src/platform/native-image-picker.ts`) already returns image
+  bytes as hex, so the photo flow is `pickImage()` → a new `scanImage(hex)`.
+- **Android decoding uses ZXing (`com.google.zxing:core`), not MLKit.** Pure
+  Java, no Google Play Services in a privacy-focused messenger, and slice 1
+  proved this QR survives JPEG q40 at 256 px, so decode robustness is not the
+  binding constraint. The decision is contained behind the native seam: swapping
+  to MLKit later is a change inside one Kotlin file.
+- **iOS decoding uses Vision** (`VNDetectBarcodesRequest`) for stills and
+  `AVCaptureMetadataOutput` for the live camera — both first-party, no
+  dependency.
+- **The scanner presents platform UI and resolves a promise**, matching
+  `CempImagePicker` and the `CempShare` module slice 1 shipped. No React Native
+  view component is written.

@@ -3,6 +3,7 @@
 #import "CempQrScannerViewController.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <stdatomic.h>
 
 @interface CempQrScannerViewController () <AVCaptureMetadataOutputObjectsDelegate>
 @end
@@ -10,10 +11,20 @@
 @implementation CempQrScannerViewController {
   AVCaptureSession *_session;
   AVCaptureVideoPreviewLayer *_preview;
-  BOOL _finished;
+  // atomic, not a plain BOOL: finishWith:'s check-and-set is the guard
+  // that decides whether a racing background-queue startRunning is
+  // allowed to fire (see setUpAndStartSession). dispatch_async only
+  // orders writes made BEFORE the dispatch call against the block it
+  // queues — _finished is written AFTER that dispatch, on the main
+  // thread, so the background block's read of it has no synchronisation
+  // with that write under the plain-BOOL C memory model. That gap is
+  // exactly the leaked-camera bug this file exists to prevent, so the
+  // flag itself has to be race-free, not just "usually fine on ARM64".
+  atomic_bool _finished;
   // Guards the authorization-check/session-setup path against re-running:
   // viewDidAppear: can fire again (e.g. backgrounding then foregrounding
-  // while the sheet is still up) without a new presentation.
+  // while the sheet is still up) without a new presentation. Only ever
+  // read/written on the main thread, so a plain BOOL is fine here.
   BOOL _started;
 }
 
@@ -74,7 +85,7 @@
       [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo
                                completionHandler:^(BOOL granted) {
         dispatch_async(dispatch_get_main_queue(), ^{
-          if (self->_finished) {
+          if (atomic_load(&self->_finished)) {
             // Cancelled while the system prompt was up (or in the hop
             // back to main) — do not start a session for a promise that
             // already settled.
@@ -128,10 +139,13 @@
   // started yet (a no-op), so re-check _finished on the far side of the
   // queue hop. Without this, a late startRunning leaves a live capture
   // session with nothing left able to stop it (_finished is already set,
-  // so every future finishWith: is a no-op too).
+  // so every future finishWith: is a no-op too). This read genuinely
+  // races the main-thread write in finishWith: (dispatch_async only
+  // orders what happened before the dispatch, not writes made after it),
+  // hence atomic_load rather than a plain ivar read.
   AVCaptureSession *session = _session;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    if (self->_finished) {
+    if (atomic_load(&self->_finished)) {
       [session stopRunning]; // tear down rather than leak a live camera.
       return;
     }
@@ -169,14 +183,17 @@
 /** Fires onResult exactly once, whatever path got here. */
 - (void)finishWith:(NSString *_Nullable)text
 {
-  // Check-and-set stays synchronous on the main thread — every call site
-  // (cancelTapped, the metadata delegate on the main queue, the
-  // authorization-check paths, the permission-grant completion) runs on
-  // main, so this is what makes _finished race-free.
-  if (_finished) {
-    return;
+  // atomic_exchange is the check-and-set: it sets _finished to true and
+  // returns whatever was there before, in one indivisible operation. That
+  // is what makes this race-free now — not thread confinement (this is
+  // still always called from the main thread, but setUpAndStartSession's
+  // dispatched startRunning block reads _finished from a background
+  // queue with no ordering guarantee against this write, so the flag
+  // itself has to be safe to read cross-thread, not just written from a
+  // single thread).
+  if (atomic_exchange(&_finished, true)) {
+    return; // already settled.
   }
-  _finished = YES;
   AVCaptureSession *session = _session;
   if (session != nil) {
     // stopRunning blocks configuring/tearing down capture hardware,

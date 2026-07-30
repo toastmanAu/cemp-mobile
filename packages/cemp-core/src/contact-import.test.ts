@@ -75,21 +75,81 @@ describe("classifyScannedCard", () => {
     expect(out.kind).toBe("addable");
   });
 
-  it("reports unreadable for junk, with a reason", () => {
+  it("reports 'not-a-card' for junk or an unknown protocol marker", () => {
     for (const text of ["", "not json", "{}", '{"protocol":"nope","version":1}']) {
       const out = classifyScannedCard({ text, myProfileIdHex: MY_ID, findExisting: none });
       expect(out.kind).toBe("unreadable");
-      if (out.kind === "unreadable") expect(out.reason.length).toBeGreaterThan(0);
+      if (out.kind === "unreadable") expect(out.reason).toBe("not-a-card");
     }
   });
 
-  it("reports unreadable for a wrong-network bundle (rule 11)", () => {
+  it("reports 'unsupported-version' for a newer CellSend's bundle", () => {
+    const out = classifyScannedCard({
+      text: JSON.stringify({
+        protocol: "cemp-contact",
+        version: 2,
+        network: "ckb_testnet",
+        profileTypeId: BUNDLE.profileTypeId,
+        lockScriptHash: BUNDLE.lockScriptHash,
+        address: BUNDLE.address,
+        fingerprint: BUNDLE.fingerprint,
+      }),
+      myProfileIdHex: MY_ID,
+      findExisting: none,
+    });
+    expect(out.kind).toBe("unreadable");
+    if (out.kind === "unreadable") expect(out.reason).toBe("unsupported-version");
+  });
+
+  it("reports 'wrong-network' for a wrong-network bundle (rule 11)", () => {
     const out = classifyScannedCard({
       text: encodeContactBundle({ ...BUNDLE, network: "ckb_mainnet" }),
       myProfileIdHex: MY_ID,
       findExisting: none,
     });
     expect(out.kind).toBe("unreadable");
+    if (out.kind === "unreadable") expect(out.reason).toBe("wrong-network");
+  });
+
+  it("reports 'damaged' for a structurally invalid field (bad hex)", () => {
+    const out = classifyScannedCard({
+      text: JSON.stringify({
+        protocol: "cemp-contact",
+        version: 1,
+        network: "ckb_testnet",
+        profileTypeId: "not-hex",
+        lockScriptHash: BUNDLE.lockScriptHash,
+        address: BUNDLE.address,
+        fingerprint: BUNDLE.fingerprint,
+      }),
+      myProfileIdHex: MY_ID,
+      findExisting: none,
+    });
+    expect(out.kind).toBe("unreadable");
+    if (out.kind === "unreadable") expect(out.reason).toBe("damaged");
+  });
+
+  // decodeContactBundle's own error messages interpolate card-controlled
+  // fields (e.g. the scanned "network" string). Forwarding that text to the
+  // UI would hand a crafted card control of the error banner. Prove no
+  // card-controlled text can reach the outcome at all.
+  it("never lets card-controlled text reach the outcome", () => {
+    const hostile = JSON.stringify({
+      protocol: "cemp-contact",
+      version: 1,
+      network: "SPOOF-MARKER-XYZ",
+      profileTypeId: `0x${THEIR_ID}`,
+      lockScriptHash: `0x${"ef".repeat(32)}`,
+      address: `ckt1${"q".repeat(120)}`,
+      fingerprint: "ABCD-1234-5678-90AB-CDEF-0123-4567-89AB",
+    });
+    const out = classifyScannedCard({
+      text: hostile,
+      myProfileIdHex: MY_ID,
+      findExisting: () => undefined,
+    });
+    expect(out.kind).toBe("unreadable");
+    expect(JSON.stringify(out)).not.toContain("SPOOF-MARKER-XYZ");
   });
 
   it("tolerates surrounding whitespace from a paste", () => {

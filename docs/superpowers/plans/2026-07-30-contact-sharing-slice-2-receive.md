@@ -1044,7 +1044,31 @@ with the matching imports.
 
 Create `apps/android/src/screens/scan-contact-screen.tsx`. Requirements, each a distinct rendered state:
 
-1. Three buttons: **Scan with camera**, **Scan from photo**, and a paste box with **Use pasted code**.
+1. Three inputs, each producing the scanned text then handing it to `classifyScannedCard`:
+   - **Scan with camera** → `container.scanContactWithCamera()`
+   - **Scan from photo** → `container.scanContactFromPhoto()`
+   - a paste box + **Use pasted code** → the text box value directly
+
+   All three converge on one handler:
+
+   ```ts
+   async function handleScanned(text: string | null): Promise<void> {
+     if (text === null) return; // cancel / no code found — not an error
+     const myProfileIdHex = container.hasMessaging ? await container.messaging.myProfileId() : null;
+     const existing = await container.repositories.contacts.getByProfileId(
+       normalizeProfileId(/* the scanned id, after a successful parse */ ""),
+     );
+     // NOTE: getByProfileId is async, but classifyScannedCard's findExisting is
+     // synchronous by design (it stays pure and unit-testable). So parse first
+     // via classifyScannedCard with a findExisting that always returns
+     // undefined, and when the outcome is "addable", THEN query the repository
+     // and downgrade to "duplicate" yourself if a row comes back.
+     void existing;
+   }
+   ```
+
+   Resolve that mismatch explicitly rather than making `findExisting` async: `classifyScannedCard` is synchronous so it can stay pure and fully unit-tested. Call it once, and only for an `addable` outcome perform the `await getByProfileId(normalizeProfileId(bundle.profileTypeId))` lookup, treating a returned row as the duplicate case. Self-detection needs no I/O beyond `myProfileId()`.
+
 2. Each async action gets **its own** try/catch and its own message. Do not share one catch across the scan and the classification — the repo has been burned twice by conflated catches (see `unlock-screen.tsx:32-60`), and a scanner failure is not a decode failure.
 3. On `kind: "addable"` — show the fingerprint and network, a **required** name field, and a Save button. Save calls `contacts.create({ displayName, profileIdHex })` with the **normalised** (unprefixed) id, then `navigation.goBack()`.
 4. On `kind: "self"` — show "That's your own card", **plus the parsed fingerprint and network**, and no Save. This makes a self-scan a real end-to-end decode test on one phone (owner decision, 2026-07-30).

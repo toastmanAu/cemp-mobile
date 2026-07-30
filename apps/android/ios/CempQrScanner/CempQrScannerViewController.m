@@ -74,6 +74,12 @@
       [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo
                                completionHandler:^(BOOL granted) {
         dispatch_async(dispatch_get_main_queue(), ^{
+          if (self->_finished) {
+            // Cancelled while the system prompt was up (or in the hop
+            // back to main) — do not start a session for a promise that
+            // already settled.
+            return;
+          }
           if (granted) {
             [self setUpAndStartSession];
           } else {
@@ -116,9 +122,20 @@
   _preview.frame = self.view.layer.bounds;
   [self.view.layer addSublayer:_preview];
 
-  // startRunning blocks; keep it off the main queue.
+  // startRunning blocks; keep it off the main queue. Cancel can land on
+  // the main thread while this dispatch is still in flight — finishWith:
+  // would already have called stopRunning on a session that hadn't
+  // started yet (a no-op), so re-check _finished on the far side of the
+  // queue hop. Without this, a late startRunning leaves a live capture
+  // session with nothing left able to stop it (_finished is already set,
+  // so every future finishWith: is a no-op too).
+  AVCaptureSession *session = _session;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    [self->_session startRunning];
+    if (self->_finished) {
+      [session stopRunning]; // tear down rather than leak a live camera.
+      return;
+    }
+    [session startRunning];
   });
 }
 
@@ -152,11 +169,23 @@
 /** Fires onResult exactly once, whatever path got here. */
 - (void)finishWith:(NSString *_Nullable)text
 {
+  // Check-and-set stays synchronous on the main thread — every call site
+  // (cancelTapped, the metadata delegate on the main queue, the
+  // authorization-check paths, the permission-grant completion) runs on
+  // main, so this is what makes _finished race-free.
   if (_finished) {
     return;
   }
   _finished = YES;
-  [_session stopRunning];
+  AVCaptureSession *session = _session;
+  if (session != nil) {
+    // stopRunning blocks configuring/tearing down capture hardware,
+    // symmetric with startRunning — keep it off the main thread so
+    // Cancel or a successful decode doesn't stutter the dismissal.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      [session stopRunning];
+    });
+  }
   void (^handler)(NSString *_Nullable) = self.onResult;
   self.onResult = nil;
   if (handler != nil) {

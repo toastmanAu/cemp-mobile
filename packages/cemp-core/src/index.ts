@@ -5,6 +5,7 @@ export * from "./states.js";
 export * from "./network.js";
 export * from "./fingerprint.js";
 export * from "./contact-bundle.js";
+export * from "./contact-import.js";
 export * from "./profile-trust.js";
 export * from "./qr/png.js";
 

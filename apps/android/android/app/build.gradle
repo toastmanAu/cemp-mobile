@@ -132,6 +132,11 @@ dependencies {
     // (com.cempmobile.imaging.CempImagePickerModule).
     implementation("androidx.activity:activity-ktx:1.9.3")
 
+    // Pure-Java QR decoding. Deliberately NOT MLKit: no Google Play Services
+    // in a privacy-focused messenger, and the card's QR is robust (proven to
+    // survive JPEG q40 at 256px in slice 1).
+    implementation("com.google.zxing:core:3.5.3")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {

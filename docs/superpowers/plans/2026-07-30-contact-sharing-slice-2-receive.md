@@ -62,7 +62,7 @@ const BUNDLE: ContactBundleV1 = {
   profileTypeId: `0x${THEIR_ID}`,
   lockScriptHash: `0x${"ef".repeat(32)}`,
   address: `ckt1${"q".repeat(120)}`,
-  fingerprint: "ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567",
+  fingerprint: "ABCD-1234-5678-90AB-CDEF-0123-4567-89AB",
   network: "ckb_testnet",
 };
 

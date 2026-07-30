@@ -16,6 +16,8 @@ import { bytesToHex } from "./hex";
 interface CempQrScannerNativeModule {
   /** Decode a still image. Resolves the QR text, or null when none is found. */
   scanImage(bytesHex: string): Promise<string | null>;
+  /** Present the native camera scanner. Resolves the QR text, or null on cancel. */
+  scanWithCamera(): Promise<string | null>;
 }
 
 function module(): CempQrScannerNativeModule {
@@ -28,4 +30,8 @@ function module(): CempQrScannerNativeModule {
 
 export async function scanImageForQr(bytes: Uint8Array): Promise<string | null> {
   return await module().scanImage(bytesToHex(bytes));
+}
+
+export async function scanWithCamera(): Promise<string | null> {
+  return await module().scanWithCamera();
 }

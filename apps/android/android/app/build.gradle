@@ -137,6 +137,12 @@ dependencies {
     // survive JPEG q40 at 256px in slice 1).
     implementation("com.google.zxing:core:3.5.3")
 
+    // CameraX for the live camera scanner (com.cempmobile.qr.QrScannerActivity):
+    // feeds luminance frames to the ZXing reader above.
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
+
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")
     } else {

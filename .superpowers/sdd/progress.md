@@ -491,3 +491,49 @@ set, embedded.mobileprovision, _CodeSignature and a 5.1 MB main.jsbundle.
 PENDING: `xtool install` to Phills Phone (attached, 00008130-000E155E1021401C)
 — first device look at the app icon, vault password confirmation at creation,
 and the reset-wallet escape on the locked screen.
+
+## Contact sharing slice 1 — share path (2026-07-30): MERGED, device-verified
+
+You can now show your CellSend identity as a QR and send it out. Contacts →
+"My contact card" renders the contact bundle (spec §5.4) as a QR, shows the
+fingerprint for out-of-band verification, and shares a PNG plus caption through
+the OS share sheet. Scanning is deliberately absent — slices 2 (photo + paste +
+add-contact) and 3 (camera) are still to be planned.
+
+Built subagent-driven: 8 tasks, each implemented then reviewed for spec
+compliance and quality, then a whole-branch review. 671 tests (up from 642);
+iOS validate archive green on the macOS runner; Android `assembleDebug` green
+with the artefacts checked individually (CempShare classes compiled, FileProvider
+merged as com.cempmobile.debug.fileprovider, file_paths.xml packaged).
+
+The QR payload is the EXISTING ContactBundleV1, not a new format. An early draft
+invented a `cemp://contact?v=1&id=&n=` URI before contact-bundle.ts was found —
+already spec'd, already fuzz-tested, and carrying the fingerprint and network
+the URI had dropped (dropping `network` would have let a testnet build accept a
+mainnet contact, breaking rule 11). Nothing new was written; the missing piece
+was only the UI. The display name rides in the share caption so the wire format
+stayed untouched.
+
+No schema change ships. The plan called for a new `local_settings` table at v9;
+implementation found a structurally identical `settings` table dormant since v1,
+used by no application code. Since migrations are append-only, adding a duplicate
+would have carried one dead table forever — so SCHEMA_VERSION stays at 8 and
+device databases stay valid.
+
+RECOMPRESSION RISK CLOSED, both directions. On device: a card exported through
+Telegram and read back by a third-party QR reader parsed every field.
+Synthetically: the production card (427 chars → 81x81 v16 → 712x712 px) was
+re-encoded as JPEG at q90/q80/q70/q50 full-size, q70/q50 at 512 and 360 px, and
+q40 at 256 px — a 64% linear reduction plus aggressive JPEG — and all nine
+variants decoded to the exact 427-byte payload under ZBar. 8 px/module has real
+margin; slice 2's scan-from-photo premise holds.
+
+Three plan-authoring defects the review loop caught, all mine: sharp's `.raw()`
+returns 3 channels not 1 (hit twice, in Tasks 3 and 4); a transposition guard
+that asserted a diagonal point, invariant under the very swap it was meant to
+catch (three appearances before it was closed with a mutation-proven test); and
+the spec's payload figure understated the real one by 60%, which had mis-calibrated
+the recompression risk. Also of note: the conflated-catch bug fixed in the vault
+that morning reappeared three times in the new screen, eight files from the
+comment documenting it — worth considering "one try/catch per semantically
+distinct failure" as an AGENTS.md rule.

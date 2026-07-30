@@ -19,12 +19,14 @@ import {
   MessageRepository,
   AttachmentRepository,
   WatchedOutpointRepository,
+  LocalSettingsRepository,
   migrate,
 } from "@cemp/database";
 import { SecureVaultImpl } from "@cemp/secure-vault";
 import type { Notifier } from "@cemp/ui";
 import { MessagingService } from "./messaging";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
+import { shareImage } from "./platform/native-share";
 import { createRouteTagCache } from "./platform/route-tag-cache";
 import { platformSeams } from "./platform/seams";
 import type { PlatformSeams } from "./platform/seams-core";
@@ -47,6 +49,7 @@ export interface AppRepositories {
   readonly messages: MessageRepository;
   readonly attachments: AttachmentRepository;
   readonly watchedOutpoints: WatchedOutpointRepository;
+  readonly localSettings: LocalSettingsRepository;
 }
 
 export class AppContainer {
@@ -303,7 +306,13 @@ export class AppContainer {
       messages: new MessageRepository(this.#db),
       attachments: new AttachmentRepository(this.#db),
       watchedOutpoints: new WatchedOutpointRepository(this.#db),
+      localSettings: new LocalSettingsRepository(this.#db),
     };
+  }
+
+  /** Present the OS share sheet for a contact card PNG. */
+  async shareContactCard(png: Uint8Array, caption: string): Promise<void> {
+    await shareImage(png, caption);
   }
 
   async #closeDatabase(): Promise<void> {

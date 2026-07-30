@@ -22,6 +22,7 @@ import { ChatScreen } from "./screens/chat-screen";
 import { ChatsScreen } from "./screens/chats-screen";
 import { ContactEditScreen } from "./screens/contact-edit-screen";
 import { ContactsScreen } from "./screens/contacts-screen";
+import { MyCardScreen } from "./screens/my-card-screen";
 import { SettingsScreen } from "./screens/settings-screen";
 import { UnlockScreen } from "./screens/unlock-screen";
 import { VaultOnboardingScreen } from "./screens/vault-onboarding-screen";
@@ -136,6 +137,11 @@ export function App(): React.JSX.Element {
                 name="ContactEdit"
                 component={ContactEditScreen}
                 options={{ title: "Edit contact" }}
+              />
+              <Stack.Screen
+                name="MyCard"
+                component={MyCardScreen}
+                options={{ title: "My contact card" }}
               />
             </Stack.Navigator>
           </NavigationContainer>

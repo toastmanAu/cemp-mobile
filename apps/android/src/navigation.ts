@@ -16,6 +16,7 @@ export type RootStackParamList = {
   Main: undefined;
   Chat: { conversationId: number; title: string };
   ContactEdit: { contactId?: number };
+  MyCard: undefined;
 };
 
 export const AppContext = createContext<AppContainer | null>(null);

@@ -11,21 +11,47 @@
 @implementation CempQrScannerViewController {
   AVCaptureSession *_session;
   AVCaptureVideoPreviewLayer *_preview;
+  // Dedicated serial queue for all AVCaptureSession start/stop, per
+  // Apple's documented guidance for capture session lifecycle work.
+  // Serial, not the global concurrent queue: with a concurrent queue,
+  // a startRunning submitted first and a stopRunning submitted after it
+  // (from finishWith:) have no ordering guarantee relative to each other
+  // — a worker thread could run stopRunning to completion before the
+  // start block even reaches its atomic_load check, and startRunning
+  // could then complete afterwards, leaving a live session with no
+  // settle site left to stop it. A private serial queue makes "submitted
+  // after" mean "runs after": stopRunning enqueued once a start has
+  // already been submitted is guaranteed to run after it, so either the
+  // start block observes _finished and tears itself down, or it starts
+  // and the already-queued stop reliably stops it right after. This is
+  // what actually closes the class of bug the atomic _finished check
+  // could only narrow.
+  dispatch_queue_t _sessionQueue;
   // atomic, not a plain BOOL: finishWith:'s check-and-set is the guard
-  // that decides whether a racing background-queue startRunning is
-  // allowed to fire (see setUpAndStartSession). dispatch_async only
-  // orders writes made BEFORE the dispatch call against the block it
-  // queues — _finished is written AFTER that dispatch, on the main
-  // thread, so the background block's read of it has no synchronisation
-  // with that write under the plain-BOOL C memory model. That gap is
-  // exactly the leaked-camera bug this file exists to prevent, so the
-  // flag itself has to be race-free, not just "usually fine on ARM64".
+  // that decides whether a racing session-queue startRunning is allowed
+  // to fire (see setUpAndStartSession). dispatch_async only orders
+  // writes made BEFORE the dispatch call against the block it queues —
+  // _finished is written AFTER that dispatch, on the main thread, so the
+  // session-queue block's read of it has no synchronisation with that
+  // write under the plain-BOOL C memory model. That gap is exactly the
+  // leaked-camera bug this file exists to prevent, so the flag itself
+  // has to be race-free, not just "usually fine on ARM64".
   atomic_bool _finished;
   // Guards the authorization-check/session-setup path against re-running:
   // viewDidAppear: can fire again (e.g. backgrounding then foregrounding
   // while the sheet is still up) without a new presentation. Only ever
   // read/written on the main thread, so a plain BOOL is fine here.
   BOOL _started;
+}
+
+- (instancetype)init
+{
+  self = [super init];
+  if (self) {
+    _sessionQueue = dispatch_queue_create("com.cempmobile.qrscanner.session",
+                                          DISPATCH_QUEUE_SERIAL);
+  }
+  return self;
 }
 
 - (void)viewDidLoad
@@ -133,18 +159,21 @@
   _preview.frame = self.view.layer.bounds;
   [self.view.layer addSublayer:_preview];
 
-  // startRunning blocks; keep it off the main queue. Cancel can land on
-  // the main thread while this dispatch is still in flight — finishWith:
-  // would already have called stopRunning on a session that hadn't
-  // started yet (a no-op), so re-check _finished on the far side of the
-  // queue hop. Without this, a late startRunning leaves a live capture
-  // session with nothing left able to stop it (_finished is already set,
-  // so every future finishWith: is a no-op too). This read genuinely
-  // races the main-thread write in finishWith: (dispatch_async only
-  // orders what happened before the dispatch, not writes made after it),
-  // hence atomic_load rather than a plain ivar read.
+  // startRunning blocks; keep it off the main queue, and use the private
+  // serial _sessionQueue (not the global concurrent queue) so a
+  // stopRunning submitted afterwards from finishWith: is guaranteed to
+  // run after this block, not concurrently with or before it. Cancel can
+  // land on the main thread while this dispatch is still in flight —
+  // finishWith: would already have called stopRunning on a session that
+  // hadn't started yet (a no-op at that instant), so re-check _finished
+  // on the far side of the queue hop as a fast path; the serial ordering
+  // is what guarantees the queued stopRunning still wins even if this
+  // block doesn't observe _finished yet. This read genuinely races the
+  // main-thread write in finishWith: (dispatch_async only orders what
+  // happened before the dispatch, not writes made after it), hence
+  // atomic_load rather than a plain ivar read.
   AVCaptureSession *session = _session;
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+  dispatch_async(_sessionQueue, ^{
     if (atomic_load(&self->_finished)) {
       [session stopRunning]; // tear down rather than leak a live camera.
       return;
@@ -198,8 +227,14 @@
   if (session != nil) {
     // stopRunning blocks configuring/tearing down capture hardware,
     // symmetric with startRunning — keep it off the main thread so
-    // Cancel or a successful decode doesn't stutter the dismissal.
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    // Cancel or a successful decode doesn't stutter the dismissal. Same
+    // private serial _sessionQueue as setUpAndStartSession's
+    // startRunning: because the queue is serial, this stopRunning is
+    // guaranteed to run after any startRunning already submitted for
+    // this session, closing the race the atomic _finished check could
+    // only narrow (a concurrent queue gives no such ordering between
+    // two independently-submitted blocks).
+    dispatch_async(_sessionQueue, ^{
       [session stopRunning];
     });
   }

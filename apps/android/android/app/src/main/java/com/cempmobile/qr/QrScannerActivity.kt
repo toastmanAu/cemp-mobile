@@ -76,16 +76,22 @@ class QrScannerActivity : AppCompatActivity() {
   private fun startCamera() {
     val future = ProcessCameraProvider.getInstance(this)
     future.addListener({
-      val provider = future.get()
-      val preview = Preview.Builder().build().also {
-        it.surfaceProvider = findViewById<PreviewView>(R.id.preview).surfaceProvider
+      try {
+        val provider = future.get()
+        val preview = Preview.Builder().build().also {
+          it.surfaceProvider = findViewById<PreviewView>(R.id.preview).surfaceProvider
+        }
+        val analysis = ImageAnalysis.Builder()
+          .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+          .build()
+        analysis.setAnalyzer(analysisExecutor) { proxy -> analyse(proxy) }
+        provider.unbindAll()
+        provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+      } catch (e: Throwable) {
+        // A camera that will not bind is a cancel, not a crash: the screen
+        // keeps its photo and paste options, and the promise settles.
+        finishWith(null)
       }
-      val analysis = ImageAnalysis.Builder()
-        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-        .build()
-      analysis.setAnalyzer(analysisExecutor) { proxy -> analyse(proxy) }
-      provider.unbindAll()
-      provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
     }, ContextCompat.getMainExecutor(this))
   }
 

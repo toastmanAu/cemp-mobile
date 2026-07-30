@@ -1051,23 +1051,37 @@ Create `apps/android/src/screens/scan-contact-screen.tsx`. Requirements, each a 
 
    All three converge on one handler:
 
+   All three converge on one handler. Note the deliberate shape: `classifyScannedCard` is **synchronous** so it stays pure and fully unit-tested, but `getByProfileId` is **async**. Do NOT make `findExisting` async to paper over this — that would drag I/O into the tested core. Instead classify first with a `findExisting` that always returns `undefined`, then do the repository lookup only for an `addable` outcome and downgrade it yourself:
+
    ```ts
    async function handleScanned(text: string | null): Promise<void> {
-     if (text === null) return; // cancel / no code found — not an error
+     if (text === null) {
+       return; // cancel, or no code in the image — a normal outcome, not an error
+     }
      const myProfileIdHex = container.hasMessaging ? await container.messaging.myProfileId() : null;
-     const existing = await container.repositories.contacts.getByProfileId(
-       normalizeProfileId(/* the scanned id, after a successful parse */ ""),
-     );
-     // NOTE: getByProfileId is async, but classifyScannedCard's findExisting is
-     // synchronous by design (it stays pure and unit-testable). So parse first
-     // via classifyScannedCard with a findExisting that always returns
-     // undefined, and when the outcome is "addable", THEN query the repository
-     // and downgrade to "duplicate" yourself if a row comes back.
-     void existing;
+
+     // Pass 1: pure classification. self / unreadable are fully decided here.
+     const outcome = classifyScannedCard({
+       text,
+       myProfileIdHex,
+       findExisting: () => undefined,
+     });
+
+     // Pass 2: only an addable card needs the database consulted.
+     if (outcome.kind === "addable") {
+       const existing = await container.repositories.contacts.getByProfileId(
+         normalizeProfileId(outcome.bundle.profileTypeId),
+       );
+       if (existing !== undefined) {
+         setResult({ kind: "duplicate", bundle: outcome.bundle, existingContactId: existing.id });
+         return;
+       }
+     }
+     setResult(outcome);
    }
    ```
 
-   Resolve that mismatch explicitly rather than making `findExisting` async: `classifyScannedCard` is synchronous so it can stay pure and fully unit-tested. Call it once, and only for an `addable` outcome perform the `await getByProfileId(normalizeProfileId(bundle.profileTypeId))` lookup, treating a returned row as the duplicate case. Self-detection needs no I/O beyond `myProfileId()`.
+   Self-detection needs no I/O beyond `myProfileId()`, which is why it is decided in pass 1.
 
 2. Each async action gets **its own** try/catch and its own message. Do not share one catch across the scan and the classification — the repo has been burned twice by conflated catches (see `unlock-screen.tsx:32-60`), and a scanner failure is not a decode failure.
 3. On `kind: "addable"` — show the fingerprint and network, a **required** name field, and a Save button. Save calls `contacts.create({ displayName, profileIdHex })` with the **normalised** (unprefixed) id, then `navigation.goBack()`.

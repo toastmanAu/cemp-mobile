@@ -249,13 +249,26 @@ work, not optional verification.
 - **MLKit barcode scanning adds an Android dependency.** It is a Google Play
   Services library; size and availability on devices without Play Services need
   checking during implementation. ZXing is the fallback.
-- **Recompression fidelity is unproven, and the payload got bigger.** The
-  bundle JSON is 427 characters against the ~90 of the rejected URI, so the
-  QR is materially denser and less tolerant of compression artefacts —
-  encoding at ECC M as an 81x81 (version 16) matrix, an 8px/module, 4-module
-  quiet-zone PNG comes out 712x712 px (~507 KB). Whether it survives
-  WhatsApp-grade recompression is an empirical question; device checklist
-  item 4 is the gate, and module size rises before anything else changes.
+- ~~**Recompression fidelity is unproven**~~ — **CLOSED 2026-07-30.** The
+  bundle JSON is 427 characters against the ~90 of the rejected URI, so the QR
+  is materially denser and less tolerant of compression artefacts — encoding at
+  ECC M as an 81x81 (version 16) matrix, an 8px/module, 4-module quiet-zone PNG
+  comes out 712x712 px (~507 KB). That density was the open question. It is now
+  answered from both directions:
+
+  - **On device:** a card exported from the app through Telegram, then read back
+    with a third-party QR reader, parsed every field correctly.
+  - **Synthetically:** the production card was re-encoded as JPEG at qualities
+    90/80/70/50 at full size, and at 70/50 downscaled to 512 and 360 px, and at
+    quality 40 downscaled to 256 px — a 64% linear reduction plus aggressive
+    JPEG. All nine variants decoded to the exact 427-byte payload under an
+    independent decoder (ZBar), byte-compared against `encodeContactBundle`'s
+    own output.
+
+  8 px/module therefore carries real margin, and slice 2's scan-from-photo path
+  can assume it. Raise module size only if a specific transport is found that
+  degrades harder than quality-40-at-256 px.
+
 - **Profile-id lookup is a public-RPC read.** Adding a contact resolves the id
   through `https://testnet.ckb.dev`, so the endpoint operator learns which
   profile ids a user resolves. Pre-existing, not introduced here, but worth

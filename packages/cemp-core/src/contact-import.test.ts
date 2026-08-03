@@ -166,4 +166,25 @@ describe("classifyScannedCard", () => {
       classifyScannedCard({ text: "�", myProfileIdHex: null, findExisting: none }),
     ).not.toThrow();
   });
+
+  // classifyScannedCard is documented "Never throws", and callers (e.g.
+  // scan-contact-screen.tsx's handleScanned) rely on that guarantee without
+  // their own try/catch. The real caller receives values off a native
+  // bridge (CempQrScanner.scanImage) that TypeScript's `string | null`
+  // signature cannot enforce at runtime — iOS's `resolve(nil)` no-code path
+  // has been observed to arrive as something other than `null`. Prove the
+  // guarantee holds for non-string input too, via a deliberate cast at the
+  // call site standing in for that untyped bridge value.
+  it("never throws for non-string input crossing the native bridge", () => {
+    const nonStringInputs: readonly unknown[] = [undefined, null, 42, { not: "a string" }];
+    for (const bad of nonStringInputs) {
+      const out = classifyScannedCard({
+        text: bad as unknown as string,
+        myProfileIdHex: MY_ID,
+        findExisting: none,
+      });
+      expect(out.kind).toBe("unreadable");
+      if (out.kind === "unreadable") expect(out.reason).toBe("not-a-card");
+    }
+  });
 });

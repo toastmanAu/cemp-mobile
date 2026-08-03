@@ -139,24 +139,28 @@ export function ScanContactScreen(): React.JSX.Element {
     setBusy(true);
     setScanError(null);
     setClassifyError(null);
-    let text: string | null;
     try {
-      text = await container.scanContactWithCamera();
-    } catch (error: unknown) {
-      if (mountedRef.current) {
-        setScanError(
-          error instanceof CameraPermissionDeniedError
-            ? "Camera permission is off. Enable the Camera permission for CellSend in your device Settings, then try again."
-            : "Could not open the camera scanner.",
-        );
+      let text: string | null;
+      try {
+        text = await container.scanContactWithCamera();
+      } catch (error: unknown) {
+        if (mountedRef.current) {
+          setScanError(
+            error instanceof CameraPermissionDeniedError
+              ? "Camera permission is off. Enable the Camera permission for CellSend in your device Settings, then try again."
+              : "Could not open the camera scanner.",
+          );
+        }
+        return;
       }
+      // handleScanned is documented never to throw, but that guarantee
+      // covers its own logic, not whatever a future change to it — or to
+      // what feeds it — might do; the `finally` below is what actually
+      // keeps this screen usable if it ever throws anyway.
+      await handleScanned(text);
+    } finally {
       if (mountedRef.current) setBusy(false);
-      return;
     }
-    // handleScanned never throws (see its doc comment) — no catch needed
-    // here, only cleanup.
-    await handleScanned(text);
-    if (mountedRef.current) setBusy(false);
   }, [busy, container, handleScanned]);
 
   const runPhotoScan = useCallback(async (): Promise<void> => {
@@ -164,26 +168,26 @@ export function ScanContactScreen(): React.JSX.Element {
     setBusy(true);
     setScanError(null);
     setClassifyError(null);
-    let outcome: ScanFromPhotoResult;
     try {
-      outcome = await container.scanContactFromPhoto();
-    } catch {
-      if (mountedRef.current) setScanError("Could not read a code from that photo.");
+      let outcome: ScanFromPhotoResult;
+      try {
+        outcome = await container.scanContactFromPhoto();
+      } catch {
+        if (mountedRef.current) setScanError("Could not read a code from that photo.");
+        return;
+      }
+      if (outcome.kind === "cancelled") {
+        // The user changed their mind in the photo picker — silent, not an error.
+        return;
+      }
+      if (outcome.kind === "no-code") {
+        if (mountedRef.current) setScanError("No contact code found in that image.");
+        return;
+      }
+      await handleScanned(outcome.text);
+    } finally {
       if (mountedRef.current) setBusy(false);
-      return;
     }
-    if (outcome.kind === "cancelled") {
-      // The user changed their mind in the photo picker — silent, not an error.
-      if (mountedRef.current) setBusy(false);
-      return;
-    }
-    if (outcome.kind === "no-code") {
-      if (mountedRef.current) setScanError("No contact code found in that image.");
-      if (mountedRef.current) setBusy(false);
-      return;
-    }
-    await handleScanned(outcome.text);
-    if (mountedRef.current) setBusy(false);
   }, [busy, container, handleScanned]);
 
   const runPasteScan = useCallback(async (): Promise<void> => {
@@ -191,8 +195,11 @@ export function ScanContactScreen(): React.JSX.Element {
     setBusy(true);
     setScanError(null);
     setClassifyError(null);
-    await handleScanned(pasteText);
-    if (mountedRef.current) setBusy(false);
+    try {
+      await handleScanned(pasteText);
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
   }, [busy, pasteText, handleScanned]);
 
   /** Clear a terminal outcome (self / duplicate / unreadable) and go back to the inputs. */

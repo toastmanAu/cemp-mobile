@@ -101,6 +101,17 @@ export function classifyScannedCard(input: {
   /** Repository lookup, called with the UNPREFIXED id. Expected not to throw. */
   readonly findExisting: (profileIdHex: string) => { readonly id: number } | undefined;
 }): ScanOutcome {
+  // input.text crosses a native bridge (CempQrScanner.scanImage /
+  // scanWithCamera) before it gets here, and TypeScript's `string` parameter
+  // type cannot be enforced at runtime on that value — iOS's `resolve(nil)`
+  // no-code path has been observed to arrive as something other than
+  // `null`. Guard BEFORE `.trim()`, inside no try/catch is needed: the
+  // "Never throws" guarantee above must hold for any input, not just a
+  // well-typed string.
+  if (typeof input.text !== "string") {
+    return { kind: "unreadable", reason: "not-a-card" };
+  }
+
   const trimmed = input.text.trim();
   let bundle: ContactBundleV1;
   try {

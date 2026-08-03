@@ -59,13 +59,30 @@ function isPermissionDeniedRejection(error: unknown): boolean {
   );
 }
 
+/**
+ * Coerce a native bridge result to this module's declared `string | null`.
+ *
+ * The bridge crosses into JS as whatever the native side's promise resolves
+ * with, and TypeScript's `Promise<string | null>` signature above does not
+ * enforce that at runtime — iOS's `CempQrScanner.scanImage` no-code path
+ * calls `resolve(nil)`, which has been observed to arrive in JS as a value
+ * that is neither a string nor `null` (almost certainly `undefined`), not
+ * the `null` the signature promises. For this module "no readable code" and
+ * "cancelled" are both `null`, so treat anything that is not a non-empty
+ * string as `null` here — this is the seam where the declared type becomes
+ * true for every caller downstream.
+ */
+function toDecodedTextOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 export async function scanImageForQr(bytes: Uint8Array): Promise<string | null> {
-  return await module().scanImage(bytesToHex(bytes));
+  return toDecodedTextOrNull(await module().scanImage(bytesToHex(bytes)));
 }
 
 export async function scanWithCamera(): Promise<string | null> {
   try {
-    return await module().scanWithCamera();
+    return toDecodedTextOrNull(await module().scanWithCamera());
   } catch (error: unknown) {
     if (isPermissionDeniedRejection(error)) {
       throw new CameraPermissionDeniedError();

@@ -298,7 +298,7 @@ async function makeStack(
     signer,
     messageType: MESSAGE_TYPE_REF,
     store,
-    senderProfileId: BOB_PROFILE_ID,
+    senderProfileId: () => Promise.resolve(BOB_PROFILE_ID),
     senderDeviceId: hexToBytes("02".repeat(16)),
   });
   const notifier = new RecordingNotifier();

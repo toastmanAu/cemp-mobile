@@ -178,8 +178,17 @@ export interface MessagePublisherDeps {
   readonly signer: MlDsaV2TxSigner;
   readonly messageType: CempMessageTypeRef;
   readonly store: PublicationStore;
-  /** Own 32-byte profile id (outgoing envelopes name the sender). */
-  readonly senderProfileId: Uint8Array;
+  /**
+   * Resolves this device's own 32-byte profile id, called fresh on every
+   * `publishText` — never cached here or by the caller. A profile published
+   * earlier in the SAME session must be visible on the very next send; a
+   * constructor-captured value cannot express that (it is exactly what
+   * caused unattributable zero-id sends on a freshly-set-up device — the
+   * profile row was created after this publisher was built). Must
+   * reject/throw when no profile exists yet; this class never fabricates
+   * one.
+   */
+  readonly senderProfileId: () => Promise<Uint8Array>;
   readonly senderDeviceId: Uint8Array;
 }
 
@@ -313,6 +322,11 @@ export class MessagePublisher {
       }
 
       await store.transitionMessage(input.messageRowId, "encrypting");
+      // Resolved fresh, right here, right before it is needed — never cached
+      // on this class or its deps. Deliberately BEFORE the network round trip
+      // below so a device with no published profile fails fast, offline, with
+      // no partial side effects (rule 15).
+      const senderProfileId = await this.#deps.senderProfileId();
       const resolved = await resolveLiveProfile(this.#deps.client, input.recipientProfileIdHex);
       checkResolvedProfileBinding(resolved, input.recipientProfileIdHex);
       const recipientProfileId = codec.hexToBytes(
@@ -322,7 +336,7 @@ export class MessagePublisher {
       );
       const assembled = assembleTextMessage({
         text: input.text,
-        senderProfileId: this.#deps.senderProfileId,
+        senderProfileId,
         recipientProfileId,
         recipientKemPublicKey: resolved.profile.ml_kem_public_key,
         senderDeviceId: this.#deps.senderDeviceId,

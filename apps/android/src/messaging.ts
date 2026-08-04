@@ -11,6 +11,7 @@ import {
   CempClient,
   MessagePublisher,
   MlDsaV2TxSigner,
+  PublicationError,
   ResponseLifecycle,
   addressFromLockScript,
   buildCreateProfileTx,
@@ -104,7 +105,6 @@ export class MessagingService {
   readonly #balances: BalanceRepository;
   readonly #walletId: number;
   readonly #messageType: CempMessageTypeRef;
-  readonly #senderProfileId: Uint8Array;
   readonly #senderDeviceId: Uint8Array;
   readonly #createImageCodec: (() => ReleasableImageCodec) | undefined;
 
@@ -122,7 +122,6 @@ export class MessagingService {
     balances: BalanceRepository;
     walletId: number;
     messageType: CempMessageTypeRef;
-    senderProfileId: Uint8Array;
     senderDeviceId: Uint8Array;
     createImageCodec: (() => ReleasableImageCodec) | undefined;
   }) {
@@ -139,7 +138,6 @@ export class MessagingService {
     this.#balances = deps.balances;
     this.#walletId = deps.walletId;
     this.#messageType = deps.messageType;
-    this.#senderProfileId = deps.senderProfileId;
     this.#senderDeviceId = deps.senderDeviceId;
     this.#createImageCodec = deps.createImageCodec;
   }
@@ -206,9 +204,19 @@ export class MessagingService {
     });
 
     const profiles = new ProfileRepository(db);
-    const active = await profiles.getActiveByAccount(accountId);
-    const senderProfileId =
-      active === undefined ? new Uint8Array(32) : bytesFrom(`0x${active.profileIdHex}`);
+    // NOTE (scope): this feeds ONLY the incoming-worker's route-tag derivation
+    // below (`ownProfileId`) and is captured once here, same as before this
+    // fix. The diagnosed device bug was specifically the OUTGOING
+    // sender-profile-id cache (`MessagePublisher`, `publishImage`,
+    // `deriveIncomingAttachmentKey`), all now resolved fresh per call via
+    // `requireActiveSenderProfileId`. Whether the incoming worker also needs a
+    // live, per-tick lookup is a separate, undiagnosed question left
+    // untouched here.
+    const initialActiveProfile = await profiles.getActiveByAccount(accountId);
+    const ownProfileId =
+      initialActiveProfile === undefined
+        ? new Uint8Array(32)
+        : bytesFrom(`0x${initialActiveProfile.profileIdHex}`);
 
     const deviceId = randomBytes(16);
     const publisher = new MessagePublisher({
@@ -216,7 +224,11 @@ export class MessagingService {
       signer,
       messageType,
       store,
-      senderProfileId,
+      // Resolved fresh from the repository on every publish (never cached —
+      // see `requireActiveSenderProfileId`): the device bug this fixes was
+      // exactly a value snapshotted once here, before the profile a first-run
+      // user publishes in the same session existed.
+      senderProfileId: () => requireActiveSenderProfileId(profiles, accountId),
       senderDeviceId: deviceId,
     });
     const lifecycle = new ResponseLifecycle({ client, signer, messageType, store });
@@ -245,7 +257,7 @@ export class MessagingService {
         walletLock: { codeHash: lock.codeHash, hashType: lock.hashType, args: lock.args },
         notifier,
         engineId,
-        ownProfileId: senderProfileId,
+        ownProfileId,
         ownKemSecretKey: bundle.mlKem.secretKey,
         // T17 finding F-2: the batch reclaim only spends message cells — this
         // injected closure reclaims each group's chunk cells (spec §9.5).
@@ -290,7 +302,6 @@ export class MessagingService {
       balances,
       walletId,
       messageType,
-      senderProfileId,
       senderDeviceId: deviceId,
       createImageCodec: deps.createImageCodec,
     });
@@ -310,6 +321,19 @@ export class MessagingService {
   async myProfileId(): Promise<string | null> {
     const active = await this.#profiles.getActiveByAccount(this.#accountId);
     return active === undefined ? null : active.profileIdHex;
+  }
+
+  /**
+   * This device's own profile id, resolved fresh from the repository on
+   * every call — never cached on the instance. Every place that used to read
+   * a constructor-captured `#senderProfileId` (the publisher, `publishImage`,
+   * `deriveIncomingAttachmentKey`) now calls this instead, so a profile
+   * published earlier in the SAME session is picked up immediately, and
+   * sending/decrypting with no profile fails loudly rather than silently
+   * using a fabricated 32-zero-byte id.
+   */
+  async #requireSenderProfileId(): Promise<Uint8Array> {
+    return requireActiveSenderProfileId(this.#profiles, this.#accountId);
   }
 
   /** Display-form identity fingerprint (spec §10.3), once a profile exists. */
@@ -485,6 +509,8 @@ export class MessagingService {
         this.#walletId,
       );
       const balance = await this.#balances.getBalance(this.#walletId);
+      // Resolved fresh (never cached) — same fix as the text-message path.
+      const senderProfileId = await this.#requireSenderProfileId();
       const result = await runImageSend(
         {
           codec: tracker,
@@ -501,7 +527,7 @@ export class MessagingService {
                 messageType: this.#messageType,
                 journal,
                 publisher: this.#publisher,
-                senderProfileId: this.#senderProfileId,
+                senderProfileId,
                 senderDeviceId: this.#senderDeviceId,
                 randomBytes,
               },
@@ -566,10 +592,12 @@ export class MessagingService {
         `deriveIncomingAttachmentKey: message ${String(messageId)}'s cell is not live (${status.status})`,
       );
     }
+    // Resolved fresh (never cached) — same fix as the outgoing send path.
+    const ownProfileId = await this.#requireSenderProfileId();
     const decrypted = decryptEnvelope({
       envelopeBytes: hexToBytes(status.cell.data),
       recipientKemSecretKey: this.#bundle.mlKem.secretKey,
-      ownProfileId: this.#senderProfileId,
+      ownProfileId,
     });
     try {
       return decrypted.attachmentKey;
@@ -628,6 +656,35 @@ export class MessagingService {
   dispose(): void {
     wipeIdentityKeyBundle(this.#bundle);
   }
+}
+
+/**
+ * Resolve the account's active profile id fresh from the repository, or
+ * throw a clear, UI-presentable error when none has been published yet.
+ * Shared by the `MessagePublisher` provider (constructed in `init()`, before
+ * a `MessagingService` instance exists — hence a free function taking the
+ * repository and account id explicitly, rather than an instance method) and
+ * `MessagingService.#requireSenderProfileId`. Never fabricates a zero id:
+ * that silent default is exactly what let an unattributable, capacity-
+ * spending message reach the chain on a freshly-set-up device.
+ */
+async function requireActiveSenderProfileId(
+  profiles: ProfileRepository,
+  accountId: number,
+): Promise<Uint8Array> {
+  const active = await profiles.getActiveByAccount(accountId);
+  if (active === undefined) {
+    // A `PublicationError`, not a plain `Error`: `MessagePublisher.publishText`
+    // passes any `PublicationError` it catches straight through
+    // (`classifyPublishError`'s `instanceof` short-circuit), so this exact,
+    // actionable message reaches the UI unchanged instead of being flattened
+    // into a generic "something went wrong" failure.
+    throw new PublicationError(
+      "profile-not-found",
+      "Publish your profile before sending a message.",
+    );
+  }
+  return bytesFrom(`0x${active.profileIdHex}`);
 }
 
 /** The single account row for this device (idempotent). */

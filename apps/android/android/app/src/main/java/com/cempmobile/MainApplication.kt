@@ -4,6 +4,7 @@ import android.app.Application
 import com.cempmobile.background.CempBackgroundPackage
 import com.cempmobile.imaging.CempImagePackage
 import com.cempmobile.kdf.CempKdfPackage
+import com.cempmobile.qr.CempQrScannerPackage
 import com.cempmobile.share.CempSharePackage
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
@@ -23,6 +24,7 @@ class MainApplication : Application(), ReactApplication {
           add(CempBackgroundPackage())
           add(CempImagePackage())
           add(CempSharePackage())
+          add(CempQrScannerPackage())
         },
     )
   }

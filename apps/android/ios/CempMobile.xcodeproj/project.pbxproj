@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		068C587B0CE864E43620097D /* Vision.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DA33CBA2422DFCFCA385229F /* Vision.framework */; };
 		07BABD8F3FA0C27F4B81CFE9 /* CempKdf.m in Sources */ = {isa = PBXBuildFile; fileRef = BFB4FD51C5B8A03BAE2D06E1 /* CempKdf.m */; };
 		0C80B921A6F3F58F76C31292 /* libPods-CempMobile.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-CempMobile.a */; };
 		0CAB7FDE0EDCB82B6ACA03D3 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 665157A24D374604C8CD4199 /* Foundation.framework */; };
@@ -16,6 +17,7 @@
 		22D8F88B687FBC76D3150226 /* argon2.c in Sources */ = {isa = PBXBuildFile; fileRef = DA5B7220F8A7E247DABD7270 /* argon2.c */; };
 		2706D07ED0BE2F454B7D6790 /* vectors.txt in Resources */ = {isa = PBXBuildFile; fileRef = A2C098E97E269EDB23F0D354 /* vectors.txt */; };
 		2868217D266BC43AB3BE3528 /* thread.c in Sources */ = {isa = PBXBuildFile; fileRef = D84FDD695F148911F02316E6 /* thread.c */; };
+		29E2A3EBED13533766EC6FA3 /* CempQrScannerViewController.m in Sources */ = {isa = PBXBuildFile; fileRef = 026FA0B4C5ECCB40207F3513 /* CempQrScannerViewController.m */; };
 		2E22610A99F8EA5E9026A4E9 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 56E51A3FEF6B5B8F350BCD70 /* CoreGraphics.framework */; };
 		31FFA489DF09A20167DC1A92 /* CempScheduler.m in Sources */ = {isa = PBXBuildFile; fileRef = 2A8E6C61EBF5007863B3B19E /* CempScheduler.m */; };
 		33FFF5BC7B94516A9144E263 /* encoding.c in Sources */ = {isa = PBXBuildFile; fileRef = F344768B0B859694A685B67C /* encoding.c */; };
@@ -25,6 +27,7 @@
 		46768DA30D9264A4B3D24173 /* core.c in Sources */ = {isa = PBXBuildFile; fileRef = 11021983D1B7385C99ABE4FE /* core.c */; };
 		4ADB3568E4D54CDA4486B72F /* blake2b.c in Sources */ = {isa = PBXBuildFile; fileRef = 2CC2E7CBF063A5B123A04F6C /* blake2b.c */; };
 		5A14FC6F217C153515DEA426 /* CempImagePickerEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = B5DB4DD37FC9F25EBDAC8137 /* CempImagePickerEngine.m */; };
+		5ED204B36CBE342D34C1B1D5 /* CempQrScanner.m in Sources */ = {isa = PBXBuildFile; fileRef = 93F757C481C7C37F56A8712F /* CempQrScanner.m */; };
 		6241E90D16A8D7B558E0DB03 /* CempImagePickerEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = 1905F92A0F948D07DB54C935 /* CempImagePickerEngine.m */; };
 		635FCEBA8A81978CBA5A1576 /* CempSchedulerEngine.m in Sources */ = {isa = PBXBuildFile; fileRef = D2A220232C402411CB28B4F3 /* CempSchedulerEngine.m */; };
 		743E37DC757E53CB17EE9F4A /* BackgroundTasks.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3457F1B4340514C5B6008DE7 /* BackgroundTasks.framework */; };
@@ -41,7 +44,9 @@
 		AA56F14A400E0DEC084945BB /* CempKdfTests.m in Sources */ = {isa = PBXBuildFile; fileRef = 01EF7510EAA6F798AAC62ECA /* CempKdfTests.m */; };
 		B01EE71BB5203E688BEFB035 /* ref.c in Sources */ = {isa = PBXBuildFile; fileRef = C31F3C33B7027F3090B09CCA /* ref.c */; };
 		B6AA2B72D6D9F04C61DB092B /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C55FDED485EAA31F53EDAB73 /* UIKit.framework */; };
+		B917160F4CE5A5CCEE5A573F /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F90D55F3FEF01FF15BCBA141 /* AVFoundation.framework */; };
 		BAC52793DD2875C1AE4E541A /* MobileCoreServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3422FCC4026C90D9BE92E40E /* MobileCoreServices.framework */; };
+		BCFA4855F49FDDE9884A3584 /* CoreImage.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AF58310407C7A47907EDDE6D /* CoreImage.framework */; };
 		BEBB764942C71FD3B7D73F42 /* encoding.c in Sources */ = {isa = PBXBuildFile; fileRef = D7D234018E87EC144AC83E9D /* encoding.c */; };
 		C40E01FCD45D234EEF5591EC /* core.c in Sources */ = {isa = PBXBuildFile; fileRef = EB5C8A8CB5C82AC932E6D610 /* core.c */; };
 		C60A07418CA0ADC1FD57DFF1 /* argon2.c in Sources */ = {isa = PBXBuildFile; fileRef = 583D6CAF3974A5794712F94C /* argon2.c */; };
@@ -65,6 +70,7 @@
 /* Begin PBXFileReference section */
 		01233C30F687B14AE924638A /* CempImageCodecEngine.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImageCodecEngine.m; sourceTree = "<group>"; };
 		01EF7510EAA6F798AAC62ECA /* CempKdfTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempKdfTests.m; sourceTree = "<group>"; };
+		026FA0B4C5ECCB40207F3513 /* CempQrScannerViewController.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempQrScannerViewController.m; sourceTree = "<group>"; };
 		05EB93F3DF0FA5F1E9DF6649 /* CempHeadlessTask.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempHeadlessTask.m; sourceTree = "<group>"; };
 		0B02C251F9482A494CDC469E /* CempImageCodec.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImageCodec.m; sourceTree = "<group>"; };
 		11021983D1B7385C99ABE4FE /* core.c */ = {isa = PBXFileReference; includeInIndex = 1; name = core.c; path = ../CempKdf/vendor/argon2/src/core.c; sourceTree = "<group>"; };
@@ -96,9 +102,12 @@
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = CempMobile/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = CempMobile/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		86A186C2311F896485ACCE21 /* ref.c */ = {isa = PBXFileReference; includeInIndex = 1; name = ref.c; path = ../CempKdf/vendor/argon2/src/ref.c; sourceTree = "<group>"; };
+		90D024E033C0F37FBF97BDC1 /* CempQrScannerViewController.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = CempQrScannerViewController.h; sourceTree = "<group>"; };
+		93F757C481C7C37F56A8712F /* CempQrScanner.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempQrScanner.m; sourceTree = "<group>"; };
 		97D2E43DDD693EF9D2A06AF4 /* CempSchedulerTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempSchedulerTests.m; sourceTree = "<group>"; };
 		A2C098E97E269EDB23F0D354 /* vectors.txt */ = {isa = PBXFileReference; includeInIndex = 1; name = vectors.txt; path = "../../../tools/kdf-c-core/vectors.txt"; sourceTree = SOURCE_ROOT; };
 		A70FBE641511A0050799AC6B /* CempShare.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempShare.m; sourceTree = "<group>"; };
+		AF58310407C7A47907EDDE6D /* CoreImage.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreImage.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/CoreImage.framework; sourceTree = DEVELOPER_DIR; };
 		B0448BB021990E66ED70F437 /* CempImageCodecTests.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImageCodecTests.m; sourceTree = "<group>"; };
 		B5DB4DD37FC9F25EBDAC8137 /* CempImagePickerEngine.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempImagePickerEngine.m; sourceTree = "<group>"; };
 		B8B4A927C878E7F3A85FB2ED /* CempKdfCore.c */ = {isa = PBXFileReference; includeInIndex = 1; name = CempKdfCore.c; path = ../CempKdf/CempKdfCore.c; sourceTree = "<group>"; };
@@ -115,6 +124,7 @@
 		D8411AD9BA3498AD3A200BDD /* crypto_scrypt-ref.c */ = {isa = PBXFileReference; includeInIndex = 1; name = "crypto_scrypt-ref.c"; path = "../CempKdf/vendor/scrypt/lib/crypto/crypto_scrypt-ref.c"; sourceTree = "<group>"; };
 		D84FDD695F148911F02316E6 /* thread.c */ = {isa = PBXFileReference; includeInIndex = 1; name = thread.c; path = vendor/argon2/src/thread.c; sourceTree = "<group>"; };
 		D8B41D67F8C02F8DBCBDADFB /* CempKdfCore.c */ = {isa = PBXFileReference; includeInIndex = 1; path = CempKdfCore.c; sourceTree = "<group>"; };
+		DA33CBA2422DFCFCA385229F /* Vision.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Vision.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Vision.framework; sourceTree = DEVELOPER_DIR; };
 		DA5B7220F8A7E247DABD7270 /* argon2.c */ = {isa = PBXFileReference; includeInIndex = 1; name = argon2.c; path = vendor/argon2/src/argon2.c; sourceTree = "<group>"; };
 		DAFE5F75029FA8594B737A49 /* CempSchedulerEngine.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = CempSchedulerEngine.h; sourceTree = "<group>"; };
 		E36F687324B7AE026C2DE51B /* insecure_memzero.c */ = {isa = PBXFileReference; includeInIndex = 1; name = insecure_memzero.c; path = ../CempKdf/vendor/scrypt/libcperciva/util/insecure_memzero.c; sourceTree = "<group>"; };
@@ -124,6 +134,7 @@
 		F344768B0B859694A685B67C /* encoding.c */ = {isa = PBXFileReference; includeInIndex = 1; name = encoding.c; path = vendor/argon2/src/encoding.c; sourceTree = "<group>"; };
 		F540415EE0E0615043A6E35F /* sha256.c */ = {isa = PBXFileReference; includeInIndex = 1; name = sha256.c; path = vendor/scrypt/libcperciva/alg/sha256.c; sourceTree = "<group>"; };
 		F5844455C38825EE568CC77F /* CempSchedulerEngine.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = CempSchedulerEngine.m; sourceTree = "<group>"; };
+		F90D55F3FEF01FF15BCBA141 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/AVFoundation.framework; sourceTree = DEVELOPER_DIR; };
 		FBFDCAE329E66A471EB06974 /* blake2b.c */ = {isa = PBXFileReference; includeInIndex = 1; name = blake2b.c; path = vendor/argon2/src/blake2/blake2b.c; sourceTree = "<group>"; };
 		FD5795BD756AE43162704E43 /* PhotosUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PhotosUI.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/PhotosUI.framework; sourceTree = DEVELOPER_DIR; };
 /* End PBXFileReference section */
@@ -139,6 +150,9 @@
 				9E92C78FBB38E9CACCD79E2F /* MobileCoreServices.framework in Frameworks */,
 				9C36EBBA42E51331A0B8478A /* PhotosUI.framework in Frameworks */,
 				E011133E74BAB8E55E793465 /* BackgroundTasks.framework in Frameworks */,
+				B917160F4CE5A5CCEE5A573F /* AVFoundation.framework in Frameworks */,
+				068C587B0CE864E43620097D /* Vision.framework in Frameworks */,
+				BCFA4855F49FDDE9884A3584 /* CoreImage.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -232,6 +246,9 @@
 				FD5795BD756AE43162704E43 /* PhotosUI.framework */,
 				C55FDED485EAA31F53EDAB73 /* UIKit.framework */,
 				3457F1B4340514C5B6008DE7 /* BackgroundTasks.framework */,
+				F90D55F3FEF01FF15BCBA141 /* AVFoundation.framework */,
+				DA33CBA2422DFCFCA385229F /* Vision.framework */,
+				AF58310407C7A47907EDDE6D /* CoreImage.framework */,
 			);
 			name = iOS;
 			sourceTree = "<group>";
@@ -268,6 +285,7 @@
 				55926F598DC7A7F59833F725 /* CempImagePicker */,
 				398BEEC5E3DF7B46D7C2306D /* CempScheduler */,
 				86F9D8DE16DFC07561D1FDFB /* CempShare */,
+				AC101FED78F64A624A85B8A1 /* CempQrScanner */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -301,6 +319,17 @@
 			);
 			name = CempImageCodec;
 			path = CempImageCodec;
+			sourceTree = "<group>";
+		};
+		AC101FED78F64A624A85B8A1 /* CempQrScanner */ = {
+			isa = PBXGroup;
+			children = (
+				93F757C481C7C37F56A8712F /* CempQrScanner.m */,
+				026FA0B4C5ECCB40207F3513 /* CempQrScannerViewController.m */,
+				90D024E033C0F37FBF97BDC1 /* CempQrScannerViewController.h */,
+			);
+			name = CempQrScanner;
+			path = CempQrScanner;
 			sourceTree = "<group>";
 		};
 		BBD78D7AC51CEA395F1C20DB /* Pods */ = {
@@ -526,6 +555,8 @@
 				342F161A391629C2FE41E575 /* CempSchedulerEngine.m in Sources */,
 				D776C5574DB43953F3BE7D6D /* CempHeadlessTask.m in Sources */,
 				34CB849B985B4B1ED2D1FD62 /* CempShare.m in Sources */,
+				5ED204B36CBE342D34C1B1D5 /* CempQrScanner.m in Sources */,
+				29E2A3EBED13533766EC6FA3 /* CempQrScannerViewController.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

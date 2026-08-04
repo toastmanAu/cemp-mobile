@@ -101,7 +101,18 @@ export interface SyncWorkerDeps {
   };
   readonly notifier: Notifier;
   readonly engineId: string;
-  readonly ownProfileId: Uint8Array;
+  /**
+   * Resolves this device's own 32-byte profile id, called fresh once per
+   * worker tick — never cached here or by the caller. A profile published
+   * earlier in the SAME session (first-run: publish, then the very next
+   * incoming-discovery tick) must be scanned for immediately; a
+   * construction-time snapshot cannot express that (that snapshot is the
+   * sender-id device bug's incoming half — see the fix report). Resolves to
+   * `undefined` when no profile has been published yet: there is no route
+   * tag to scan and no key to decrypt with, and that is a legitimate,
+   * expected state for a background worker to find, not an error.
+   */
+  readonly ownProfileId: () => Promise<Uint8Array | undefined>;
   readonly ownKemSecretKey: Uint8Array;
   /**
    * Reclaim one attachment group on-chain (spec §9.5). Injected by the
@@ -146,6 +157,18 @@ export function buildWorkerSpecs(deps: SyncWorkerDeps): WorkerSpec[] {
 /* ── incoming discovery (§12 worker 2; exit criterion 1) ─────────────────── */
 
 async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
+  // Resolved ONCE per tick (not per cell/route tag): the route-tag loop
+  // below and `processDiscoveredCell` must agree on the same value within a
+  // run, and a per-cell repository lookup would be needless DB traffic.
+  // `undefined` means no profile has been published yet — there is no
+  // inbox to scan, so do nothing and return cleanly. Scanning a route tag
+  // derived from a fabricated zero id was the incoming half of the
+  // sender-id device bug: it scans a tag nobody addresses, silently
+  // discovering nothing for the rest of the session.
+  const ownProfileId = await deps.ownProfileId();
+  if (ownProfileId === undefined) {
+    return;
+  }
   const now = Date.now();
   const epoch = currentRoutingEpoch(now);
   // NO cursor is persisted between runs. A message cell's type args are
@@ -160,7 +183,7 @@ async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
   // The cursor below paginates WITHIN a single scan only.
   // Watch the current and previous epoch's route tags (protocol §2 grace).
   for (const tagEpoch of [epoch, epoch - 1n]) {
-    const routeTag = deriveRouteTag(deps.ownProfileId, tagEpoch);
+    const routeTag = deriveRouteTag(ownProfileId, tagEpoch);
     let cursor: string | undefined = undefined;
     for (;;) {
       const page = await findMessageCells(deps.client, deps.messageType, routeTag, cursor);
@@ -173,6 +196,7 @@ async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
         try {
           await processDiscoveredCell(
             deps,
+            ownProfileId,
             cell.data,
             cell.outPoint.txHash,
             Number(BigInt(cell.outPoint.index)),
@@ -195,6 +219,7 @@ async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
 
 async function processDiscoveredCell(
   deps: SyncWorkerDeps,
+  ownProfileId: Uint8Array,
   cellDataHex: string,
   txHash: string,
   outpointIndex: number,
@@ -203,7 +228,7 @@ async function processDiscoveredCell(
   const incoming = processIncomingText({
     cellData,
     ownKemSecretKey: deps.ownKemSecretKey,
-    ownProfileId: deps.ownProfileId,
+    ownProfileId,
   });
   const senderProfileIdHex = bytesToHex(incoming.senderProfileId);
   // Phase 11 task 10: a blocked sender is dropped at ingestion — history is

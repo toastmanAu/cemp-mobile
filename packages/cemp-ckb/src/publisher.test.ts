@@ -249,7 +249,11 @@ const MESSAGE_TYPE_REF: CempMessageTypeRef = {
 
 function makeFixture(
   profileCellJson?: unknown,
-  opts: { rejectedTxHashes?: ReadonlySet<string>; neverCommit?: boolean } = {},
+  opts: {
+    rejectedTxHashes?: ReadonlySet<string>;
+    neverCommit?: boolean;
+    senderProfileId?: () => Promise<Uint8Array>;
+  } = {},
 ): {
   publisher: MessagePublisher;
   store: FakeStore;
@@ -274,7 +278,7 @@ function makeFixture(
     signer,
     messageType: MESSAGE_TYPE_REF,
     store,
-    senderProfileId: hexToBytes("11".repeat(32)),
+    senderProfileId: opts.senderProfileId ?? (() => Promise.resolve(hexToBytes("11".repeat(32)))),
     senderDeviceId: hexToBytes("22".repeat(16)),
   });
   return { publisher, store, sentBodies, mockChain };
@@ -580,6 +584,96 @@ describe("MessagePublisher.publishText", () => {
     const spent = new Set(inputKeys(sentBodies[0]!));
     const reused = inputKeys(sentBodies[1]!).filter((key) => spent.has(key));
     expect(reused).toEqual([]);
+  });
+});
+
+/**
+ * Regression coverage for the device-reported bug: a freshly-set-up device
+ * published its profile and sent a message IN THE SAME SESSION, and the
+ * envelope's sender profile id was 32 zero bytes — `senderProfileId` had
+ * been captured once at `MessagePublisher` construction time and never
+ * refreshed. The fix removes the cache: `senderProfileId` is now a provider
+ * function the publisher calls fresh on every `publishText`, and it must
+ * reject (never fabricate a zero id) when no profile exists yet.
+ */
+describe("MessagePublisher sender profile id (fresh lookup, no cache — device bug regression)", () => {
+  it("re-resolves the sender profile id on every publish, so a profile published mid-session is used immediately", async () => {
+    mockAssembleSpy.mockClear();
+    const { json, profileIdHex } = recipientProfileCellJson();
+    // Simulates the device scenario: BEFORE publishMyProfile runs, the
+    // repository has no active row — the provider naturally reflects that as
+    // whatever value the caller currently holds. Here it starts as a
+    // placeholder distinct from the real id, then flips to the real id
+    // exactly like a profile getting published between two sends.
+    let current = hexToBytes("00".repeat(32));
+    const { publisher, sentBodies } = makeFixture(json, {
+      senderProfileId: () => Promise.resolve(current),
+    });
+
+    await publisher.publishText({
+      messageRowId: 30,
+      logicalMessageId: "lm-sender-id-before",
+      text: "first",
+      recipientProfileIdHex: profileIdHex,
+    });
+    expect(mockAssembleSpy).toHaveBeenCalledTimes(1);
+    expect(Array.from(mockAssembleSpy.mock.calls[0]![0].senderProfileId)).toEqual(
+      Array.from(current),
+    );
+
+    // The profile publish happens here, mid-session — no new MessagePublisher
+    // is constructed, exactly like `MessagingService` publishing once per
+    // unlock and sending many times after.
+    current = hexToBytes("aa".repeat(32));
+
+    await publisher.publishText({
+      messageRowId: 31,
+      logicalMessageId: "lm-sender-id-after",
+      text: "second",
+      recipientProfileIdHex: profileIdHex,
+    });
+    expect(mockAssembleSpy).toHaveBeenCalledTimes(2);
+    // This is the exact assertion that would have caught the bug: the SECOND
+    // send must carry the NEW real id, not the value captured before it, and
+    // certainly not 32 zero bytes.
+    expect(Array.from(mockAssembleSpy.mock.calls[1]![0].senderProfileId)).toEqual(
+      Array.from(current),
+    );
+    expect(sentBodies).toHaveLength(2);
+  });
+
+  it("rejects with a clear error and sends nothing when no profile has been published", async () => {
+    mockAssembleSpy.mockClear();
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const { publisher, store, sentBodies } = makeFixture(json, {
+      senderProfileId: () =>
+        Promise.reject(
+          new Error("No profile published yet — publish your profile before sending a message."),
+        ),
+    });
+
+    const failure = await publisher
+      .publishText({
+        messageRowId: 32,
+        logicalMessageId: "lm-no-sender-profile",
+        text: "should never be sent",
+        recipientProfileIdHex: profileIdHex,
+      })
+      .then(
+        () => {
+          throw new Error("expected publishText to fail");
+        },
+        (e: unknown) => e,
+      );
+
+    expect(failure).toBeInstanceOf(PublicationError);
+    // Pre-broadcast failure: never reached send_transaction.
+    expect((failure as PublicationError).broadcast).toBe(false);
+    expect(sentBodies).toHaveLength(0);
+    expect(store.states).toEqual(["encrypting", "failed"]);
+    // assembleTextMessage — which would embed the (nonexistent) sender id —
+    // must never have run.
+    expect(mockAssembleSpy).not.toHaveBeenCalled();
   });
 });
 

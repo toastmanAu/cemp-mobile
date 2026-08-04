@@ -18,7 +18,7 @@
  * call in `init()` is ever deleted again, this test fails.
  */
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { CempClient, MessagePublisher, type LiveCellStatus } from "@cemp/ckb";
+import { CempClient, MessagePublisher, PublicationError, type LiveCellStatus } from "@cemp/ckb";
 import { CKB_TESTNET, codec, decodeContactBundle, encodeContactBundle } from "@cemp/core";
 import { EphemeralSoftwareKeyStore, MemoryVaultStorage, SecureVaultImpl } from "@cemp/secure-vault";
 import {
@@ -197,11 +197,21 @@ describe("MessagingService.deriveIncomingAttachmentKey (Task 15a receive-side cr
       scheduler,
     });
 
-    // Fresh vault, no published profile: `MessagingService`'s own profile id
-    // (used as `ownProfileId` on decrypt) defaults to 32 zero bytes — mirror
-    // that as the envelope's recipient_profile_id so decryption's implicit
-    // AEAD binding check succeeds.
-    const ownProfileId = new Uint8Array(32);
+    // A published profile is required: `deriveIncomingAttachmentKey`'s
+    // chain-fallback decrypt path resolves this device's own profile id
+    // fresh from the repository (sender-id fix — no more 32-zero-byte
+    // default), and the AEAD binding check requires it to match the
+    // envelope's recipient id. Seed one directly via `ProfileRepository`,
+    // the same repository `#requireSenderProfileId` reads from.
+    const ownProfileIdHex = "5".repeat(64);
+    const ownProfileId = codec.hexToBytes(ownProfileIdHex);
+    const accountRow = await db.get("SELECT id FROM accounts LIMIT 1");
+    await new ProfileRepository(db).create({
+      accountId: Number(accountRow!.id),
+      profileIdHex: ownProfileIdHex,
+      typeIdHex: ownProfileIdHex,
+      state: "active",
+    });
     const senderProfileId = new Uint8Array(32).fill(9);
     const messageId = new Uint8Array(16).fill(4);
     const kemMessage = randomBytes(32);
@@ -421,5 +431,141 @@ describe("myContactBundle", () => {
     const service = await makeTestService({ publishedProfile: "bb".repeat(32) });
     const bundle = await service.myContactBundle();
     expect(decodeContactBundle(encodeContactBundle(bundle!))).toEqual(bundle);
+  });
+});
+
+/**
+ * Regression coverage for the device-reported bug: a freshly-set-up device
+ * published its profile and sent a message IN THE SAME SESSION, and the
+ * receiver filed it under `unknown-00000000` because the envelope's sender
+ * profile id was 32 zero bytes. Root cause: `senderProfileId` was read once
+ * in `MessagingService.init` and cached on a `readonly` field forever —
+ * `publishMyProfile` never refreshed it. The fix resolves it fresh, from the
+ * repository, at the point of use, and refuses to send instead of
+ * fabricating zeros when no profile exists.
+ */
+describe("MessagingService sender profile id (device bug regression: fresh lookup, no cache)", () => {
+  /** A real `queued` outgoing row — `publishText` expects the composer to
+   * have already inserted it that way (see publisher.ts's own comment). */
+  async function seedQueuedMessageRow(db: NodeSqliteAdapter): Promise<number> {
+    const contacts = new ContactRepository(db);
+    const conversations = new ConversationRepository(db);
+    const messages = new MessageRepository(db);
+    const contact = await contacts.create({ displayName: "bob", profileIdHex: "ab".repeat(32) });
+    const conversation = await conversations.getOrCreateForContact(contact.id);
+    const row = await messages.insert({
+      conversationId: conversation.id,
+      direction: "outgoing",
+      body: "hello",
+      logicalMessageId: "lm-sender-id-test",
+      state: "queued",
+    });
+    return row.id;
+  }
+
+  it("rejects publishMessage with a clear, actionable error and sends nothing when no profile has been published", async () => {
+    const vault = await unlockedTestVault();
+    const db = new NodeSqliteAdapter();
+    const service = await MessagingService.init({
+      vault,
+      db,
+      notifier: new NoopNotifier(),
+      scheduler: new InMemoryScheduler(),
+    });
+    // No profile ever exists in this test — the sender-id lookup must fail
+    // BEFORE any network call, so nothing here should ever fire.
+    const sendSpy = vi.spyOn(CempClient.prototype, "sendTransaction");
+    onTestFinished(() => {
+      sendSpy.mockRestore();
+    });
+
+    try {
+      const messageRowId = await seedQueuedMessageRow(db);
+      const failure = await service
+        .publishMessage({
+          messageRowId,
+          logicalMessageId: "lm-sender-id-test",
+          text: "hello",
+          recipientProfileIdHex: "ab".repeat(32),
+        })
+        .then(
+          () => {
+            throw new Error("expected publishMessage to reject");
+          },
+          (e: unknown) => e,
+        );
+
+      expect(failure).toBeInstanceOf(PublicationError);
+      expect((failure as PublicationError).userMessage).toMatch(/publish your profile/i);
+      expect(sendSpy).not.toHaveBeenCalled();
+      // No transaction was ever produced or journaled for this message.
+      const outgoing = await new OutgoingTransactionRepository(db).findLatestByPurpose(
+        "message:lm-sender-id-test",
+      );
+      expect(outgoing).toBeUndefined();
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("publishing a profile and then sending, within one service instance, uses the fresh real id instead of failing the missing-profile check", async () => {
+    const vault = await unlockedTestVault();
+    const db = new NodeSqliteAdapter();
+    const service = await MessagingService.init({
+      vault,
+      db,
+      notifier: new NoopNotifier(),
+      scheduler: new InMemoryScheduler(),
+    });
+
+    // The exact device scenario: a profile is published, then a message is
+    // sent, IN THE SAME `MessagingService` INSTANCE — no restart in between.
+    // (`publishMyProfile`'s on-chain broadcast is exercised elsewhere; the
+    // part relevant here — and the part that was cached and went stale — is
+    // only the local profile row it leaves behind, which this seeds through
+    // the exact same repository `publishMyProfile` itself writes to.)
+    const accountRow = await db.get("SELECT id FROM accounts LIMIT 1");
+    await new ProfileRepository(db).create({
+      accountId: Number(accountRow!.id),
+      profileIdHex: "cc".repeat(32),
+      typeIdHex: "cc".repeat(32),
+      state: "active",
+    });
+
+    // Deterministic stand-in for the network call `resolveLiveProfile` makes
+    // immediately AFTER the sender-id lookup — no real chain in this test.
+    const findCellsSpy = vi
+      .spyOn(CempClient.prototype, "findCells")
+      .mockRejectedValue(new Error("test stub: network not simulated in this unit test"));
+    onTestFinished(() => {
+      findCellsSpy.mockRestore();
+    });
+
+    try {
+      const messageRowId = await seedQueuedMessageRow(db);
+      const failure = await service
+        .publishMessage({
+          messageRowId,
+          logicalMessageId: "lm-sender-id-test",
+          text: "hello",
+          recipientProfileIdHex: "ab".repeat(32),
+        })
+        .then(
+          () => {
+            throw new Error("expected publishMessage to reject");
+          },
+          (e: unknown) => e,
+        );
+
+      // This is the assertion that would have caught the bug: with a profile
+      // now published, the sender-id precondition no longer blocks the send
+      // — execution reaches past it to resolve the RECIPIENT's profile
+      // (`findCells`), and the "publish your profile first" failure from the
+      // previous test never fires.
+      expect(findCellsSpy).toHaveBeenCalledTimes(1);
+      expect((failure as PublicationError).userMessage).not.toMatch(/publish your profile/i);
+    } finally {
+      await db.close();
+    }
   });
 });

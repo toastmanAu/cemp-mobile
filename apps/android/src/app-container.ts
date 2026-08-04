@@ -25,6 +25,8 @@ import {
 import { SecureVaultImpl } from "@cemp/secure-vault";
 import type { Notifier } from "@cemp/ui";
 import { MessagingService } from "./messaging";
+import { pickImage } from "./platform/native-image-picker";
+import { scanImageForQr, scanWithCamera } from "./platform/native-qr-scanner";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
 import { shareImage } from "./platform/native-share";
 import { createRouteTagCache } from "./platform/route-tag-cache";
@@ -35,6 +37,23 @@ import { bytesToHex } from "./platform/hex";
 import { isVaultUsable } from "./vault-liveness";
 
 export type AppContainerState = "loading" | "uninitialized" | "locked" | "ready";
+
+/**
+ * Result of {@link AppContainer.scanContactFromPhoto}, distinguishing three
+ * outcomes that collapsing into one `null` used to hide from the user:
+ * the photo picker was cancelled (silent — the user changed their mind),
+ * a photo was chosen but no QR code was found in it (its own message —
+ * "No contact code found in that image.", per the design spec's
+ * error-handling table), and a code was found (carries the decoded text
+ * onward to classification). Collapsing "cancelled" and "no-code" was the
+ * plan's original design; it is wrong here for the same reason the
+ * 2026-07-29 vault bug is in this file's own doc comment — a photo with no
+ * code in it left the button flickering with no feedback at all.
+ */
+export type ScanFromPhotoResult =
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "no-code" }
+  | { readonly kind: "text"; readonly text: string };
 
 /**
  * The local encrypted database. Named in ONE place because open and destroy
@@ -313,6 +332,28 @@ export class AppContainer {
   /** Present the OS share sheet for a contact card PNG. */
   async shareContactCard(png: Uint8Array, caption: string): Promise<void> {
     await shareImage(png, caption);
+  }
+
+  /** Present the native camera scanner. Null on cancel. */
+  async scanContactWithCamera(): Promise<string | null> {
+    return await scanWithCamera();
+  }
+
+  /**
+   * Let the user pick a photo and decode a QR from it. See
+   * {@link ScanFromPhotoResult} for why "picker cancelled" and "no code in
+   * the photo" are kept apart rather than both collapsing to `null`.
+   */
+  async scanContactFromPhoto(): Promise<ScanFromPhotoResult> {
+    const bytes = await pickImage();
+    if (bytes === null) {
+      return { kind: "cancelled" };
+    }
+    const text = await scanImageForQr(bytes);
+    if (text === null) {
+      return { kind: "no-code" };
+    }
+    return { kind: "text", text };
   }
 
   async #closeDatabase(): Promise<void> {

@@ -7,6 +7,32 @@ apply plugin: "com.facebook.react"
  * By default you don't need to apply any configuration, just uncomment the lines you need.
  */
 react {
+    // RN 0.83 ships the Hermes compiler in a SEPARATE `hermes-compiler`
+    // package, but the Gradle plugin still probes
+    // `react-native/sdks/hermesc/%OS-BIN%/hermesc`, which does not exist —
+    // and pnpm's non-hoisted layout means there is no top-level
+    // `node_modules/hermes-compiler` to fall back to either. Without this,
+    // `assembleRelease` dies at createBundleReleaseJsAndAssets with
+    // "Couldn't determine Hermesc location", so no standalone Android build
+    // can be produced at all. Resolved by glob rather than a pinned path so a
+    // hermes-compiler version bump does not silently break the release build.
+    hermesCommand = {
+        def pnpmDir = file("${rootDir}/../../../node_modules/.pnpm")
+        def pkg = pnpmDir.listFiles()?.find { it.name.startsWith("hermes-compiler@") }
+        if (pkg == null) {
+            throw new GradleException(
+                "hermes-compiler not found under ${pnpmDir} — run `pnpm install` at the repo root")
+        }
+        def osBin = System.getProperty("os.name").toLowerCase().contains("mac")
+            ? "osx-bin"
+            : "linux64-bin"
+        def binary = new File(pkg, "node_modules/hermes-compiler/hermesc/${osBin}/hermesc")
+        if (!binary.exists()) {
+            throw new GradleException("hermesc missing for this platform: ${binary}")
+        }
+        return binary.absolutePath
+    }()
+
     /* Folders */
     //   The root of your project, i.e. where "package.json" lives. Default is '../..'
     // root = file("../../")

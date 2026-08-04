@@ -1,9 +1,10 @@
 import { Script, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
-import { CKB_TESTNET, codec } from "@cemp/core";
+import { CKB_TESTNET, codec, deriveRouteTag } from "@cemp/core";
 import {
   MessagePublisher,
   ResponseLifecycle,
   assembleTextMessage,
+  buildRouteTagPrefix,
   currentRoutingEpoch,
   incomingLogicalMessageId,
   type CempMessageTypeRef,
@@ -243,6 +244,42 @@ function makeTransport(cells: unknown[]): JsonRpcTransport {
   };
 }
 
+/**
+ * A `get_cells`-recording transport, for asserting on the route tag the
+ * worker actually sends the indexer — the observable that was wrong on the
+ * devices (a route tag derived from 32 zero bytes instead of the real
+ * profile id). Mutable cell list so a test can seed cells to appear on a
+ * LATER tick (simulating a profile getting published mid-session), without
+ * constructing a second engine/transport.
+ */
+function capturingTransport(): {
+  transport: JsonRpcTransport;
+  calls: unknown[][];
+  setCells: (cells: unknown[]) => void;
+} {
+  let cells: unknown[] = [];
+  const calls: unknown[][] = [];
+  const rest = makeTransport([]);
+  return {
+    transport: {
+      call(url, method, params) {
+        if (method === "get_cells") {
+          calls.push(params as unknown[]);
+          if ((params as unknown[])[3] !== undefined) {
+            return Promise.resolve({ objects: [], last_cursor: "0x64" });
+          }
+          return Promise.resolve({ objects: cells, last_cursor: "0x64" });
+        }
+        return rest.call(url, method, params);
+      },
+    },
+    calls,
+    setCells: (next) => {
+      cells = next;
+    },
+  };
+}
+
 interface Stack {
   db: NodeSqliteAdapter;
   engine: SyncEngine;
@@ -264,6 +301,14 @@ async function makeStack(
     db?: NodeSqliteAdapter;
     engineId?: string;
     ownProfileId?: Uint8Array;
+    /**
+     * Overrides `ownProfileId` entirely with a caller-controlled provider —
+     * needed to exercise "no profile yet, then one gets published mid-
+     * session" across two ticks of the SAME engine (a fixed `ownProfileId`
+     * value can't express that; a `SyncWorkerDeps.ownProfileId` provider
+     * closure can).
+     */
+    ownProfileIdProvider?: () => Promise<Uint8Array | undefined>;
     transport?: JsonRpcTransport;
   } = {},
 ): Promise<Stack> {
@@ -327,7 +372,8 @@ async function makeStack(
     },
     notifier,
     engineId,
-    ownProfileId: opts.ownProfileId ?? BOB_PROFILE_ID,
+    ownProfileId:
+      opts.ownProfileIdProvider ?? (() => Promise.resolve(opts.ownProfileId ?? BOB_PROFILE_ID)),
     ownKemSecretKey: BOB.mlKem.secretKey,
     reclaimAttachmentGroup: (input) => {
       reclaimGroupCalls.push(input);
@@ -649,6 +695,93 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
           m.logicalMessageId.startsWith("response:"),
         ),
       ).toHaveLength(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+});
+
+/**
+ * Regression coverage for the device-reported bug's INCOMING half (the
+ * outgoing half was fixed separately — see commit 4c9035d and the fix
+ * report). `MessagingService.init` used to read the active profile ONCE and
+ * snapshot it as `SyncWorkerDeps.ownProfileId`, a plain `Uint8Array`
+ * defaulting to 32 zero bytes when no profile existed yet. On a
+ * freshly-set-up device that snapshot was taken before `publishMyProfile`
+ * ever ran, so `runIncomingDiscovery` derived a route tag from zero bytes —
+ * a tag nobody addresses — and never refreshed it for the rest of the
+ * session: the device silently discovered NO incoming messages until an app
+ * restart, even though messages sat on-chain the whole time. The fix makes
+ * `ownProfileId` a provider resolved fresh once per worker tick, and
+ * `undefined` (no profile yet) makes the worker do nothing instead of
+ * scanning a zero-derived tag.
+ */
+describe("incoming-discovery worker ownProfileId provider (device bug regression: fresh per-tick lookup)", () => {
+  it("completes cleanly, with no indexer scan at all, when no profile has been published yet", async () => {
+    const cap = capturingTransport();
+    const stack = await makeStack({
+      ownProfileIdProvider: () => Promise.resolve(undefined),
+      transport: cap.transport,
+    });
+    try {
+      // A background worker on a 15-minute timer finding no published
+      // profile is a legitimate, expected state on a freshly-set-up
+      // device — not an error. `runWorker` must report "success" (a thrown
+      // error inside `worker.run()` is caught by the engine and reported as
+      // "retry" instead — see `SyncEngine.runWorker` — so this return value
+      // is itself proof nothing threw).
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      // No route tag exists to scan for with no profile id — the worker
+      // must issue ZERO `get_cells` calls, not one derived from a
+      // fabricated zero id.
+      expect(cap.calls).toHaveLength(0);
+      expect(await stack.messages.listByState(["received"])).toHaveLength(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a profile published mid-session is scanned for on the very next tick — the real route tag, not a zero-derived one", async () => {
+    let currentProfileId: Uint8Array | undefined = undefined;
+    const cap = capturingTransport();
+    const stack = await makeStack({
+      ownProfileIdProvider: () => Promise.resolve(currentProfileId),
+      transport: cap.transport,
+    });
+    try {
+      // Tick 1: right after unlock, before `publishMyProfile` has ever run
+      // in this session (the exact device scenario). No profile — no scan.
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(cap.calls).toHaveLength(0);
+
+      // The profile finishes publishing mid-session — no new
+      // MessagingService/engine/worker is constructed, exactly matching how
+      // `MessagingService` composes a single `SyncEngine` per unlock. A
+      // message from Alice was waiting on-chain the whole time.
+      currentProfileId = BOB_PROFILE_ID;
+      const { json, messageId } = discoveryCellJson("hello after you published");
+      cap.setCells([json]);
+
+      // Tick 2: same worker, same engine, no restart.
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+
+      // This is the assertion that would have caught the bug: the route tag
+      // actually sent to the indexer for the real profile id must appear —
+      // and the route tag derived from 32 zero bytes must NOT.
+      const epoch = currentRoutingEpoch();
+      const expectedPrefix = hexFrom(buildRouteTagPrefix(deriveRouteTag(BOB_PROFILE_ID, epoch)));
+      const zeroDerivedPrefix = hexFrom(
+        buildRouteTagPrefix(deriveRouteTag(new Uint8Array(32), epoch)),
+      );
+      const sentArgs = cap.calls.map(
+        (call) => (call[0] as { script: { args: string } }).script.args,
+      );
+      expect(sentArgs).toContain(expectedPrefix);
+      expect(sentArgs).not.toContain(zeroDerivedPrefix);
+
+      // Not just the wire args — the waiting message is actually discovered.
+      const stored = await stack.messages.getByLogicalId(incomingLogicalMessageId(messageId));
+      expect(stored?.state).toBe("received");
     } finally {
       await stack.db.close();
     }

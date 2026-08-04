@@ -204,19 +204,6 @@ export class MessagingService {
     });
 
     const profiles = new ProfileRepository(db);
-    // NOTE (scope): this feeds ONLY the incoming-worker's route-tag derivation
-    // below (`ownProfileId`) and is captured once here, same as before this
-    // fix. The diagnosed device bug was specifically the OUTGOING
-    // sender-profile-id cache (`MessagePublisher`, `publishImage`,
-    // `deriveIncomingAttachmentKey`), all now resolved fresh per call via
-    // `requireActiveSenderProfileId`. Whether the incoming worker also needs a
-    // live, per-tick lookup is a separate, undiagnosed question left
-    // untouched here.
-    const initialActiveProfile = await profiles.getActiveByAccount(accountId);
-    const ownProfileId =
-      initialActiveProfile === undefined
-        ? new Uint8Array(32)
-        : bytesFrom(`0x${initialActiveProfile.profileIdHex}`);
 
     const deviceId = randomBytes(16);
     const publisher = new MessagePublisher({
@@ -257,7 +244,13 @@ export class MessagingService {
         walletLock: { codeHash: lock.codeHash, hashType: lock.hashType, args: lock.args },
         notifier,
         engineId,
-        ownProfileId,
+        // Resolved fresh from the repository on every worker tick (never
+        // cached — see `resolveActiveSenderProfileId`): a profile published
+        // mid-session must be scanned for on the very next tick, and a
+        // device with no profile yet must scan nothing rather than a
+        // zero-derived route tag nobody addresses (the incoming half of the
+        // sender-id device bug — see the fix report).
+        ownProfileId: () => resolveActiveSenderProfileId(profiles, accountId),
         ownKemSecretKey: bundle.mlKem.secretKey,
         // T17 finding F-2: the batch reclaim only spends message cells — this
         // injected closure reclaims each group's chunk cells (spec §9.5).
@@ -685,6 +678,25 @@ async function requireActiveSenderProfileId(
     );
   }
   return bytesFrom(`0x${active.profileIdHex}`);
+}
+
+/**
+ * Resolve the account's active profile id fresh from the repository, or
+ * `undefined` when none has been published yet — never a fabricated 32-zero-
+ * byte id. Feeds the incoming-discovery worker's `ownProfileId` provider
+ * (`SyncWorkerDeps.ownProfileId` in `@cemp/sync`). Deliberately non-throwing,
+ * unlike `requireActiveSenderProfileId`: sending with no profile is a user
+ * error to surface immediately, but a background worker ticking on a timer
+ * finding no published profile yet is a legitimate, expected state on a
+ * freshly-set-up device — the worker itself turns `undefined` into a clean
+ * no-op rather than a thrown error on every 15-minute tick.
+ */
+async function resolveActiveSenderProfileId(
+  profiles: ProfileRepository,
+  accountId: number,
+): Promise<Uint8Array | undefined> {
+  const active = await profiles.getActiveByAccount(accountId);
+  return active === undefined ? undefined : bytesFrom(`0x${active.profileIdHex}`);
 }
 
 /** The single account row for this device (idempotent). */

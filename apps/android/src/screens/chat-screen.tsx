@@ -2,6 +2,14 @@
  * Conversation screen (spec §16.2): left/right message bubbles with state
  * presentation from {@link messageBubbleState}, plus the composer
  * ({@link ChatComposerViewModel}). No blockchain terminology (rule 15).
+ *
+ * Two separate refresh loops, and conflating them was a device-reported bug:
+ * the 3-second `reload()` below re-reads the LOCAL DATABASE (cheap, keeps
+ * bubble states current), while fetching new messages from chain is
+ * `useSyncCadence` driving the container's autonomous sweep. Before that
+ * existed, a reply could not arrive while this screen was open — the local
+ * re-read had nothing new to find, and the only chain sync in the app was a
+ * focus effect on the conversation LIST.
  */
 
 import React, { useEffect, useRef, useState } from "react";
@@ -32,6 +40,8 @@ import {
 import { pickImage } from "../platform/native-image-picker";
 import { bytesToBase64 } from "../platform/base64";
 import { useAppContainer, type RootStackParamList } from "../navigation";
+import { useSyncCadence } from "../use-sync-cadence";
+import { CHAT_CADENCE_MS } from "../foreground-sync";
 
 /** In-memory record of a downloaded full-resolution image (never persisted). */
 interface FullImage {
@@ -248,6 +258,10 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
     }
     await reload();
   }
+
+  // Tight chain sync while the user is watching for a reply; the container
+  // restores the idle cadence on blur.
+  useSyncCadence(CHAT_CADENCE_MS);
 
   useEffect(() => {
     void reload();

@@ -35,6 +35,8 @@ import type { PlatformSeams } from "./platform/seams-core";
 import { AsyncStorageVaultStorage } from "./platform/vault-storage";
 import { bytesToHex } from "./platform/hex";
 import { isVaultUsable } from "./vault-liveness";
+import { ForegroundSync, IDLE_CADENCE_MS } from "./foreground-sync";
+import { AppState, type NativeEventSubscription } from "react-native";
 
 export type AppContainerState = "loading" | "uninitialized" | "locked" | "ready";
 
@@ -82,6 +84,8 @@ export class AppContainer {
   #state: AppContainerState = "loading";
   #listeners = new Set<() => void>();
   #poll: ReturnType<typeof setInterval> | null = null;
+  #foregroundSync: ForegroundSync | null = null;
+  #appStateSub: NativeEventSubscription | null = null;
 
   static #current: AppContainer | null = null;
 
@@ -280,7 +284,17 @@ export class AppContainer {
     this.#setState("uninitialized");
   }
 
-  /** Observe the vault's auto-lock timer firing while the app is idle. */
+  /**
+   * Observe the vault's auto-lock timer firing while the app is idle, and run
+   * autonomous foreground chain sync.
+   *
+   * The two share this start/stop pair deliberately: both must be live exactly
+   * while the vault is unlocked and the database open, and both are already
+   * torn down at all four sites that call `#stopPoll` (lock, wipe, external
+   * lock, and re-entry here). Giving foreground sync its own lifecycle would
+   * be one more thing to keep in step — and a sync sweep that outlives the
+   * database is precisely the crash `#closeDatabase` exists to avoid.
+   */
   #startPoll(): void {
     this.#stopPoll();
     this.#poll = setInterval(() => {
@@ -288,6 +302,35 @@ export class AppContainer {
         void this.#handleExternalLock();
       }
     }, 1000);
+
+    // Foreground sync only: WorkManager (`background-sync.ts`) owns the
+    // backgrounded app and enforces its own floor, so the two must not run
+    // sweeps on top of each other.
+    const sync = new ForegroundSync({
+      sync: async () => {
+        if (this.#messaging === null) return;
+        await this.#messaging.syncNow();
+      },
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (handle) => {
+        clearTimeout(handle as ReturnType<typeof setTimeout>);
+      },
+      onError: () => {
+        // Failures stay quiet: the workers retry with backoff (rule 5), and
+        // the chats screen already surfaces sync status where the user can
+        // act on it. Never log — a sync error can carry chain identifiers
+        // (rule 2).
+      },
+    });
+    this.#foregroundSync = sync;
+    sync.start(IDLE_CADENCE_MS);
+    this.#appStateSub = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        sync.resume();
+      } else {
+        sync.pause();
+      }
+    });
   }
 
   #stopPoll(): void {
@@ -295,6 +338,31 @@ export class AppContainer {
       clearInterval(this.#poll);
       this.#poll = null;
     }
+    this.#foregroundSync?.stop();
+    this.#foregroundSync = null;
+    this.#appStateSub?.remove();
+    this.#appStateSub = null;
+  }
+
+  /**
+   * Tighten or relax the autonomous sync cadence — screens declare what they
+   * need (a chat wants a reply promptly; a settings screen does not).
+   * A no-op when the vault is locked, so a screen unmounting during teardown
+   * cannot resurrect the scheduler.
+   */
+  setSyncCadence(cadenceMs: number): void {
+    this.#foregroundSync?.setCadence(cadenceMs);
+  }
+
+  /**
+   * Sweep now and resolve when it lands — for screen focus and pull-to-refresh.
+   *
+   * Goes through the scheduler so a user-initiated sweep cannot race a
+   * scheduled one; when the vault is locked there is nothing to sync and this
+   * resolves immediately rather than throwing at the caller.
+   */
+  async syncNow(): Promise<void> {
+    await this.#foregroundSync?.runNow();
   }
 
   async #handleExternalLock(): Promise<void> {

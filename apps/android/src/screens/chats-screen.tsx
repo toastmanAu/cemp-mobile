@@ -26,26 +26,30 @@ export function ChatsScreen(): React.JSX.Element {
     return unsubscribe;
   }, [vm]);
 
-  const onRefresh = useCallback(() => void vm.refresh(), [vm]);
+  /**
+   * Pull-to-refresh fetches from CHAIN, then re-reads the database.
+   *
+   * It used to call `vm.refresh()` alone — a local re-read that cannot surface
+   * anything not already synced — so pulling on this list appeared to do
+   * nothing when a message was waiting on-chain. What actually synced was
+   * navigating away and back, re-firing the focus effect below.
+   */
+  const onRefresh = useCallback(() => {
+    void container.syncNow().finally(() => void vm.refresh());
+  }, [container, vm]);
 
-  // Foreground sync on tab focus (discovery, receipts, watches, balances).
-  // Failures stay quiet here — the workers retry with backoff (rule 5).
+  // Sweep once on focus so the list is fresh the moment it appears; the
+  // container's autonomous scheduler keeps it fresh from then on. Routed
+  // through `container.syncNow()` rather than `messaging.syncNow()` so this
+  // cannot race a scheduled sweep. Failures stay quiet (rule 5) beyond the
+  // status line.
   useFocusEffect(
     useCallback(() => {
       if (!container.hasMessaging) return;
       setSyncStatus("syncing…");
-      void container.messaging
+      void container
         .syncNow()
-        .then((results) => {
-          const failed = Object.entries(results)
-            .filter(([, r]) => r !== "success")
-            .map(([id, r]) => `${id}:${r}`);
-          setSyncStatus(
-            failed.length === 0
-              ? `synced ${new Date().toLocaleTimeString()}`
-              : `failed: ${failed.join(", ")}`,
-          );
-        })
+        .then(() => setSyncStatus(`synced ${new Date().toLocaleTimeString()}`))
         .catch((e: unknown) =>
           setSyncStatus(`sync error: ${e instanceof Error ? e.message : String(e)}`),
         )

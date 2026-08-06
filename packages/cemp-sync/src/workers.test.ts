@@ -329,6 +329,7 @@ async function makeStack(
     watchedOutpoints,
     balances,
     walletId,
+    attachments,
   });
 
   const client = new CempClient({ transport: opts.transport ?? makeTransport(opts.cells ?? []) });
@@ -1140,8 +1141,18 @@ describe("attachment group reclaim (T17 finding F-2)", () => {
     };
   }
 
-  /** Insert an outgoing image row and walk it to `reclaimed` via legal edges. */
-  async function insertReclaimedImageMessage(stack: Awaited<ReturnType<typeof makeStack>>) {
+  /**
+   * Insert an outgoing image row and walk it to `reclaimed` via legal edges.
+   *
+   * `remoteDownloaded` models the recipient's spec §8 `0x05` receipt — the
+   * confirmation that it actually fetched the attachment BYTES. Chunk reclaim
+   * is gated on it, so it must be set explicitly by every test that expects
+   * chunks to be spent.
+   */
+  async function insertReclaimedImageMessage(
+    stack: Awaited<ReturnType<typeof makeStack>>,
+    options: { remoteDownloaded: boolean } = { remoteDownloaded: true },
+  ) {
     const alice = await stack.contacts.create({
       displayName: "alice",
       profileIdHex: "ab".repeat(32),
@@ -1177,6 +1188,9 @@ describe("attachment group reclaim (T17 finding F-2)", () => {
       byteLength: 3800,
       manifest: codec.encodeAttachmentManifestV1(testManifest()),
     });
+    if (options.remoteDownloaded) {
+      await stack.attachments.markRemoteDownloaded(m.id);
+    }
     return m;
   }
 
@@ -1193,6 +1207,29 @@ describe("attachment group reclaim (T17 finding F-2)", () => {
         { txHash: `0x${"22".repeat(32)}`, index: "0x0" }, // chunk 0
         { txHash: `0x${"22".repeat(32)}`, index: "0x1" }, // chunk 1
       ]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("does NOT reclaim chunks until the recipient confirms the download", async () => {
+    const stack = await makeStack();
+    try {
+      // A message fully reclaimed on the ENVELOPE ack (0x01) alone: the
+      // recipient received it but has not tapped to download the image.
+      await insertReclaimedImageMessage(stack, { remoteDownloaded: false });
+      expect(await stack.engine.runWorker("reclaim-batch")).toBe("success");
+      // Spending the chunks here destroys the image on-chain while the
+      // recipient still shows "Tap to load" — unrecoverable, since no
+      // plaintext copy is kept anywhere (rule 3).
+      expect(stack.reclaimGroupCalls).toHaveLength(0);
+
+      // Once the 0x05 receipt lands, the same pass reclaims normally.
+      await stack.attachments.markRemoteDownloaded(
+        (await stack.messages.getByLogicalId("img-reclaim-1"))!.id,
+      );
+      expect(await stack.engine.runWorker("reclaim-batch")).toBe("success");
+      expect(stack.reclaimGroupCalls).toHaveLength(1);
     } finally {
       await stack.db.close();
     }

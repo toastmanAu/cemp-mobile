@@ -105,6 +105,12 @@ export interface LifecycleStore {
   markWatchSpent(txHash: string, outpointIndex: number, spentByTxHash: string): Promise<void>;
   pruneSpentWatches(): Promise<number>;
 
+  /**
+   * Record that the recipient confirmed downloading this message's attachment
+   * (spec §8 `0x05`), which is what permits its chunk cells to be reclaimed.
+   */
+  markAttachmentRemoteDownloaded(rowId: number): Promise<void>;
+
   /** Return reclaimed capacity to the available balance (task 8). */
   releaseReclaimedCapacity(amountShannon: string): Promise<void>;
   /** Write off reclaimable capacity burned as the reclaim tx's fee (review E7). */
@@ -146,14 +152,37 @@ export class ResponseLifecycle {
   /* ------------------------------------ A) ack processing (tasks 4–5) -- */
 
   /**
-   * Apply the receipts of a decrypted incoming reply: each 0x01 receipt
-   * acknowledging one of OUR outgoing envelope message ids advances that
-   * message to `reclaim_queued`. Unknown ids are skipped silently (the reply
-   * may reference messages of another device). Returns the acked row ids.
+   * Apply the receipts of a decrypted incoming reply.
+   *
+   * TWO receipt kinds, deliberately distinct (spec §8):
+   *
+   * - `0x01 Downloaded` — the recipient received and decrypted the ENVELOPE.
+   *   Advances that message to `reclaim_queued`, which releases the message
+   *   cell.
+   * - `0x05 AttachmentDownloaded` — the recipient fetched the attachment
+   *   BYTES. Only this permits the chunk cells to be reclaimed.
+   *
+   * Collapsing the two is a data-loss bug, not a simplification: images are
+   * lazily fetched on tap, so a `0x01` arrives long before (or instead of) any
+   * download. Reclaiming chunks on `0x01` destroyed the image on-chain while
+   * the recipient still showed "Tap to load", leaving a tap that could only
+   * ever fail. Device-reported and unrecoverable once the cells are spent.
+   *
+   * Unknown ids are skipped silently (the reply may reference messages of
+   * another device). Returns the acked row ids.
    */
   async processAcknowledgements(incoming: IncomingTextMessage): Promise<number[]> {
     const acked: number[] = [];
     for (const receipt of incoming.receipts) {
+      if (receipt.status === 0x05) {
+        const target = await this.#deps.store.findOutgoingByEnvelopeMessageId(
+          bytesToHex(receipt.messageId),
+        );
+        if (target !== undefined) {
+          await this.#deps.store.markAttachmentRemoteDownloaded(target.rowId);
+        }
+        continue;
+      }
       if (receipt.status !== 0x01) {
         continue;
       }

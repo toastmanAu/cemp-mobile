@@ -27,9 +27,13 @@
  *   is encrypted). Chain re-derivation depended on the sender-reclaimable
  *   message cell (rule 9), which let the sender permanently brick the
  *   receiver's tap-to-download after ack.
+ * - 9: attachments.remote_downloaded — the recipient's `0x05
+ *   AttachmentDownloaded` receipt (spec §8), which is what permits chunk-cell
+ *   reclaim. Reclaiming on the plain `0x01` envelope ack destroyed images
+ *   before a lazily-tapped download could ever fetch them.
  */
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [

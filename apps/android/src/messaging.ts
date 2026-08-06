@@ -201,6 +201,7 @@ export class MessagingService {
       watchedOutpoints,
       balances,
       walletId,
+      attachments,
     });
 
     const profiles = new ProfileRepository(db);
@@ -613,11 +614,62 @@ export class MessagingService {
     manifest: codec.AttachmentManifestV1,
   ): Promise<DownloadedAttachment> {
     const key = await this.deriveIncomingAttachmentKey(messageId);
+    let downloaded: DownloadedAttachment;
     try {
-      return await downloadAttachment(this.#client, manifest, key);
+      downloaded = await downloadAttachment(this.#client, manifest, key);
     } finally {
       key.fill(0);
     }
+    // Tell the sender its chunk cells are safe to reclaim (spec §8 `0x05`).
+    // ONLY after a verified download: the manifest checks inside
+    // `downloadAttachment` (cipher hash, size, content hash, MIME sniff) all
+    // ran, so the bytes are genuinely in hand. Queuing this on tap rather than
+    // on success would authorise destroying an image we failed to fetch.
+    //
+    // Best-effort: a failure here costs the sender some locked capacity until
+    // the next successful download ack, which is the safe direction to fail.
+    // The user's image is already downloaded and must not appear to fail.
+    try {
+      await this.#queueAttachmentAck(messageId);
+    } catch {
+      // Deliberately swallowed — see above. Never surfaced to the screen.
+    }
+    return downloaded;
+  }
+
+  /**
+   * Queue the `0x05 AttachmentDownloaded` confirmation as an outgoing row the
+   * response-sender worker publishes, mirroring the envelope auto-ack
+   * (`response:`) but with the `ack-attachment:` prefix that selects the 0x05
+   * status. Idempotent on the logical id, so re-downloading an image does not
+   * publish a second ack.
+   */
+  async #queueAttachmentAck(messageId: number): Promise<void> {
+    const message = await this.#messages.getById(messageId);
+    if (message === undefined || message.direction !== "incoming") {
+      return;
+    }
+    const logicalMessageId = `ack-attachment:${message.logicalMessageId}`;
+    if ((await this.#messages.getByLogicalId(logicalMessageId)) !== undefined) {
+      return;
+    }
+    const chainRef = await this.#messages.getChainRef(messageId);
+    if (chainRef?.txHash == null || chainRef.outpointIndex === null) {
+      // Without the original cell's outpoint the worker cannot address the
+      // reply; the sender keeps its chunks, which is the safe failure.
+      return;
+    }
+    const row = await this.#messages.insert({
+      conversationId: message.conversationId,
+      direction: "outgoing",
+      body: "",
+      logicalMessageId,
+      state: "queued",
+    });
+    await this.#messages.setChainRef(row.id, {
+      replyToTxHash: chainRef.txHash,
+      replyToOutpointIndex: chainRef.outpointIndex,
+    });
   }
 
   /** Wallet balances for the wallet tab (spec §5.5 categories). */

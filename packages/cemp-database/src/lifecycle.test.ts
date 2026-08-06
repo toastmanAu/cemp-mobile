@@ -14,6 +14,7 @@ import { NodeSqliteAdapter } from "./node.js";
 import { BalanceRepository } from "./repositories/balances.js";
 import { ContactRepository } from "./repositories/contacts.js";
 import { ConversationRepository } from "./repositories/conversations.js";
+import { AttachmentRepository } from "./repositories/attachments.js";
 import { MessageRepository } from "./repositories/messages.js";
 import { OutgoingTransactionRepository } from "./repositories/outgoing-transactions.js";
 import { DatabasePublicationStore } from "./repositories/publication-store.js";
@@ -152,11 +153,13 @@ async function makeDb() {
   const outgoingTxs = new OutgoingTransactionRepository(db);
   const watchedOutpoints = new WatchedOutpointRepository(db);
   const balances = new BalanceRepository(db);
+  const attachments = new AttachmentRepository(db);
   const walletId = await balances.ensureWallet("main");
   const store = new DatabasePublicationStore(messages, outgoingTxs, {
     watchedOutpoints,
     balances,
     walletId,
+    attachments,
   });
   return {
     db,
@@ -167,6 +170,7 @@ async function makeDb() {
     watchedOutpoints,
     balances,
     walletId,
+    attachments,
     store,
   };
 }
@@ -235,6 +239,64 @@ describe("ResponseLifecycle.processAcknowledgements (tasks 4–5)", () => {
       const acked = await lifecycle.processAcknowledgements(reply);
       expect(acked).toEqual([message.id]);
       expect((await stack.messages.getById(message.id))?.state).toBe("reclaim_queued");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("records a 0x05 attachment receipt without advancing the message state", async () => {
+    const stack = await makeDb();
+    try {
+      const { client, signer } = makeChain(new Map());
+      const lifecycle = new ResponseLifecycle({
+        client,
+        signer,
+        messageType: MESSAGE_TYPE_REF,
+        store: stack.store,
+      });
+      const conv = await makeOutgoingConversation(stack);
+      const message = await stack.messages.insert({
+        conversationId: conv.id,
+        direction: "outgoing",
+        body: null,
+        logicalMessageId: "lm-attachment-ack",
+      });
+      for (const state of OUTGOING_HAPPY_PATH) {
+        await stack.messages.transitionState(message.id, state);
+      }
+      const envId = hexToBytes("abcdefabcdefabcdefabcdefabcdefab");
+      await stack.messages.setEnvelopeMessageId(message.id, "abcdefabcdefabcdefabcdefabcdefab");
+      await stack.attachments.create({
+        messageId: message.id,
+        kind: "image",
+        byteLength: 1234,
+        manifest: new Uint8Array([1, 2, 3]),
+      });
+      const stateBefore = (await stack.messages.getById(message.id))?.state;
+
+      const reply: IncomingTextMessage = {
+        contentType: 0x01,
+        attachmentManifests: [],
+        attachmentKey: new Uint8Array(32),
+        messageId: hexToBytes("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+        conversationId: hexToBytes("99".repeat(32)),
+        senderProfileId: hexToBytes("88".repeat(32)),
+        text: "",
+        replyToMessageId: envId,
+        replyToOutpoint: null,
+        receipts: [{ messageId: envId, status: 0x05 }],
+        clientTimestamp: 0n,
+        senderDeviceId: hexToBytes("77".repeat(16)),
+      };
+      const acked = await lifecycle.processAcknowledgements(reply);
+
+      // A 0x05 confirms the BYTES were fetched — it releases the chunk cells
+      // and nothing else. It is not an envelope ack, so it must not walk the
+      // message toward reclaim on its own.
+      expect(acked).toEqual([]);
+      expect((await stack.messages.getById(message.id))?.state).toBe(stateBefore);
+      const attachment = (await stack.attachments.listForMessage(message.id))[0];
+      expect(attachment?.remoteDownloaded).toBe(true);
     } finally {
       await stack.db.close();
     }

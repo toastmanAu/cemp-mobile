@@ -7,9 +7,10 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v8: attachments.attachment_key — incoming attachment keys persisted at
-    // discovery (sender-reclaim griefing fix).
-    expect(SCHEMA_VERSION).toBe(8);
+    // v9: attachments.remote_downloaded — the recipient's `0x05` receipt,
+    // which gates chunk-cell reclaim so a lazily-downloaded image is not
+    // destroyed on the envelope ack alone.
+    expect(SCHEMA_VERSION).toBe(9);
   });
 
   it("covers the spec §11 core tables", () => {

@@ -32,6 +32,7 @@ import type { Attachment, Contact, Message } from "@cemp/database";
 import { codec } from "@cemp/core";
 import {
   ChatComposerViewModel,
+  classifyImageDownloadError,
   imageBubbleState,
   messageBubbleState,
   type BubbleStatus,
@@ -101,6 +102,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
     new Map(),
   );
   const [downloadStates, setDownloadStates] = useState<Map<number, ImageDownloadState>>(new Map());
+  /** Why a download failed, per message — cleared when a retry starts. */
+  const [downloadErrors, setDownloadErrors] = useState<Map<number, string>>(new Map());
   const [fullImages, setFullImages] = useState<Map<number, FullImage>>(new Map());
   // Double-tap guard: attach/send/retry all publish; a second tap while one is
   // in flight must not start a parallel publish of the same (or a second) row.
@@ -190,6 +193,12 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
   async function loadFull(messageId: number, manifest: codec.AttachmentManifestV1): Promise<void> {
     if (downloadsInFlight.current.has(messageId)) return; // double-tap: one download at a time
     downloadsInFlight.current.add(messageId);
+    setDownloadErrors((prev) => {
+      if (!prev.has(messageId)) return prev;
+      const next = new Map(prev);
+      next.delete(messageId);
+      return next;
+    });
     setDownloadState(messageId, "loading");
     try {
       const full = await container.messaging.downloadImageAttachment(messageId, manifest);
@@ -199,8 +208,20 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
         return next;
       });
       setDownloadState(messageId, "loaded");
-    } catch {
-      setDownloadState(messageId, "error");
+    } catch (e: unknown) {
+      // Say WHY. This catch used to discard the error and show a bare "Tap to
+      // retry", which is how an image whose chunk cells had been reclaimed —
+      // permanently unfetchable — presented identically to a dropped
+      // connection, and the difference matters: one is worth retrying and the
+      // other never will be. No payload content reaches the message (rule 2);
+      // the copy is jargon-free (rule 15).
+      const classified = classifyImageDownloadError(e);
+      setDownloadErrors((prev) => {
+        const next = new Map(prev);
+        next.set(messageId, classified.text);
+        return next;
+      });
+      setDownloadState(messageId, classified.state);
     } finally {
       downloadsInFlight.current.delete(messageId);
     }
@@ -358,6 +379,7 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
                   outgoing={outgoing}
                   manifest={manifest}
                   downloadState={downloadStates.get(item.id) ?? "idle"}
+                  downloadError={downloadErrors.get(item.id)}
                   full={fullImages.get(item.id)}
                   statusLabel={label}
                   canRetry={bubble.canRetry}
@@ -414,6 +436,8 @@ interface ImageBubbleProps {
   readonly full: FullImage | undefined;
   readonly statusLabel: string;
   readonly canRetry: boolean;
+  /** Why the last download attempt failed, if it did. */
+  readonly downloadError: string | undefined;
   readonly onTap: () => void;
 }
 
@@ -430,6 +454,7 @@ function ImageBubble({
   full,
   statusLabel,
   canRetry,
+  downloadError,
   onTap,
 }: ImageBubbleProps): React.JSX.Element {
   const presentation = imageBubbleState({
@@ -477,6 +502,9 @@ function ImageBubble({
           <Text style={[styles.imageAffordance, styles.statusRetry]}>Tap to retry</Text>
         ) : null}
       </Pressable>
+      {downloadError !== undefined ? (
+        <Text style={[styles.status, styles.statusRetry]}>{downloadError}</Text>
+      ) : null}
       {statusLabel !== "" ? (
         <Text style={[styles.status, canRetry ? styles.statusRetry : null]}>{statusLabel}</Text>
       ) : null}

@@ -446,6 +446,26 @@ async function queueAcknowledgement(
 /* ── response sender (§12 worker 6) ──────────────────────────────────────── */
 
 /**
+ * The two receipt-carrying response kinds, keyed by logical-id prefix.
+ *
+ * `response:` is the envelope ack (ADR 0005) — "I received and decrypted your
+ * message" — and releases the sender's message cell. `ack-attachment:` is the
+ * separate confirmation that the attachment BYTES were fetched, and is the
+ * only thing that releases the sender's chunk cells. They are distinct rows so
+ * a device that never taps to download simply never sends the second one, and
+ * the sender correctly keeps the image alive.
+ */
+const RECEIPT_KINDS = [
+  { prefix: "response:", status: 0x01 },
+  { prefix: "ack-attachment:", status: 0x05 },
+] as const;
+
+/** The receipt kind a queued outgoing row encodes, or undefined if it is not one. */
+function receiptKindOf(logicalMessageId: string): (typeof RECEIPT_KINDS)[number] | undefined {
+  return RECEIPT_KINDS.find((kind) => logicalMessageId.startsWith(kind.prefix));
+}
+
+/**
  * Drain queued acknowledgement responses (ADR 0005). A response is a normal
  * OUTGOING `queued` row whose logical id is `response:<originalIncomingLogicalId>`
  * with the original cell's outpoint in its chain ref (reply_to fields). Each is
@@ -455,7 +475,7 @@ async function queueAcknowledgement(
  */
 async function runResponseSender(deps: SyncWorkerDeps): Promise<void> {
   const queued = (await deps.messages.listByState(["queued"])).filter(
-    (m) => m.direction === "outgoing" && m.logicalMessageId.startsWith("response:"),
+    (m) => m.direction === "outgoing" && receiptKindOf(m.logicalMessageId) !== undefined,
   );
   for (const response of queued) {
     // The response's chain ref names the ORIGINAL cell (reply_to fields),
@@ -464,11 +484,12 @@ async function runResponseSender(deps: SyncWorkerDeps): Promise<void> {
     if (chainRef?.replyToTxHash == null || chainRef.replyToOutpointIndex === null) {
       continue; // not fully prepared — the app completes the row first
     }
-    if (!response.logicalMessageId.startsWith("response:")) {
+    const kind = receiptKindOf(response.logicalMessageId);
+    if (kind === undefined) {
       continue;
     }
     const original = await deps.messages.getByLogicalId(
-      response.logicalMessageId.slice("response:".length),
+      response.logicalMessageId.slice(kind.prefix.length),
     );
     if (original?.envelopeMessageIdHex == null) {
       continue;
@@ -489,8 +510,15 @@ async function runResponseSender(deps: SyncWorkerDeps): Promise<void> {
         messageId: originalEnvelopeMessageId,
         outPoint: { txHash: chainRef.replyToTxHash, index: chainRef.replyToOutpointIndex },
       },
-      receipts: [{ messageId: originalEnvelopeMessageId, status: 0x01 }],
+      receipts: [{ messageId: originalEnvelopeMessageId, status: kind.status }],
     });
+    // An attachment ack is a bare confirmation that the bytes were fetched: it
+    // carries no reply semantics, so it must NOT re-walk the original's state
+    // machine or register a second watch — the envelope ack already did both
+    // when the message first arrived.
+    if (kind.status !== 0x01) {
+      continue;
+    }
     // Advance the ORIGINAL incoming message to response_sent, then register
     // the watch on the original cell (Phase 8 task 9). Idempotent walks.
     for (const state of ["displayed", "response_queued", "response_sent"] as const) {
@@ -673,6 +701,16 @@ async function reclaimAttachmentGroups(deps: SyncWorkerDeps): Promise<void> {
         (a) => a.manifest !== null,
       );
       if (withManifest?.manifest == null) {
+        continue;
+      }
+      // THE CHUNK CELLS ARE THE IMAGE. Reclaim them only once the recipient
+      // has confirmed downloading the bytes (spec §8 `0x05`), never merely on
+      // the envelope ack that reclaimed the message cell — images are fetched
+      // lazily on tap, so the two events can be far apart or the download may
+      // never happen at all. Spending these early destroyed the image while
+      // the recipient still showed "Tap to load"; the bytes exist nowhere else
+      // (rule 3 keeps no plaintext copy), so it is unrecoverable.
+      if (!withManifest.remoteDownloaded) {
         continue;
       }
       const manifest = codec.decodeAttachmentManifestV1(withManifest.manifest);

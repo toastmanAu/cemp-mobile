@@ -30,6 +30,17 @@ export interface Attachment {
    * Null for text messages, outgoing attachments, and pre-v8 rows.
    */
   readonly attachmentKey: Uint8Array | null;
+  /**
+   * OUTGOING attachments only (schema v9): the recipient has confirmed, with a
+   * spec §8 `0x05 AttachmentDownloaded` receipt, that it fetched the bytes.
+   *
+   * This gates chunk-cell reclaim. A plain `0x01` receipt means only that the
+   * message envelope was received — the recipient may not have tapped to
+   * download yet — and reclaiming chunks on that basis destroyed the image
+   * before it could ever be fetched (device-reported "tap to load" then
+   * permanently "tap to retry").
+   */
+  readonly remoteDownloaded: boolean;
   readonly createdAtMs: number;
 }
 
@@ -55,6 +66,7 @@ function rowToAttachment(row: SqlRow): Attachment {
       row.attachment_key === null || row.attachment_key === undefined
         ? null
         : (row.attachment_key as Uint8Array),
+    remoteDownloaded: Number(row.remote_downloaded ?? 0) !== 0,
     createdAtMs: Number(row.created_at_ms),
   };
 }
@@ -152,6 +164,17 @@ export class AttachmentRepository {
       [...messageIds],
     );
     return rows.map(rowToAttachment);
+  }
+
+  /**
+   * Record that the recipient confirmed downloading this message's attachment
+   * (spec §8 `0x05`). Idempotent — a repeated receipt is a no-op — and a
+   * no-op for messages with no attachment row.
+   */
+  async markRemoteDownloaded(messageId: number): Promise<void> {
+    await this.#db.run("UPDATE attachments SET remote_downloaded = 1 WHERE message_id = ?", [
+      messageId,
+    ]);
   }
 
   /** Idempotent per (attachment, chunk_index): re-registering updates in place. */

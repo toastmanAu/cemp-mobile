@@ -43,6 +43,23 @@ function hexToBytes(hex: string): Uint8Array {
  * Download + validate + decrypt one attachment. `attachmentKey` comes from
  * the envelope decryption (never from the manifest or the chain).
  */
+/**
+ * A chunk cell is gone from chain, so the image can never be fetched — as
+ * opposed to a transient RPC or network failure, which retrying may fix.
+ *
+ * Typed rather than left as a message string because the UI must not offer
+ * "tap to retry" for this: the bytes exist nowhere (rule 3 keeps no plaintext
+ * copy), so every retry is guaranteed to fail. Distinguishing the two is the
+ * difference between a useful prompt and one that lies to the user.
+ */
+export class AttachmentUnavailableError extends Error {
+  readonly unavailable = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "AttachmentUnavailableError";
+  }
+}
+
 export async function downloadAttachment(
   client: CempClient,
   manifest: codec.AttachmentManifestV1,
@@ -61,7 +78,9 @@ export async function downloadAttachment(
       index: `0x${outpoint.index.toString(16)}`,
     });
     if (status.status !== "live") {
-      throw new Error(`attachment chunk ${String(i)} is not live (reclaimed or pruned)`);
+      throw new AttachmentUnavailableError(
+        `attachment chunk ${String(i)} is not live (reclaimed or pruned)`,
+      );
     }
     const chunkData = hexToBytes(status.cell.data);
     // A hostile chunk cell can declare arbitrary data — cap each chunk to

@@ -12,6 +12,7 @@
 import type { LifecycleStore, LifecycleWatch, PublicationStore } from "@cemp/ckb";
 import { DatabaseError } from "../errors.js";
 import type { MessageState } from "../message-states.js";
+import type { AttachmentRepository } from "./attachments.js";
 import type { BalanceRepository } from "./balances.js";
 import type { MessageRepository } from "./messages.js";
 import type { OutgoingTransactionRepository } from "./outgoing-transactions.js";
@@ -23,6 +24,11 @@ export interface LifecycleRepos {
   readonly balances: BalanceRepository;
   /** Wallet whose balance row carries the capacity accounting. */
   readonly walletId: number;
+  /**
+   * Needed to record a `0x05 AttachmentDownloaded` receipt, which is what
+   * permits an outgoing message's chunk cells to be reclaimed (schema v9).
+   */
+  readonly attachments: AttachmentRepository;
 }
 
 export class DatabasePublicationStore implements PublicationStore, LifecycleStore {
@@ -48,6 +54,18 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
       );
     }
     return this.#lifecycle;
+  }
+
+  /**
+   * Record the recipient's `0x05 AttachmentDownloaded` receipt (schema v9).
+   *
+   * Gates chunk-cell reclaim: the plain `0x01` envelope ack means only that
+   * the message was received, and reclaiming an image's chunks on that basis
+   * destroyed it before the recipient — who fetches lazily, on tap — could
+   * ever download it.
+   */
+  async markAttachmentRemoteDownloaded(rowId: number): Promise<void> {
+    await this.#requireLifecycle().attachments.markRemoteDownloaded(rowId);
   }
 
   /* ------------------------------------------------ publication (P7) -- */

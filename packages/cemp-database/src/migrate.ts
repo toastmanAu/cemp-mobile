@@ -236,6 +236,11 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "attachments: persist the incoming attachment key (sender-reclaim griefing fix)",
     statements: ["ALTER TABLE attachments ADD COLUMN attachment_key BLOB"],
   },
+  {
+    version: 9,
+    description: "attachments: recipient-confirmed download gates chunk reclaim (spec §8 0x05)",
+    statements: ["ALTER TABLE attachments ADD COLUMN remote_downloaded INTEGER NOT NULL DEFAULT 0"],
+  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

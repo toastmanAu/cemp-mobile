@@ -570,9 +570,12 @@ export class MessagingService {
     const stored = (await this.#attachments.listForMessage(messageId)).find(
       (a) => a.attachmentKey !== null,
     );
-    if (stored?.attachmentKey != null) {
+    if (stored?.attachmentKey != null && stored.attachmentKey.length === 32) {
       // Return a COPY: downloadImageAttachment wipes the returned buffer in
       // `finally`, and that wipe must not zero the repository row's bytes.
+      // A stored key of any other length is corrupt or predates the current
+      // derivation — it can never decrypt this attachment, so fall through to
+      // the chain re-derivation below instead of failing inside the AEAD.
       return stored.attachmentKey.slice();
     }
     // Legacy fallback (pre-v8 rows, or a row stored before the key column
@@ -625,7 +628,16 @@ export class MessagingService {
     try {
       downloaded = await downloadAttachment(this.#client, manifest, key);
     } finally {
-      key.fill(0);
+      // Best-effort wipe ONLY: a throw here (e.g. a key that is not a
+      // Uint8Array on some platform) would REPLACE the in-flight download
+      // error with a bare TypeError — exactly the 2026-08-15 device defect,
+      // which cost a full investigation because the real error was masked on
+      // every tap. Zeroisation stays best-effort by design.
+      try {
+        key.fill(0);
+      } catch {
+        // Never mask the caller's real outcome.
+      }
     }
     // Tell the sender its chunk cells are safe to reclaim (spec §8 `0x05`).
     // ONLY after a verified download: the manifest checks inside

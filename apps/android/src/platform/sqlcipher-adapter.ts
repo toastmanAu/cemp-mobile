@@ -14,7 +14,7 @@
 
 import { open, type DB, type QueryResult, type Scalar } from "@op-engineering/op-sqlite";
 import type { SqlParams, SqlRow, SqlRunResult, SqliteAdapter } from "@cemp/database";
-import { AsyncMutex, DatabaseError } from "@cemp/database";
+import { AsyncMutex, DatabaseError, normalizeBlobCells } from "@cemp/database";
 
 export interface OpSqlCipherOptions {
   /** Database file name inside the app's database directory. */
@@ -29,9 +29,12 @@ function toScalarParams(params: SqlParams): Scalar[] {
 }
 
 function toRows(result: QueryResult): SqlRow[] {
-  // Scalar (incl. ArrayBufferView) and SqlValue overlap on the wire shapes we
-  // use; the cast is safe for our schema (INTEGER/TEXT/BLOB columns).
-  return result.rows as unknown as SqlRow[];
+  // op-sqlite returns every BLOB cell as a bare ArrayBuffer, NOT the
+  // Uint8Array that SqlValue promises (cpp/utils.cpp). Casting it through
+  // unconverted is what handed downloadImageAttachment an ArrayBuffer key and
+  // produced the 2026-08-15 "TypeError: undefined is not a function" on
+  // device. Normalize here so every repository sees the contract shape.
+  return normalizeBlobCells(result.rows as Record<string, unknown>[]) as SqlRow[];
 }
 
 /** Bind a statement result's rowsAffected/insertId to our run shape. */

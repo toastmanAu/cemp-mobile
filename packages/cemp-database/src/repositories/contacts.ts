@@ -9,6 +9,7 @@
 
 import type { SqliteAdapter, SqlRow } from "../adapter.js";
 import { DatabaseError } from "../errors.js";
+import { blobToBytes } from "../blob.js";
 
 export interface Contact {
   readonly id: number;
@@ -46,10 +47,9 @@ function rowToContact(row: SqlRow, includeAvatar: boolean): Contact | ContactWit
   if (!includeAvatar) {
     return base;
   }
-  const avatar = row.avatar;
   const result: ContactWithAvatar = {
     ...base,
-    avatar: avatar === null || avatar === undefined ? null : (avatar as Uint8Array),
+    avatar: blobToBytes(row.avatar),
   };
   return result;
 }
@@ -275,13 +275,11 @@ export class ContactRepository {
     if (row === undefined) {
       return undefined;
     }
-    const blob = (v: unknown): Uint8Array | null =>
-      v === null || v === undefined ? null : (v as Uint8Array);
     const text = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
     return {
       profileTypeIdHex: text(row.profile_type_id_hex),
-      mlDsaPublicKey: blob(row.ml_dsa_public_key),
-      mlKemPublicKey: blob(row.ml_kem_public_key),
+      mlDsaPublicKey: blobToBytes(row.ml_dsa_public_key),
+      mlKemPublicKey: blobToBytes(row.ml_kem_public_key),
       fingerprint: text(row.fingerprint),
       trustVerdict: text(row.trust_verdict),
     };

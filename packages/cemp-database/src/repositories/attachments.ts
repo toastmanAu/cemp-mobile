@@ -16,6 +16,7 @@
 
 import type { SqliteAdapter, SqlRow } from "../adapter.js";
 import { DatabaseError } from "../errors.js";
+import { blobToBytes } from "../blob.js";
 
 export interface Attachment {
   readonly id: number;
@@ -60,12 +61,8 @@ function rowToAttachment(row: SqlRow): Attachment {
     kind: String(row.kind),
     byteLength: Number(row.byte_length),
     state: String(row.state),
-    manifest:
-      row.manifest === null || row.manifest === undefined ? null : (row.manifest as Uint8Array),
-    attachmentKey:
-      row.attachment_key === null || row.attachment_key === undefined
-        ? null
-        : (row.attachment_key as Uint8Array),
+    manifest: blobToBytes(row.manifest),
+    attachmentKey: blobToBytes(row.attachment_key),
     remoteDownloaded: Number(row.remote_downloaded ?? 0) !== 0,
     createdAtMs: Number(row.created_at_ms),
   };

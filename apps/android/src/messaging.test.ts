@@ -39,6 +39,7 @@ import {
   randomBytes,
 } from "@cemp/crypto";
 import { MessagingService } from "./messaging";
+import { bytesToBase64 } from "./platform/base64";
 
 /** Tiny KDF so vault creation stays fast in tests (mirrors vault.test.ts). */
 const TINY_KDF = { alg: "argon2id", m: 8, t: 1, p: 1 } as const;
@@ -174,6 +175,115 @@ describe("MessagingService.deriveIncomingAttachmentKey (Task 15a receive-side cr
       const secondRead = await service.deriveIncomingAttachmentKey(row.id);
       expect(Array.from(secondRead)).toEqual(Array.from(storedKey));
       secondRead.fill(0);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("reads a stored key that the driver returns as an ArrayBuffer (op-sqlite) — the 2026-08-15 device defect", async () => {
+    const vault = await unlockedTestVault();
+    const db = new NodeSqliteAdapter();
+    const scheduler = new InMemoryScheduler();
+
+    const service = await MessagingService.init({
+      vault,
+      db,
+      notifier: new NoopNotifier(),
+      scheduler,
+    });
+
+    const contacts = new ContactRepository(db);
+    const conversations = new ConversationRepository(db);
+    const messages = new MessageRepository(db);
+    const attachments = new AttachmentRepository(db);
+    const contact = await contacts.create({ displayName: "sender", profileIdHex: "9".repeat(64) });
+    const conversation = await conversations.getOrCreateForContact(contact.id);
+    const row = await messages.insert({
+      conversationId: conversation.id,
+      direction: "incoming",
+      body: "",
+      logicalMessageId: "stored-key-shape-test",
+    });
+    const storedKey = randomBytes(32);
+    await attachments.create({
+      messageId: row.id,
+      kind: "image",
+      byteLength: 100,
+      attachmentKey: storedKey,
+    });
+
+    // Simulate the driver the device actually runs: op-sqlite returns every
+    // BLOB cell as a bare ArrayBuffer (cpp/utils.cpp), not a Uint8Array. On
+    // the Retroid that shape reached downloadImageAttachment, whose
+    // finally-wipe called `key.fill(0)` on it, threw "TypeError: undefined is
+    // not a function", and — because a throw in a finally replaces the
+    // in-flight outcome — masked everything on every tap (runbook Phase 2D).
+    const toOpSqliteShape = (r: Record<string, unknown>): Record<string, unknown> =>
+      Object.fromEntries(
+        Object.entries(r).map(([k, v]) => [
+          k,
+          v instanceof Uint8Array ? v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) : v,
+        ]),
+      );
+    const realAll = db.all.bind(db);
+    const realGet = db.get.bind(db);
+    const allSpy = vi
+      .spyOn(db, "all")
+      .mockImplementation(
+        async (sql, params) =>
+          (await realAll(sql, params)).map(toOpSqliteShape) as Awaited<ReturnType<typeof db.all>>,
+      );
+    const getSpy = vi.spyOn(db, "get").mockImplementation(async (sql, params) => {
+      const r = await realGet(sql, params);
+      return (r === undefined ? r : toOpSqliteShape(r)) as Awaited<ReturnType<typeof db.get>>;
+    });
+
+    const spy = vi.spyOn(CempClient.prototype, "getLiveCell");
+    onTestFinished(() => {
+      spy.mockRestore();
+      allSpy.mockRestore();
+      getSpy.mockRestore();
+    });
+
+    try {
+      const derivedKey = await service.deriveIncomingAttachmentKey(row.id);
+      expect(spy).not.toHaveBeenCalled();
+      expect(derivedKey instanceof Uint8Array).toBe(true);
+      expect(Array.from(derivedKey)).toEqual(Array.from(storedKey));
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("never lets the finally-wipe mask the real download error (2026-08-15 defect class)", async () => {
+    const vault = await unlockedTestVault();
+    const db = new NodeSqliteAdapter();
+    const scheduler = new InMemoryScheduler();
+
+    const service = await MessagingService.init({
+      vault,
+      db,
+      notifier: new NoopNotifier(),
+      scheduler,
+    });
+
+    // A key of an unexpected shape (e.g. a base64 string escaping some future
+    // repository path) must surface downloadAttachment's own descriptive
+    // error — not a bare TypeError from the best-effort `key.fill(0)` wipe.
+    const badKey = bytesToBase64(randomBytes(32)) as unknown as Uint8Array;
+    const spy = vi
+      .spyOn(MessagingService.prototype, "deriveIncomingAttachmentKey")
+      .mockResolvedValue(badKey);
+    onTestFinished(() => {
+      spy.mockRestore();
+    });
+
+    try {
+      await expect(
+        service.downloadImageAttachment(1, {
+          chunk_outpoints: [],
+        } as unknown as Parameters<typeof service.downloadImageAttachment>[1]),
+      ).rejects.toThrow(/manifest rejected|attachment/i);
     } finally {
       await db.close();
     }

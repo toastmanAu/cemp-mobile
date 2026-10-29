@@ -1,11 +1,14 @@
 /**
  * The §12 background workers (spec Phase 9).
  *
- * Battery-conscious intervals (task 6): everything sits at or above the
- * WorkManager 15-minute floor; user-visible latency comes from the
+ * Battery-conscious intervals (task 6): everything but `lora` sits at or
+ * above the WorkManager 15-minute floor; user-visible latency comes from the
  * foreground catch-up (engine.runAllNow on app open / reconnect), not from
  * aggressive polling. Reclaim and watches are slow because hours of delay
- * are harmless there; maintenance is daily.
+ * are harmless there; maintenance is daily. `lora` is a LOCAL gateway poll
+ * (docs/lora-transport): below the floor WorkManager clamps it to 15 minutes
+ * in the background, and the 30s cadence only takes effect via foreground
+ * catch-up — foreground-only for v1 is the deliberate design.
  *
  * Every worker is idempotent (rule 5): discovery dedups on the envelope
  * message id, response publishing on the response logical id, reclaim on the
@@ -29,11 +32,13 @@ import {
 } from "@cemp/ckb";
 import { codec, deriveRouteTag } from "@cemp/core";
 import { checkManifest } from "@cemp/images";
+import { LoraTransport, type LoraPollResult } from "@cemp/lora";
 import type {
   AttachmentRepository,
   BalanceRepository,
   ContactRepository,
   ConversationRepository,
+  LocalSettingsRepository,
   MessageRepository,
   OutgoingTransactionRepository,
   SyncCursorRepository,
@@ -45,6 +50,7 @@ import type { WorkerSpec } from "./engine.js";
 /** Worker ids + intervals (task 6; WorkManager floor is 15 minutes). */
 export const WORKER_INTERVALS = {
   "incoming-discovery": 15 * 60_000,
+  lora: 30_000,
   "response-sender": 15 * 60_000,
   "pending-transactions": 15 * 60_000,
   "watched-outpoints": 30 * 60_000,
@@ -115,6 +121,28 @@ export interface SyncWorkerDeps {
   readonly ownProfileId: () => Promise<Uint8Array | undefined>;
   readonly ownKemSecretKey: Uint8Array;
   /**
+   * Device-scoped settings (the `settings` table). The lora worker reads its
+   * toggle + gateway URL here, FRESH on every tick — flipping the setting
+   * takes effect on the next tick without rebuilding the engine.
+   */
+  readonly localSettings: LocalSettingsRepository;
+  /**
+   * The network config's LoRa gateway default (`network.lora.baseUrl` from
+   * @cemp/core — AGENTS.md: endpoints are never hard-coded in feature code).
+   * Used only when the user has not set a gateway URL in settings; null on
+   * stock builds (off by default).
+   */
+  readonly loraNetworkBaseUrl?: string | null;
+  /**
+   * Test seam: overrides `LoraTransport` construction so worker tests inject
+   * a fake poll source without HTTP. Production wiring leaves this unset and
+   * the worker builds a real `LoraTransport` over the global fetch.
+   */
+  readonly createLoraTransport?: (config: {
+    baseUrl: string;
+    routeTags: Uint8Array[];
+  }) => LoraPollSource;
+  /**
    * Reclaim one attachment group on-chain (spec §9.5). Injected by the
    * composition root as a closure over signer/client/journal that runs the
    * real `reclaimAttachmentGroup` (the worker package holds no signer): the
@@ -130,6 +158,11 @@ function spec(id: WorkerId, requiresNetwork: boolean, run: () => Promise<void>):
   return { id, intervalMs: WORKER_INTERVALS[id], requiresNetwork, run };
 }
 
+/** The poll half of `LoraTransport` — the worker's view of a LoRa source. */
+export interface LoraPollSource {
+  poll(sinceCursor: string | null): Promise<LoraPollResult>;
+}
+
 /** All §12 workers, wired to the pipelines. */
 export function buildWorkerSpecs(deps: SyncWorkerDeps): WorkerSpec[] {
   return [
@@ -143,6 +176,10 @@ export function buildWorkerSpecs(deps: SyncWorkerDeps): WorkerSpec[] {
     // published in the same pass.
     spec("pending-transactions", true, () => runPendingTransactions(deps)),
     spec("incoming-discovery", true, () => runIncomingDiscovery(deps)),
+    // LoRa gateway poll (docs/lora-transport): after chain discovery so a
+    // chain receipt for a chain message is applied before any LoRa traffic in
+    // the same pass. Self-gating: no-ops unless the user enabled the relay.
+    spec("lora", true, () => runLoraPoll(deps)),
     spec("response-sender", true, () => runResponseSender(deps)),
     spec("watched-outpoints", true, () => deps.lifecycle.pollWatchesOnce().then(() => undefined)),
     spec("reclaim-batch", true, () => runReclaimBatch(deps)),
@@ -223,6 +260,29 @@ async function processDiscoveredCell(
   cellDataHex: string,
   txHash: string,
   outpointIndex: number,
+): Promise<void> {
+  await ingestIncomingCellData(deps, ownProfileId, cellDataHex, { txHash, outpointIndex });
+}
+
+/**
+ * The transport-agnostic incoming pipeline tail (docs/lora-transport Phase
+ * L3): decrypt → block check → ack handling → rate limit → contact →
+ * conversation → insert → advance/notify. Callable with raw `cellData` from
+ * ANY source; the chain discovery worker and the LoRa gateway poll both feed
+ * here.
+ *
+ * `source` is the chain outpoint the envelope came from, or null for a
+ * source with no chain identity (the LoRa relay). With `source === null` no
+ * chain ref is recorded and NO auto-ack is queued: v1 LoRa is receive-only
+ * (an ack needs the original cell's outpoint to address its reply_to, and
+ * receipts over LoRa are future work). A chain source's behavior is
+ * byte-identical to the pre-refactor `processDiscoveredCell`.
+ */
+export async function ingestIncomingCellData(
+  deps: SyncWorkerDeps,
+  ownProfileId: Uint8Array,
+  cellDataHex: string,
+  source: { txHash: string; outpointIndex: number } | null,
 ): Promise<void> {
   const cellData = hexToBytes(cellDataHex);
   const incoming = processIncomingText({
@@ -322,12 +382,15 @@ async function processDiscoveredCell(
     await deps.messages.setEnvelopeMessageId(inserted.id, bytesToHex(incoming.messageId));
     // Record the source cell BEFORE the advance: the healer (runPendingTransactions)
     // rebuilds the auto-ack from this chain ref when the cell itself is never
-    // discovered again.
-    await deps.messages.setChainRef(inserted.id, { txHash, outpointIndex });
+    // discovered again. A chain-less source (LoRa) records nothing and queues
+    // no ack — the advance below simply gets no `cell` context.
+    if (source !== null) {
+      await deps.messages.setChainRef(inserted.id, source);
+    }
     await advanceIncomingToReceived(deps, inserted.id, inserted.state, {
       conversationId: conversation.id,
       logicalMessageId: inserted.logicalMessageId,
-      cell: { txHash, outpointIndex },
+      ...(source === null ? {} : { cell: source }),
     });
   }
   // A reply that ALSO carries receipts (content + ack) still advances OUR
@@ -441,6 +504,71 @@ async function queueAcknowledgement(
     replyToTxHash: input.originalCell.txHash,
     replyToOutpointIndex: input.originalCell.outpointIndex,
   });
+}
+
+/* ── lora gateway poll (docs/lora-transport Phase L3) ────────────────────── */
+
+/** Settings keys (the `settings` table via LocalSettingsRepository). */
+export const LORA_ENABLED_SETTING_KEY = "lora.enabled";
+export const LORA_GATEWAY_URL_SETTING_KEY = "lora.gateway_url";
+/** Sync-cursor name for the gateway poll position. */
+export const LORA_CURSOR_NAME = "lora-transport-cursor";
+
+/**
+ * Poll the LoRa gateway for reassembled CEMP envelopes and feed each through
+ * the same ingest tail chain discovery uses. Receive-only in v1: ingested
+ * messages get no auto-ack (no chain outpoint to address it to).
+ *
+ * Self-gating (the toggle is read fresh per tick — specs are built once per
+ * unlock, so the gate lives in the run closure, not in buildWorkerSpecs):
+ * disabled (the default — rule 10: the relay is never a protocol dependency),
+ * no gateway URL anywhere, or no published profile all no-op cleanly.
+ *
+ * Hostile-input discipline is shared: the transport validates shape/crc and
+ * runs the codec envelope check; anything that still throws here (an
+ * envelope valid in shape but not addressed to us / not decryptable) is
+ * isolated per object, exactly like a bad chain cell. A poll-level failure
+ * (network, non-200, malformed response) propagates so the engine backs off
+ * and retries; the cursor is only persisted after a fully drained poll, so a
+ * failed poll never loses objects.
+ *
+ * The gateway is queried by ROUTE TAG ONLY (plan §5): the profile id never
+ * leaves the device.
+ */
+async function runLoraPoll(deps: SyncWorkerDeps): Promise<void> {
+  if ((await deps.localSettings.get(LORA_ENABLED_SETTING_KEY)) !== "true") {
+    return;
+  }
+  const settingsUrl = (await deps.localSettings.get(LORA_GATEWAY_URL_SETTING_KEY))?.trim();
+  const baseUrl =
+    settingsUrl !== undefined && settingsUrl.length > 0
+      ? settingsUrl
+      : (deps.loraNetworkBaseUrl ?? null);
+  if (baseUrl === null || baseUrl.length === 0) {
+    return; // enabled but nowhere to poll — wait for a configured gateway
+  }
+  const ownProfileId = await deps.ownProfileId();
+  if (ownProfileId === undefined) {
+    return; // no profile yet → no route tags to subscribe (same rule as discovery)
+  }
+  const epoch = currentRoutingEpoch(Date.now());
+  const routeTags = [epoch - 1n, epoch, epoch + 1n].map((e) => deriveRouteTag(ownProfileId, e));
+  const createTransport =
+    deps.createLoraTransport ?? ((config) => new LoraTransport(config) as LoraPollSource);
+  const transport = createTransport({ baseUrl, routeTags });
+  const since = await deps.cursors.get(LORA_CURSOR_NAME);
+  const result = await transport.poll(since);
+  for (const object of result.objects) {
+    try {
+      await ingestIncomingCellData(deps, ownProfileId, bytesToHex(object.cellData), null);
+    } catch {
+      // One bad object never stalls the poll (rule 4): it is transport noise,
+      // and message-id dedup keeps re-delivery from duplicating rows.
+    }
+  }
+  if (result.cursor !== null) {
+    await deps.cursors.set(LORA_CURSOR_NAME, result.cursor);
+  }
 }
 
 /* ── response sender (§12 worker 6) ──────────────────────────────────────── */

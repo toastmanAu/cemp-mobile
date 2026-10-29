@@ -5,7 +5,9 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { Alert, Button, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Button, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { LORA_ENABLED_SETTING_KEY, LORA_GATEWAY_URL_SETTING_KEY } from "@cemp/sync";
+import { LoraTransport } from "@cemp/lora";
 import { useAppContainer } from "../navigation";
 
 export function SettingsScreen(): React.JSX.Element {
@@ -20,6 +22,10 @@ export function SettingsScreen(): React.JSX.Element {
   const [handle, setHandle] = useState("");
   const [publishing, setPublishing] = useState(false);
   const [publishMessage, setPublishMessage] = useState<string | null>(null);
+  const [loraEnabled, setLoraEnabled] = useState(false);
+  const [loraGatewayUrl, setLoraGatewayUrl] = useState("");
+  const [loraTestResult, setLoraTestResult] = useState<string | null>(null);
+  const [loraTesting, setLoraTesting] = useState(false);
 
   useEffect(() => {
     void container.vault.getMetadata().then((meta) => {
@@ -32,6 +38,12 @@ export function SettingsScreen(): React.JSX.Element {
     if (!container.hasMessaging) return;
     void container.messaging.myProfileId().then(setProfileId);
     void container.messaging.myFingerprint().then(setFingerprint);
+    void container.repositories.localSettings.get(LORA_ENABLED_SETTING_KEY).then((value) => {
+      setLoraEnabled(value === "true");
+    });
+    void container.repositories.localSettings.get(LORA_GATEWAY_URL_SETTING_KEY).then((value) => {
+      setLoraGatewayUrl(value ?? "");
+    });
   }, [container.hasMessaging]);
 
   async function publishProfile(): Promise<void> {
@@ -80,6 +92,40 @@ export function SettingsScreen(): React.JSX.Element {
       setRevealPassword("");
     } catch {
       setError("Wrong password.");
+    }
+  }
+
+  async function toggleLora(next: boolean): Promise<void> {
+    if (!container.hasMessaging) return;
+    setLoraEnabled(next);
+    await container.repositories.localSettings.set(
+      LORA_ENABLED_SETTING_KEY,
+      next ? "true" : "false",
+    );
+  }
+
+  async function saveLoraGatewayUrl(): Promise<void> {
+    if (!container.hasMessaging) return;
+    await container.repositories.localSettings.set(
+      LORA_GATEWAY_URL_SETTING_KEY,
+      loraGatewayUrl.trim(),
+    );
+  }
+
+  async function testLoraConnection(): Promise<void> {
+    const url = loraGatewayUrl.trim();
+    setLoraTesting(true);
+    setLoraTestResult(null);
+    try {
+      // The health check needs no keys: it only asks the gateway whether it
+      // is alive, so no route tags (and certainly no profile id) go out here.
+      const transport = new LoraTransport({ baseUrl: url, routeTags: [] });
+      const reachable = await transport.health();
+      setLoraTestResult(reachable ? "Gateway reachable." : "Could not reach the gateway.");
+    } catch {
+      setLoraTestResult("Could not reach the gateway. Check the address.");
+    } finally {
+      setLoraTesting(false);
     }
   }
 
@@ -179,6 +225,37 @@ export function SettingsScreen(): React.JSX.Element {
 
       <Text style={styles.section}>Network</Text>
       <Text style={styles.muted}>CKB testnet (this build never touches mainnet).</Text>
+
+      <Text style={styles.section}>LoRa relay</Text>
+      <Text style={styles.muted}>
+        Optionally receive messages through a local LoRa gateway on your network. Off by default;
+        messages arrive the same way either way.
+      </Text>
+      <View style={styles.row}>
+        <Text>Enable LoRa relay</Text>
+        <Switch
+          value={loraEnabled}
+          onValueChange={(next) => void toggleLora(next)}
+          disabled={!container.hasMessaging}
+        />
+      </View>
+      <TextInput
+        style={styles.input}
+        value={loraGatewayUrl}
+        onChangeText={setLoraGatewayUrl}
+        onBlur={() => void saveLoraGatewayUrl()}
+        placeholder="gateway address (e.g. http://192.168.1.10:8080)"
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="off"
+        keyboardType="url"
+      />
+      <Button
+        title={loraTesting ? "Testing…" : "Test connection"}
+        disabled={loraTesting || loraGatewayUrl.trim().length === 0}
+        onPress={() => void testLoraConnection()}
+      />
+      {loraTestResult !== null ? <Text style={styles.muted}>{loraTestResult}</Text> : null}
 
       <Text style={styles.section}>Danger zone</Text>
       <Button title="Wipe wallet" color="#b00020" onPress={confirmWipe} />

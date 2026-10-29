@@ -18,6 +18,7 @@
     "@cemp/crypto": "workspace:*",
     "@cemp/database": "workspace:*",
     "@cemp/images": "workspace:*",
+    "@cemp/lora": "workspace:*",
     "@cemp/secure-vault": "workspace:*",
     "@cemp/sync": "workspace:*",
     "@cemp/ui": "workspace:*",

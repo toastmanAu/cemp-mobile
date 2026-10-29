@@ -59,6 +59,7 @@ import {
   ContactRepository,
   ConversationRepository,
   DatabasePublicationStore,
+  LocalSettingsRepository,
   MessageRepository,
   OutgoingTransactionRepository,
   ProfileRepository,
@@ -253,6 +254,12 @@ export class MessagingService {
         // sender-id device bug — see the fix report).
         ownProfileId: () => resolveActiveSenderProfileId(profiles, accountId),
         ownKemSecretKey: bundle.mlKem.secretKey,
+        // LoRa relay (docs/lora-transport L3): the worker reads the toggle and
+        // gateway URL from settings fresh per tick (default OFF, rule 10);
+        // the network config supplies only the fallback URL (null on stock
+        // builds).
+        localSettings: new LocalSettingsRepository(db),
+        loraNetworkBaseUrl: CKB_TESTNET.lora.baseUrl,
         // T17 finding F-2: the batch reclaim only spends message cells — this
         // injected closure reclaims each group's chunk cells (spec §9.5).
         reclaimAttachmentGroup: ({ reclaimGroupId, outpoints }) =>

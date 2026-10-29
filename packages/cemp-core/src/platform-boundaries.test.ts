@@ -23,6 +23,7 @@ const SHARED_PACKAGES = [
   "cemp-ui",
   "cemp-sync",
   "cemp-images",
+  "cemp-lora",
 ];
 
 /** Files allowed to import node:* — the ./node subpath backends + tests. */

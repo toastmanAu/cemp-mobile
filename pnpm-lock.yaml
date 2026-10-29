@@ -61,6 +61,9 @@ importers:
       '@cemp/images':
         specifier: workspace:*
         version: link:../../packages/cemp-images
+      '@cemp/lora':
+        specifier: workspace:*
+        version: link:../../packages/cemp-lora
       '@cemp/secure-vault':
         specifier: workspace:*
         version: link:../../packages/cemp-secure-vault
@@ -244,6 +247,12 @@ importers:
         specifier: 0.6.1
         version: 0.6.1
 
+  packages/cemp-lora:
+    dependencies:
+      '@cemp/core':
+        specifier: workspace:*
+        version: link:../cemp-core
+
   packages/cemp-secure-vault:
     dependencies:
       '@cemp/crypto':
@@ -274,6 +283,9 @@ importers:
       '@cemp/images':
         specifier: workspace:*
         version: link:../cemp-images
+      '@cemp/lora':
+        specifier: workspace:*
+        version: link:../cemp-lora
       '@cemp/ui':
         specifier: workspace:*
         version: link:../cemp-ui

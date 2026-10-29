@@ -23,6 +23,7 @@ import {
   ContactRepository,
   ConversationRepository,
   DatabasePublicationStore,
+  LocalSettingsRepository,
   MessageRepository,
   OutgoingTransactionRepository,
   RateLimitRepository,
@@ -33,6 +34,7 @@ import {
 } from "@cemp/database";
 import { RateLimiter, DEFAULT_RATE_LIMITS } from "@cemp/ckb";
 import { NodeSqliteAdapter } from "@cemp/database/node";
+import { crc32, type LoraObject } from "@cemp/lora";
 import type { NotificationContent, Notifier } from "@cemp/ui";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -42,7 +44,14 @@ import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
 import { InMemoryScheduler, SyncEngine } from "./engine.js";
 import { BackoffPolicy } from "./retry.js";
 import { EndpointRotator } from "./endpoints.js";
-import { buildWorkerSpecs, type SyncWorkerDeps } from "./workers.js";
+import {
+  LORA_CURSOR_NAME,
+  LORA_ENABLED_SETTING_KEY,
+  LORA_GATEWAY_URL_SETTING_KEY,
+  buildWorkerSpecs,
+  type LoraPollSource,
+  type SyncWorkerDeps,
+} from "./workers.js";
 
 /**
  * Phase 9 worker end-to-end (offline): background discovery, dedup,
@@ -292,6 +301,7 @@ interface Stack {
   attachments: AttachmentRepository;
   leases: WorkerLeaseRepository;
   cursors: SyncCursorRepository;
+  localSettings: LocalSettingsRepository;
   reclaimGroupCalls: { reclaimGroupId: Uint8Array; outpoints: readonly unknown[] }[];
 }
 
@@ -323,6 +333,7 @@ async function makeStack(
   const balances = new BalanceRepository(db);
   const cursors = new SyncCursorRepository(db);
   const leases = new WorkerLeaseRepository(db);
+  const localSettings = new LocalSettingsRepository(db);
   const rateLimiter = new RateLimiter(new RateLimitRepository(db), { ...DEFAULT_RATE_LIMITS });
   const walletId = await balances.ensureWallet("main");
   const store = new DatabasePublicationStore(messages, outgoingTxs, {
@@ -376,6 +387,7 @@ async function makeStack(
     ownProfileId:
       opts.ownProfileIdProvider ?? (() => Promise.resolve(opts.ownProfileId ?? BOB_PROFILE_ID)),
     ownKemSecretKey: BOB.mlKem.secretKey,
+    localSettings,
     reclaimAttachmentGroup: (input) => {
       reclaimGroupCalls.push(input);
       return Promise.resolve(null);
@@ -401,6 +413,7 @@ async function makeStack(
     attachments,
     leases,
     cursors,
+    localSettings,
     reclaimGroupCalls,
   };
 }
@@ -1580,6 +1593,224 @@ describe("stranded incoming messages are healed (final review fix 1b)", () => {
       expect(
         await stack.messages.getByLogicalId(`response:${incomingLogicalMessageId(idB)}`),
       ).toBeDefined();
+    } finally {
+      await stack.db.close();
+    }
+  });
+});
+
+/**
+ * LoRa gateway poll worker (docs/lora-transport Phase L3). Real DB stack and
+ * real fixture-derived cellData (assembleTextMessage → the same envelope
+ * bytes a chain cell would carry); only the HTTP transport is faked, through
+ * the `createLoraTransport` seam.
+ */
+describe("lora gateway poll worker", () => {
+  // A third identity: envelopes addressed to EVE are valid in shape but not
+  // decryptable by BOB's keys — the worker-level "bad object" case.
+  const EVE = deriveIdentityKeys(
+    mnemonicToSeed("legal winner thank year wave sausage worth useful legal winner thank yellow"),
+  );
+  const EVE_PROFILE_ID = hexToBytes("ee".repeat(32));
+
+  function loraObjectForBob(text: string, messageId?: Uint8Array): LoraObject {
+    const assembled = assembleTextMessage({
+      text,
+      senderProfileId: ALICE_PROFILE_ID,
+      recipientProfileId: BOB_PROFILE_ID,
+      recipientKemPublicKey: BOB.mlKem.publicKey,
+      senderDeviceId: hexToBytes("01".repeat(16)),
+      receiptRequest: 0,
+      ...(messageId === undefined ? {} : { messageId }),
+    });
+    const cellData = assembled.envelopeBytes;
+    return {
+      id: bytesToHex(assembled.messageId),
+      cellData,
+      crc32: crc32(cellData),
+      receivedAt: 1_735_689_600,
+    };
+  }
+
+  function loraObjectForEve(text: string): LoraObject {
+    const assembled = assembleTextMessage({
+      text,
+      senderProfileId: ALICE_PROFILE_ID,
+      recipientProfileId: EVE_PROFILE_ID,
+      recipientKemPublicKey: EVE.mlKem.publicKey,
+      senderDeviceId: hexToBytes("01".repeat(16)),
+      receiptRequest: 0,
+    });
+    const cellData = assembled.envelopeBytes;
+    return {
+      id: bytesToHex(assembled.messageId),
+      cellData,
+      crc32: crc32(cellData),
+      receivedAt: 1_735_689_600,
+    };
+  }
+
+  /** Install a fake poll source through the test seam; returns the factory's configs. */
+  function installLoraFactory(
+    stack: Stack,
+    source: LoraPollSource,
+  ): { baseUrl: string; routeTags: Uint8Array[] }[] {
+    const configs: { baseUrl: string; routeTags: Uint8Array[] }[] = [];
+    const writable = stack.deps as { -readonly [K in keyof SyncWorkerDeps]: SyncWorkerDeps[K] };
+    writable.createLoraTransport = (config) => {
+      configs.push(config);
+      return source;
+    };
+    return configs;
+  }
+
+  it("is a clean no-op while the relay is disabled (the default) — no fetch, no cursor", async () => {
+    const stack = await makeStack();
+    try {
+      const configs = installLoraFactory(stack, {
+        poll: () =>
+          Promise.resolve({ objects: [loraObjectForBob("must not land")], cursor: "00000042" }),
+      });
+      expect(await stack.engine.runWorker("lora")).toBe("success");
+      expect(configs).toHaveLength(0); // transport never even constructed
+      expect(await stack.messages.listByState(["received"])).toHaveLength(0);
+      expect(await stack.cursors.get(LORA_CURSOR_NAME)).toBeNull();
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("is a clean no-op when enabled but no gateway URL is configured anywhere", async () => {
+    const stack = await makeStack();
+    try {
+      const configs = installLoraFactory(stack, {
+        poll: () => Promise.reject(new Error("must not be called")),
+      });
+      await stack.localSettings.set(LORA_ENABLED_SETTING_KEY, "true");
+      // No lora.gateway_url in settings, and no loraNetworkBaseUrl dep.
+      expect(await stack.engine.runWorker("lora")).toBe("success");
+      expect(configs).toHaveLength(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("ingests a gateway object through the same tail as chain discovery — without an auto-ack", async () => {
+    const stack = await makeStack();
+    try {
+      const object = loraObjectForBob("hello over the relay");
+      const seenCursors: (string | null)[] = [];
+      const configs = installLoraFactory(stack, {
+        poll: (since) => {
+          seenCursors.push(since);
+          return Promise.resolve({ objects: [object], cursor: "00000042" });
+        },
+      });
+      await stack.localSettings.set(LORA_ENABLED_SETTING_KEY, "true");
+      await stack.localSettings.set(LORA_GATEWAY_URL_SETTING_KEY, "http://gw.test:8080");
+
+      expect(await stack.engine.runWorker("lora")).toBe("success");
+
+      // The transport was built from the settings URL, addressed by ROUTE TAG
+      // (prev/current/next epoch) — never by profile id.
+      expect(configs).toHaveLength(1);
+      expect(configs[0]!.baseUrl).toBe("http://gw.test:8080");
+      const epoch = currentRoutingEpoch();
+      expect(configs[0]!.routeTags.map(bytesToHex)).toEqual(
+        [epoch - 1n, epoch, epoch + 1n].map((e) => bytesToHex(deriveRouteTag(BOB_PROFILE_ID, e))),
+      );
+
+      // Same end state as chain discovery: row at received, generic notify.
+      const stored = await stack.messages.getByLogicalId(
+        incomingLogicalMessageId(hexToBytes(object.id)),
+      );
+      expect(stored?.state).toBe("received");
+      expect(stored?.body).toBe("hello over the relay");
+      expect(stack.notifier.posted).toHaveLength(1);
+      expect(stack.notifier.posted[0]!.body).toBe("New message. Unlock to view.");
+
+      // Receive-only v1: no chain ref recorded, NO auto-ack row queued.
+      const ref = await stack.messages.getChainRef(stored!.id);
+      expect(ref === undefined || ref.txHash === null).toBe(true);
+      expect(
+        (await stack.messages.listByState(["queued"])).filter((m) =>
+          m.logicalMessageId.startsWith("response:"),
+        ),
+      ).toHaveLength(0);
+
+      // The gateway cursor was persisted for the next poll.
+      expect(await stack.cursors.get(LORA_CURSOR_NAME)).toBe("00000042");
+
+      // Idempotent: a second poll of the SAME object adds nothing. The first
+      // poll went out with no cursor, the second with the persisted one.
+      expect(await stack.engine.runWorker("lora")).toBe("success");
+      expect(seenCursors).toEqual([null, "00000042"]);
+      expect(await stack.messages.listByState(["received"])).toHaveLength(1);
+      expect(stack.notifier.posted).toHaveLength(1);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("skips an object that fails decryption and still ingests the good ones (rule 4)", async () => {
+    const stack = await makeStack();
+    try {
+      installLoraFactory(stack, {
+        poll: () =>
+          Promise.resolve({
+            objects: [loraObjectForEve("not for bob"), loraObjectForBob("for bob")],
+            cursor: "00000043",
+          }),
+      });
+      await stack.localSettings.set(LORA_ENABLED_SETTING_KEY, "true");
+      await stack.localSettings.set(LORA_GATEWAY_URL_SETTING_KEY, "http://gw.test:8080");
+
+      expect(await stack.engine.runWorker("lora")).toBe("success");
+      const received = await stack.messages.listByState(["received"]);
+      expect(received).toHaveLength(1);
+      expect(received[0]!.body).toBe("for bob");
+      expect(await stack.cursors.get(LORA_CURSOR_NAME)).toBe("00000043");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("passes the persisted cursor to the next poll", async () => {
+    const stack = await makeStack();
+    try {
+      const seen: (string | null)[] = [];
+      installLoraFactory(stack, {
+        poll: (since) => {
+          seen.push(since);
+          return Promise.resolve({ objects: [], cursor: "00000043" });
+        },
+      });
+      await stack.localSettings.set(LORA_ENABLED_SETTING_KEY, "true");
+      await stack.localSettings.set(LORA_GATEWAY_URL_SETTING_KEY, "http://gw.test:8080");
+      await stack.cursors.set(LORA_CURSOR_NAME, "00000041");
+
+      expect(await stack.engine.runWorker("lora")).toBe("success");
+      expect(await stack.engine.runWorker("lora")).toBe("success");
+      expect(seen).toEqual(["00000041", "00000043"]);
+      expect(await stack.cursors.get(LORA_CURSOR_NAME)).toBe("00000043");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a poll failure surfaces for engine backoff and never writes the cursor", async () => {
+    const stack = await makeStack();
+    try {
+      installLoraFactory(stack, {
+        poll: () => Promise.reject(new Error("gateway offline")),
+      });
+      await stack.localSettings.set(LORA_ENABLED_SETTING_KEY, "true");
+      await stack.localSettings.set(LORA_GATEWAY_URL_SETTING_KEY, "http://gw.test:8080");
+
+      // The engine converts the throw into a retry + backoff schedule.
+      expect(await stack.engine.runWorker("lora")).toBe("retry");
+      expect(await stack.cursors.get(LORA_CURSOR_NAME)).toBeNull();
+      expect(await stack.messages.listByState(["received"])).toHaveLength(0);
     } finally {
       await stack.db.close();
     }

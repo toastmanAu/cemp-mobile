@@ -108,13 +108,14 @@ describe("MessagingService.init background scheduling", () => {
     expect(scheduler.periodic.size).toBeGreaterThan(0);
 
     // Every worker registers a periodic request with the same real
-    // scheduler; buildWorkerSpecs currently wires up 8 (pending-transactions,
-    // incoming-discovery, response-sender, watched-outpoints, reclaim-batch,
-    // balance-refresh, profile-refresh, database-maintenance). The count
-    // itself is incidental — the coalescing adapter (scheduler-coalesce.ts,
-    // covered separately) is what turns these into exactly one WorkManager
-    // job; this test only proves registration happens at all.
-    expect(scheduler.periodic.size).toBe(8);
+    // scheduler; buildWorkerSpecs currently wires up 9 (pending-transactions,
+    // incoming-discovery, lora, response-sender, watched-outpoints,
+    // reclaim-batch, balance-refresh, profile-refresh, database-maintenance).
+    // The count itself is incidental — the coalescing adapter
+    // (scheduler-coalesce.ts, covered separately) is what turns these into
+    // exactly one WorkManager job; this test only proves registration happens
+    // at all.
+    expect(scheduler.periodic.size).toBe(9);
 
     await db.close();
   });

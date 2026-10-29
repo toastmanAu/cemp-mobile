@@ -16,6 +16,18 @@ export interface NetworkConfig {
   endpoints: NetworkEndpoints[];
   /** Deployed CEMP/ML-DSA contract identifiers — populated after testnet deploy. */
   deployments: ContractDeployments;
+  /**
+   * LoRa gateway relay (docs/lora-transport). Optional and OFF by default —
+   * `baseUrl: null` means disabled; the user sets a gateway URL in settings
+   * (rule 10: the relay is never a protocol dependency). Structurally
+   * separate from the chain `endpoints` (rule 11).
+   */
+  lora: LoraEndpointConfig;
+}
+
+export interface LoraEndpointConfig {
+  /** Base URL of the LoRa gateway's local HTTP endpoint, or null when off. */
+  baseUrl: string | null;
 }
 
 export interface ContractDeployments {
@@ -42,6 +54,7 @@ export const CKB_TESTNET: NetworkConfig = {
   name: "ckb_testnet",
   isTestnet: true,
   endpoints: [{ rpc: "https://testnet.ckb.dev/rpc", indexer: "https://testnet.ckb.dev/indexer" }],
+  lora: { baseUrl: null },
   deployments: {
     // Canonical testnet ML-DSA-65 lock: mldsa65-lock-v2-rust (v2 format,
     // 37-byte args, full CighashAll digest). Verified against the

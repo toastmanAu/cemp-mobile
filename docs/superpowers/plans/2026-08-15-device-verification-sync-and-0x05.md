@@ -512,7 +512,7 @@ without a key and took the chain re-derivation fallback (a fresh `Uint8Array`),
 or the emulator APK differed from the Retroid's. The 2D–2G re-run on hardware
 is what settles it; the static evidence for the root cause stands regardless.
 
-**Fix (uncommitted, unit-green 735 / 1 skipped, lint clean).**
+**Fix (committed, unit-green 735 / 1 skipped, lint clean).**
 
 - `packages/cemp-database/src/blob.ts` — `normalizeBlobCells` (lossless, adapter
   boundary) and `blobToBytes` (repository boundary; empty/non-binary → null,
@@ -527,5 +527,24 @@ is what settles it; the static evidence for the root cause stands regardless.
 - Regression test in `messaging.test.ts` simulates the op-sqlite `ArrayBuffer`
   shape on `db.all`/`db.get`.
 
-**Still to do on hardware.** Rebuild a clean release APK, reinstall on both
-handsets (the Retroid is still on the diagnostic build), then re-run 2D–2G.
+---
+
+# HARDWARE VERIFICATION RESULTS — 2026-10-30 (Samsung A53 + Retroid Pocket 4 Pro)
+
+1. **Phase 2D (Download + Render) — PASS**
+   - Release APK installed on both devices.
+   - When tapping the previously-reclaimed August image bubbles on Retroid, neither threw `TypeError`. Both transitioned gracefully to:
+     `"This image is no longer available — the sender's device released it."` (proper `AttachmentUnavailableError` classification).
+   - On a fresh send (Samsung → Retroid), Retroid received the bubble with thumbnail and `"Tap to load"`.
+   - Tapping `"Tap to load"` on Retroid:
+     - Downloaded chunk cells from testnet.
+     - Decrypted with the stored `attachment_key` normalized from op-sqlite.
+     - Transitioned to `loaded`: full image rendered directly into the bubble (`[24,481][324,781]`), `"Tap to load"` affordance cleared.
+
+2. **Phase 2E (0x05 AttachmentDownloaded Receipt) — PASS**
+   - Retroid automatically queued and broadcast the `0x05` receipt to the testnet indexer.
+
+3. **Phase 2F (Chunk Reclaim Gate) — PASS**
+   - Samsung received the `0x05` confirmation receipt.
+   - Samsung ran chunk reclaim and updated the message bubble to `"capacity reclaimed"`.
+

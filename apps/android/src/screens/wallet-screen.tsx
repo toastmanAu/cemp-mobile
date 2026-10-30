@@ -32,6 +32,9 @@ export function WalletScreen(): React.JSX.Element {
       if (!container.hasMessaging) return;
       setAddress(container.messaging.identity().address);
       void container.messaging.balances().then(setBalance);
+      void container.messaging.syncNow().then(() => {
+        void container.messaging.balances().then(setBalance);
+      });
     }, [container.hasMessaging]),
   );
 
@@ -69,6 +72,13 @@ export function WalletScreen(): React.JSX.Element {
           <Text style={styles.value}>{formatCkb(amount)}</Text>
         </View>
       ))}
+      {balance !== null ? (
+        <Text style={styles.note}>
+          Sending messages locks storage capacity on-chain (~12k CKB for text, ~70k–170k+ CKB for
+          photos). Locked capacity is automatically returned to your available balance when messages
+          are delivered or released.
+        </Text>
+      ) : null}
       {balance === null ? (
         <Text style={styles.note}>Balances appear once the messaging service is unlocked.</Text>
       ) : null}

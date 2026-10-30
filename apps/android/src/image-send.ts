@@ -83,7 +83,11 @@ export async function runImageSend(
     feeReserveShannon: deps.feeReserveShannon,
   });
   if (!hasSufficientCapacity(deps.availableShannon, required)) {
-    throw new Error("Not enough balance to send this image.");
+    const requiredCkb = (required / 100_000_000n).toLocaleString("en-US");
+    const availableCkb = (deps.availableShannon / 100_000_000n).toLocaleString("en-US");
+    throw new Error(
+      `Not enough balance to send this image: requires ~${requiredCkb} CKB, but only ${availableCkb} CKB is available.`,
+    );
   }
 
   const result = await deps.publish({ ...input, preparedImage: prepared });

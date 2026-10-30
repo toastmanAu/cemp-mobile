@@ -450,7 +450,10 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
                 resizeMode="contain"
               />
             ) : null}
-            <Pressable style={styles.lightboxCloseButton} onPress={() => setActiveViewerImage(null)}>
+            <Pressable
+              style={styles.lightboxCloseButton}
+              onPress={() => setActiveViewerImage(null)}
+            >
               <Text style={styles.lightboxCloseText}>✕</Text>
             </Pressable>
           </View>

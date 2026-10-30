@@ -70,17 +70,47 @@ export class BalanceRepository {
 
   /**
    * Set the chain-derived categories (Phase 4 refresh path): total and
-   * available come from the indexer; the protocol categories are ours.
+   * available come from the indexer; protocol categories (reserved,
+   * reclaimable) are reconciled when chain-derived reservedShannon is provided.
    */
   async setChainBalances(
     walletId: number,
     totalShannon: bigint,
     availableShannon: bigint,
+    options: { reservedShannon?: bigint } = {},
   ): Promise<void> {
-    await this.#db.run(
-      "UPDATE wallet_balances SET total_shannon = ?, available_shannon = ?, updated_at_ms = ? WHERE wallet_id = ?",
-      [totalShannon.toString(), availableShannon.toString(), Date.now(), walletId],
-    );
+    if (options.reservedShannon === undefined) {
+      await this.#db.run(
+        "UPDATE wallet_balances SET total_shannon = ?, available_shannon = ?, updated_at_ms = ? WHERE wallet_id = ?",
+        [totalShannon.toString(), availableShannon.toString(), Date.now(), walletId],
+      );
+      return;
+    }
+    await this.#db.transaction(async () => {
+      const balance = await this.getBalance(walletId);
+      const chainReserved = options.reservedShannon!;
+      let reserved = balance.reservedShannon;
+      let reclaimable = balance.reclaimableShannon;
+      if (reserved + reclaimable > chainReserved) {
+        reclaimable = reclaimable > chainReserved ? chainReserved : reclaimable;
+        reserved = chainReserved - reclaimable;
+      } else if (reserved + reclaimable < chainReserved) {
+        reserved = chainReserved - reclaimable;
+      }
+      await this.#db.run(
+        `UPDATE wallet_balances
+         SET total_shannon = ?, available_shannon = ?, reserved_shannon = ?, reclaimable_shannon = ?, updated_at_ms = ?
+         WHERE wallet_id = ?`,
+        [
+          totalShannon.toString(),
+          availableShannon.toString(),
+          reserved.toString(),
+          reclaimable.toString(),
+          Date.now(),
+          walletId,
+        ],
+      );
+    });
   }
 
   /** Move capacity available → reserved (a message cell was published). */

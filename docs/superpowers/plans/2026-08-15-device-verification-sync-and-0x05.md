@@ -89,7 +89,7 @@ deliberately holds that capacity locked across a waiting period, so:
   node can.
 
 - [ ] **S4. Read each device's OWN profile id from Settings and write it down.**
-      Do this *before* inferring who sends to whom. (The 2026-07-19 lesson: assuming
+      Do this _before_ inferring who sends to whom. (The 2026-07-19 lesson: assuming
       which profile id belonged to which device cost hours — the message was on-chain
       and decryptable the whole time while the wrong inbox was being scanned.)
 
@@ -150,7 +150,7 @@ the screen** — tapping, scrolling back out, or pulling to refresh invalidates 
 **This is the sequencing-critical phase. Step 2C is the whole test — do not skip
 ahead to tapping the image.** Before the fix, the sender treated the recipient's
 `0x01` envelope ack as permission to spend the chunk cells, destroying the image
-while the recipient still showed "Tap to load". Tapping immediately would *hide*
+while the recipient still showed "Tap to load". Tapping immediately would _hide_
 the regression, because the chunks would not have been reclaimed yet.
 
 - [ ] **2A. Send a small image A → B.**
@@ -187,7 +187,7 @@ the regression, because the chunks would not have been reclaimed yet.
     A's balance rises by only the small message-cell amount, then holds steady.
   - **FAIL (the regression):** any chunk reports **`dead`** — the chunks were spent
     before any download and the image on B is now unrecoverable. Stop and report.
-  - Chunk outpoints all `live` at T+1 min: `____`  T+2: `____`  T+3: `____`
+  - Chunk outpoints all `live` at T+1 min: `____` T+2: `____` T+3: `____`
   - A's balance after the hold: `____________ CKB` (delta from S5: `______`)
   - Held steady for: `______ min`
   - `CempSync` lines during the hold: `____` (a background tick here is fine — it must
@@ -225,7 +225,7 @@ the regression, because the chunks would not have been reclaimed yet.
 
   - **Expected delta is NOT the source file's byte size.** The app re-encodes before
     sending (the native codec strips metadata and re-compresses), so what is stored on
-    chain is the *encoded* payload. Take the expected figure from the chunk cells
+    chain is the _encoded_ payload. Take the expected figure from the chunk cells
     themselves — the `outputs total` that `ckbwatch.mjs tx <chunkTxHash>` prints in 2A —
     not from the 25,574-byte JPEG we pushed. Comparing against the source size would
     make a correct result look wrong.
@@ -266,13 +266,13 @@ A profile id `fe762f3a…6655f`, B profile id `5cfffbfd…710e23`. Auto-lock 5 m
 
 ## Phase 1A — PASS
 
-| | |
-|---|---|
-| Sent from A | 01:54:14 |
-| Present on B | ≤ 01:55:17 (**≤63s**) |
-| B interactions in window | none (last touch 01:52) |
-| B position | **inside the open conversation** — the case that previously never worked |
-| Background tick in window | none (only `CempSync` 01:46:40–44, at unlock) |
+|                           |                                                                          |
+| ------------------------- | ------------------------------------------------------------------------ |
+| Sent from A               | 01:54:14                                                                 |
+| Present on B              | ≤ 01:55:17 (**≤63s**)                                                    |
+| B interactions in window  | none (last touch 01:52)                                                  |
+| B position                | **inside the open conversation** — the case that previously never worked |
+| Background tick in window | none (only `CempSync` 01:46:40–44, at unlock)                            |
 
 The confound control earned its place: `CempSync` fired exactly once, at unlock, far
 outside the window, so the delivery was demonstrably the foreground scheduler.
@@ -285,12 +285,12 @@ meaningful criterion is "arrives with zero interaction".
 
 Image 1: source 25,574 B → on-chain **26,858 B**.
 
-| Artifact | Value |
-|---|---|
-| Chunk tx | `0x910c8e3839e6f9a98f0ebef7de350b3ee5df05826e9938c844d2be7591fcc844` |
-| Chunk cell | output[0] — **26,937 CKB / 26,858 B** |
+| Artifact   | Value                                                                                                           |
+| ---------- | --------------------------------------------------------------------------------------------------------------- |
+| Chunk tx   | `0x910c8e3839e6f9a98f0ebef7de350b3ee5df05826e9938c844d2be7591fcc844`                                            |
+| Chunk cell | output[0] — **26,937 CKB / 26,858 B**                                                                           |
 | Message tx | `0xd6327e0d8c19e2ec78a0c3803bbc9adfc701a524c3a7611ab892b1bd7b168684` (12,183 CKB / 11,990 B, type `0xd172d3bf`) |
-| Reclaim tx | `0x9bf7ddb2d4d7a85852a78eeb70adc2d76cccf24aadd3801d75f40169828cd161` (1 in → 1 out, 12,182.99993272 CKB plain) |
+| Reclaim tx | `0x9bf7ddb2d4d7a85852a78eeb70adc2d76cccf24aadd3801d75f40169828cd161` (1 in → 1 out, 12,182.99993272 CKB plain)  |
 
 **The decisive conjunction.** A's image bubble read **"capacity reclaimed"** — the reclaim
 pass demonstrably ran and spent the message cell — while `get_live_cell` on the chunk
@@ -301,7 +301,7 @@ been spent and the image destroyed unrecoverably.
 Image 2 reproduced the same pattern: chunk `0x4b1f21a4…:0` (13,437 CKB / **13,358 B** from
 an 18,416 B source — smaller this time), message tx `0x4d7071e5…`, reclaim `0x02a9dd93…`.
 
-**Note on expected deltas:** the on-chain payload diverged from the source file in *both*
+**Note on expected deltas:** the on-chain payload diverged from the source file in _both_
 directions (25,574 → 26,858; 18,416 → 13,358). Judging a reclaim delta against source file
 size would give a false negative. Always take the figure from the chunk cell.
 
@@ -312,7 +312,7 @@ Tapping the image on B fails on **both** images, across ~12 taps:
 > "Couldn't load that image. Check your connection and tap to retry."
 
 - This is the **transient `error`** branch, NOT `unavailable` — correct, since the chunks
-  *are* live. The classifier is behaving properly; the download itself is not.
+  _are_ live. The classifier is behaving properly; the download itself is not.
 - The chunk cells were verified live at the moment of every failed tap.
 - So `df77fab` **succeeded** at preserving the bytes, yet the user-visible symptom it was
   written to cure — "Tap to load" → "Tap to retry" forever — **is still present**, from a
@@ -331,7 +331,7 @@ TypeError: undefined is not a function
 
 **This REFUTES the earlier hypothesis, which is retracted.** The suspected path — a
 `deriveIncomingAttachmentKey` fallback re-deriving the key from a message cell the sender
-had reclaimed (`messaging.ts:571–588`) — throws a *descriptive* `Error`, never a
+had reclaimed (`messaging.ts:571–588`) — throws a _descriptive_ `Error`, never a
 `TypeError`. Same for every hash/size/decrypt check in `receive.ts` and for
 `aes256GcmDecrypt`, whose noble `gcm` failure is wrapped into a `CempCryptoError`
 (`aead.ts:63–70`). None of them can produce this message. The bug is a call to something
@@ -351,12 +351,12 @@ wraps covered the call.
 Remaining candidates, now fully partitioned by `typeof` probes in the build installed at
 03:17 (result pending a device unlock):
 
-| Diagnostic output | Meaning |
-|---|---|
-| `[step=call typeofFn=undefined]` | the service method is missing |
-| `[step=downloadAttachment typeofFn=undefined]` | the `@cemp/images` import did not resolve |
-| `[step=deriveKey …]` | key derivation after all |
-| still bare | the download **succeeded** and the render block threw (`bytesToBase64` / `setFullImages`) |
+| Diagnostic output                              | Meaning                                                                                   |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `[step=call typeofFn=undefined]`               | the service method is missing                                                             |
+| `[step=downloadAttachment typeofFn=undefined]` | the `@cemp/images` import did not resolve                                                 |
+| `[step=deriveKey …]`                           | key derivation after all                                                                  |
+| still bare                                     | the download **succeeded** and the render block threw (`bytesToBase64` / `setFullImages`) |
 
 Note the last row is live: `bytesToBase64` demonstrably works for thumbnails
 (`chat-screen.tsx:474`) but those come from `manifest.thumbnail`, a much smaller buffer
@@ -370,7 +370,7 @@ anything**, in `apps/android/src/screens/chat-screen.tsx`,
 `TEMPORARY DIAGNOSTIC — 2026-08-15`, then rebuild and reinstall a clean release.
 `git diff` shows all of them; none is committed.
 
-**Not discriminated.** The clean test is to download *before* A reclaims the message cell.
+**Not discriminated.** The clean test is to download _before_ A reclaims the message cell.
 The window is only ~30–60s wide, because B's own `0x01` ack is what triggers the reclaim,
 and three attempts failed to land inside it (twice too slow, once because A had auto-locked
 and the send never happened). A debug build — which keeps `console.*` — would surface the
@@ -404,7 +404,7 @@ real exception and settle it without the race.
   would need a deliberately corrupted manifest or a hand-built reclaim.
 - **The chunk-expiry gap.** `df77fab` states it in its own commit body: if a
   recipient never downloads, the sender's capacity stays locked with no expiry
-  policy. Step 2C deliberately *demonstrates* that hold rather than resolving it.
+  policy. Step 2C deliberately _demonstrates_ that hold rather than resolving it.
 - **iOS.** An iPhone is attached (`00008130-000E155E1021401C`) but this run is the
   Android two-device round trip.
 
@@ -436,10 +436,10 @@ general release-bundle / Hermes-bytecode / ABI defect, or device-specific?
 
 **Results.**
 
-| Run | ABI | Outcome |
-| --- | --- | --- |
-| Image 1 (chunks `0xd07834a8…`, msg `0xdbd271cb…`) | x86_64 | tap → spinner → **loaded** (slow but succeeded). A `0x05` receipt cell from BOB's lock appeared on-chain afterwards (~1,752 CKB) — Phase 2E behaviour works end-to-end. |
-| Image 2 (chunks `0x1670611f…`, msg `0xe7f44a3c…`) | arm64 (translated) | tap → spinner ~7 min (libndk ≈10× slow) → **loaded**. No error, no `[diag:]` text ever rendered. |
+| Run                                               | ABI                | Outcome                                                                                                                                                                 |
+| ------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Image 1 (chunks `0xd07834a8…`, msg `0xdbd271cb…`) | x86_64             | tap → spinner → **loaded** (slow but succeeded). A `0x05` receipt cell from BOB's lock appeared on-chain afterwards (~1,752 CKB) — Phase 2E behaviour works end-to-end. |
+| Image 2 (chunks `0x1670611f…`, msg `0xe7f44a3c…`) | arm64 (translated) | tap → spinner ~7 min (libndk ≈10× slow) → **loaded**. No error, no `[diag:]` text ever rendered.                                                                        |
 
 Static checks in the same session: the Metro **release** bundle (`--dev false`,
 production Babel + metro-minify-terser) contains the whole download path intact
@@ -547,4 +547,3 @@ is what settles it; the static evidence for the root cause stands regardless.
 3. **Phase 2F (Chunk Reclaim Gate) — PASS**
    - Samsung received the `0x05` confirmation receipt.
    - Samsung ran chunk reclaim and updated the message bubble to `"capacity reclaimed"`.
-

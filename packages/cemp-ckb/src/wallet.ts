@@ -152,11 +152,13 @@ export async function balanceCategories(
     const capacity = BigInt(cell.output.capacity);
     total += capacity;
     const type = cell.output.type;
-    if (
+    const isMessageType =
       type !== null &&
       type.codeHash.toLowerCase() === typeCodeHash &&
-      type.hashType === typeHashType
-    ) {
+      type.hashType === typeHashType;
+    const hasData = cell.data !== "0x" && cell.data !== "";
+    const isProtocol = isMessageType || hasData || type !== null;
+    if (isProtocol) {
       reserved += capacity;
       protocolCellCount += 1;
     }

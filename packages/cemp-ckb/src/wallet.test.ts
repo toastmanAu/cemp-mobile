@@ -145,6 +145,58 @@ describe("balance categories (tasks 3, 7)", () => {
     );
   });
 
+  it("categorizes attachment chunk data cells and profile cells as reserved", async () => {
+    const plain = fundingCell(1000, 0xf1);
+    // Attachment chunk cell: no type script, but holds chunk data bytes
+    const chunk = Cell.from({
+      outPoint: { txHash: fillHex(0xd1, 32), index: 0 },
+      cellOutput: toOutputLike(
+        CellOutput.from({ capacity: fixedPointFrom(330), lock: fixtureSigner.lockScript() }),
+      ),
+      outputData: `0x${"aa".repeat(320)}`,
+    });
+    // Profile cell: has a different type script (e.g. TYPE_ID)
+    const profile = Cell.from({
+      outPoint: { txHash: fillHex(0xd2, 32), index: 0 },
+      cellOutput: toOutputLike(
+        CellOutput.from({
+          capacity: fixedPointFrom(340),
+          lock: fixtureSigner.lockScript(),
+          type: Script.from({
+            codeHash: fillHex(0x54, 32),
+            hashType: "type",
+            args: fillHex(0x01, 32),
+          }),
+        }),
+      ),
+      outputData: `0x${"bb".repeat(100)}`,
+    });
+
+    const provider = {
+      findCells: (query: { script: { codeHash: string } }) => {
+        const all = [plain, chunk, profile].map(toWireCell);
+        return Promise.resolve({
+          cells: all.filter((cell) => cell.output.lock.codeHash === query.script.codeHash),
+          lastCursor: "0x0",
+        });
+      },
+    };
+    const categories = await balanceCategories(
+      provider as unknown as CempClient,
+      toWireCell(plain).output.lock,
+      {
+        codeHash: CKB_TESTNET.deployments.cempMessageType!.codeHash,
+        hashType: CKB_TESTNET.deployments.cempMessageType!.hashType,
+      },
+    );
+    // Only the plain empty cell (1000 CKB) is spendable available capacity;
+    // chunk cell (330 CKB) + profile cell (340 CKB) are reserved protocol capacity.
+    expect(categories.totalShannon).toBe(fixedPointFrom(1670));
+    expect(categories.availableShannon).toBe(fixedPointFrom(1000));
+    expect(categories.reservedShannon).toBe(fixedPointFrom(670));
+    expect(categories.protocolCellCount).toBe(2);
+  });
+
   it("messageCellCapacity is the occupied minimum (8 + lock + type + data)", () => {
     const lock = Script.from(fixtureSigner.lockScript());
     const typeOccupied = 32 + 1 + 81; // codeHash + hashType + 81-byte args

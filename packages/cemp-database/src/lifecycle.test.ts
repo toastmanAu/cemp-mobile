@@ -508,4 +508,22 @@ describe("BalanceRepository accounting (task 8)", () => {
       await stack.db.close();
     }
   });
+
+  it("reconciles reserved and reclaimable categories when chainReserved is provided", async () => {
+    const stack = await makeDb();
+    try {
+      await stack.balances.setChainBalances(stack.walletId, 1000n, 1000n);
+      await stack.balances.reserveCapacity(stack.walletId, 400n);
+      // Local DB has reserved=400, available=600.
+      // Now a chain refresh reports only 100n total on-chain reserved (e.g. 300n phantom reservation).
+      await stack.balances.setChainBalances(stack.walletId, 1000n, 900n, { reservedShannon: 100n });
+      const balance = await stack.balances.getBalance(stack.walletId);
+      expect(balance.totalShannon).toBe(1000n);
+      expect(balance.availableShannon).toBe(900n);
+      expect(balance.reservedShannon).toBe(100n);
+      expect(balance.reclaimableShannon).toBe(0n);
+    } finally {
+      await stack.db.close();
+    }
+  });
 });

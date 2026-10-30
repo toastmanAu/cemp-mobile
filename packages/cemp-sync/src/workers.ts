@@ -791,6 +791,7 @@ async function runBalanceRefresh(deps: SyncWorkerDeps): Promise<void> {
     deps.walletId,
     categories.totalShannon,
     categories.availableShannon,
+    { reservedShannon: categories.reservedShannon },
   );
 }
 

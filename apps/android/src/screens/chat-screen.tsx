@@ -19,6 +19,7 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -105,6 +106,8 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
   /** Why a download failed, per message — cleared when a retry starts. */
   const [downloadErrors, setDownloadErrors] = useState<Map<number, string>>(new Map());
   const [fullImages, setFullImages] = useState<Map<number, FullImage>>(new Map());
+  /** Currently displayed image in the full-screen lightbox modal, or null when closed. */
+  const [activeViewerImage, setActiveViewerImage] = useState<FullImage | null>(null);
   // Double-tap guard: attach/send/retry all publish; a second tap while one is
   // in flight must not start a parallel publish of the same (or a second) row.
   const publishBusy = useRef(false);
@@ -383,9 +386,14 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
                   full={fullImages.get(item.id)}
                   statusLabel={label}
                   canRetry={bubble.canRetry}
-                  // Outgoing images are sealed to the recipient — sender-side
-                  // download can never succeed, so the tap is a no-op.
-                  onTap={outgoing ? () => {} : () => void loadFull(item.id, manifest)}
+                  onTap={() => {
+                    const loaded = fullImages.get(item.id);
+                    if (loaded !== undefined) {
+                      setActiveViewerImage(loaded);
+                    } else if (!outgoing) {
+                      void loadFull(item.id, manifest);
+                    }
+                  }}
                 />
               );
             }
@@ -425,6 +433,29 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
       <Text style={styles.byteCount}>
         {composer.byteLength}/{composer.maxBytes} bytes
       </Text>
+      <Modal
+        visible={activeViewerImage !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setActiveViewerImage(null)}
+      >
+        <Pressable style={styles.lightboxBackdrop} onPress={() => setActiveViewerImage(null)}>
+          <View style={styles.lightboxContainer}>
+            {activeViewerImage !== null ? (
+              <Image
+                source={{
+                  uri: `data:${activeViewerImage.mimeType};base64,${activeViewerImage.base64}`,
+                }}
+                style={styles.lightboxImage}
+                resizeMode="contain"
+              />
+            ) : null}
+            <Pressable style={styles.lightboxCloseButton} onPress={() => setActiveViewerImage(null)}>
+              <Text style={styles.lightboxCloseText}>✕</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -480,7 +511,7 @@ function ImageBubble({
     >
       <Pressable
         onPress={onTap}
-        disabled={presentation.affordance === "none"}
+        disabled={presentation.affordance === "none" && fullUri === null}
         style={[styles.imagePressable, { height: Math.round(200 * ratio) }]}
       >
         {presentation.showFull && fullUri !== null ? (
@@ -562,5 +593,38 @@ const styles = StyleSheet.create({
     textAlign: "center",
     textShadowColor: "rgba(0,0,0,0.6)",
     textShadowRadius: 3,
+  },
+  lightboxBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.92)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  lightboxContainer: {
+    width: "100%",
+    height: "100%",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  lightboxImage: {
+    width: "95%",
+    height: "85%",
+  },
+  lightboxCloseButton: {
+    position: "absolute",
+    top: 40,
+    right: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(255,255,255,0.25)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  lightboxCloseText: {
+    color: "#fff",
+    fontSize: 22,
+    fontWeight: "bold",
+    lineHeight: 24,
   },
 });

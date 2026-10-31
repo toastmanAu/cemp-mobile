@@ -121,8 +121,8 @@ route tag — already derivable via `deriveRouteTag` in `@cemp/core`.
 `phill@192.168.68.74:~/ckb-lora-bridge`)
 
 - [x] `StreamReceiver` on completion: spool hook in `cemp_stream_rx.py` (backup
-      `cemp_stream_rx.py.pre-l1spool`) writes `(route, bytes, crc32, received_at,
-    message_id)` to a SQLite spool (`cemp_spool.py` / `cemp_spool.db`, WAL;
+      `cemp_stream_rx.py.pre-l1spool`) writes
+      `(route, bytes, crc32, received_at, message_id)` to a SQLite spool (`cemp_spool.py` / `cemp_spool.db`, WAL;
       dedup `INSERT OR IGNORE` on message id; retention prune newest 1000 /
       7 days). Hook is failure-isolated — a spool error can never stall the
       radio RX path.

@@ -3,7 +3,23 @@
  * Every serialized CEMP object must carry these identifiers.
  */
 
+/**
+ * Profile protocol version (spec §5). Profiles are unchanged by ADR 0006 and
+ * still carry and advertise v1.
+ */
 export const CEMP_PROTOCOL_VERSION = 1;
+
+/**
+ * Envelope header `protocol_version` values a receiver accepts (ADR 0006):
+ * 1 decodes the payload as `CempPayloadV1`, 2 as `CempPayloadV2`.
+ */
+export const CEMP_ENVELOPE_PROTOCOL_VERSIONS: readonly number[] = [1, 2];
+
+/**
+ * The envelope protocol version every outgoing message is sent as (ADR
+ * 0006): no v1 send path remains, so there is nothing to downgrade to.
+ */
+export const CEMP_SEND_PROTOCOL_VERSION = 2;
 export const CEMP_SERIALIZATION_VERSION = 1;
 
 export const ALGORITHM_FAMILY = {

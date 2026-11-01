@@ -45,7 +45,7 @@ import type { BytesLike } from "@ckb-ccc/core";
 
 // ── errors ──────────────────────────────────────────────────────────────────
 
-/** All decode/encode failures of CEMP v1 wire data are reported as this type. */
+/** All decode/encode failures of CEMP wire data (v1 and v2) are reported as this type. */
 export class CempCodecError extends Error {
   readonly structure: string;
 
@@ -378,6 +378,41 @@ export const CempPayloadV1Codec = typed(
 export type CempPayloadV1 = mol.DecodedType<typeof CempPayloadV1Codec>;
 export type CempPayloadV1Encodable = mol.EncodableType<typeof CempPayloadV1Codec>;
 
+// ── payload, protocol version 2 (ADR 0006; schema schemas/cemp-v2.mol) ─────
+
+/** Receipt entry with a proof of decryption (ADR 0006). */
+export const ReceiptEntryV2Codec = typed(
+  mol.table({
+    message_id: Byte16Mol,
+    status: byteMol,
+    proof: Byte32Mol,
+  }),
+);
+export type ReceiptEntryV2 = mol.DecodedType<typeof ReceiptEntryV2Codec>;
+export type ReceiptEntryV2Encodable = mol.EncodableType<typeof ReceiptEntryV2Codec>;
+
+export const ReceiptVecV2Mol = guardedDynItemVec("ReceiptVecV2", ReceiptEntryV2Codec);
+
+/** `CempPayloadV1` with `receipts: ReceiptVecV2`; every other field identical, same order. */
+export const CempPayloadV2Codec = typed(
+  mol.table({
+    message_id: Byte16Mol,
+    body_type: byteMol,
+    recipient_profile_id: Byte32Mol,
+    text: BytesOptMol,
+    attachment_manifests: AttachmentManifestVecMol,
+    reply_to_message_id: Byte16OptMol,
+    reply_to_outpoint: OutPointOptMol,
+    receipts: ReceiptVecV2Mol,
+    receipt_request: byteMol,
+    client_timestamp: Uint64Mol,
+    sender_device_id: Byte16Mol,
+    padding: BytesMol,
+  }),
+);
+export type CempPayloadV2 = mol.DecodedType<typeof CempPayloadV2Codec>;
+export type CempPayloadV2Encodable = mol.EncodableType<typeof CempPayloadV2Codec>;
+
 // ── reclaim journal (spec §10, local only) ──────────────────────────────────
 
 export const ReclaimGroupV1Codec = typed(
@@ -550,3 +585,42 @@ export const decodeCempPayloadV1 = payloadPair.decode;
 const reclaimGroupPair = strictPair("ReclaimGroupV1", ReclaimGroupV1Codec);
 export const encodeReclaimGroupV1 = reclaimGroupPair.encode;
 export const decodeReclaimGroupV1 = reclaimGroupPair.decode;
+
+const receiptEntryV2Pair = strictPair("ReceiptEntryV2", ReceiptEntryV2Codec);
+export const encodeReceiptEntryV2 = receiptEntryV2Pair.encode;
+export const decodeReceiptEntryV2 = receiptEntryV2Pair.decode;
+
+const receiptVecV2Pair = strictPair("ReceiptVecV2", ReceiptVecV2Mol);
+export const encodeReceiptVecV2 = receiptVecV2Pair.encode;
+export const decodeReceiptVecV2 = receiptVecV2Pair.decode;
+
+const payloadV2Pair = strictPair("CempPayloadV2", CempPayloadV2Codec);
+export const encodeCempPayloadV2 = payloadV2Pair.encode;
+export const decodeCempPayloadV2 = payloadV2Pair.decode;
+
+// ── payload version dispatch (ADR 0006) ─────────────────────────────────────
+
+/** Envelope header `protocol_version` values that select a payload layout. */
+export const PAYLOAD_PROTOCOL_VERSION = { V1: 1, V2: 2 } as const;
+
+/** A decoded payload tagged with the layout its header version selected. */
+export type DecodedCempPayload =
+  | { readonly version: 1; readonly payload: CempPayloadV1 }
+  | { readonly version: 2; readonly payload: CempPayloadV2 };
+
+/**
+ * Decode a payload under the layout named by the envelope header's
+ * `protocol_version` (ADR 0006): `1` → `CempPayloadV1`, `2` →
+ * `CempPayloadV2`. The dispatch is explicit — a payload that does not match
+ * the declared layout is rejected, never re-tried as the other one — and any
+ * other version is rejected.
+ */
+export function decodeCempPayload(protocolVersion: number, data: BytesLike): DecodedCempPayload {
+  if (protocolVersion === PAYLOAD_PROTOCOL_VERSION.V1) {
+    return { version: 1, payload: decodeCempPayloadV1(data) };
+  }
+  if (protocolVersion === PAYLOAD_PROTOCOL_VERSION.V2) {
+    return { version: 2, payload: decodeCempPayloadV2(data) };
+  }
+  throw new CempCodecError("CempPayload", `unknown protocol_version ${String(protocolVersion)}`);
+}

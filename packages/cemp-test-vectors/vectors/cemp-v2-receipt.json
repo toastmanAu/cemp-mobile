@@ -1,0 +1,27 @@
+{
+  "vectorFormatVersion": 1,
+  "suite": "cemp-v2-receipt",
+  "source": "ADR 0006; computed independently with Python hmac/hashlib (RFC 5869 HKDF-SHA-256, RFC 2104 HMAC-SHA-256), not by the TypeScript implementation",
+  "cases": [
+    {
+      "name": "receipt-key-and-proofs",
+      "mlKemSharedSecret": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "envelopeNonce": "efefefefefefefefefefefef",
+      "senderProfileId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "recipientProfileId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "messageKey": "8c0fd771e0ae30cd4fe91756b5e6363c1d3caa33ff2fbe8707b0d9802857032e",
+      "receiptKey": "28122164ac19c428986613659fda3018597d91fcc0a1da26b68240a5d9475998",
+      "messageId": "000102030405060708090a0b0c0d0e0f",
+      "proofs": [
+        {
+          "status": 1,
+          "proof": "3823d32997b2c314a0f02260738b4d231c8dc03435fbe47de8e26ad6dbc66377"
+        },
+        {
+          "status": 5,
+          "proof": "7c9c5bb94c4adf89ce21463314c0b3b4846834ad2fec35bab76f00037c66c8d0"
+        }
+      ]
+    }
+  ]
+}

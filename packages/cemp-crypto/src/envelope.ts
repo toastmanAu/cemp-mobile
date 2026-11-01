@@ -1,5 +1,5 @@
 /**
- * CEMP v1 envelope encryption (spec §7–§8):
+ * CEMP envelope encryption (spec §7–§8; payload v1 or v2, ADR 0006):
  *
  *   encrypt: ml_kem768.encapsulate(recipient_kem_pk) → (kem_ct, shared_secret)
  *            message_key = HKDF(salt = nonce, IKM = shared_secret,
@@ -29,13 +29,18 @@ import { CempCryptoError } from "./errors.js";
 import { deriveMessageKey } from "./hkdf.js";
 import { ML_KEM_768_SIZES } from "./identity.js";
 import { randomBytes } from "./random.js";
+import { deriveReceiptKey } from "./receipt.js";
 
 /** Profile-id width, fixed by the wire types (spec §2). */
 const PROFILE_ID_BYTES = 32;
 
 /** Inputs every production caller supplies. */
 export interface EncryptEnvelopeParams {
-  /** Already Molecule-encoded `CempPayloadV1` (spec §8); padding included. */
+  /**
+   * Already Molecule-encoded payload (spec §8; padding included) in the
+   * layout `header.protocol_version` names: `CempPayloadV1` for 1,
+   * `CempPayloadV2` for 2 (ADR 0006).
+   */
   readonly payload: Uint8Array;
   /** Recipient's ML-KEM-768 public key (1184 bytes, from their profile cell). */
   readonly recipientKemPublicKey: Uint8Array;
@@ -86,6 +91,12 @@ export interface EncryptEnvelopeResult {
    * re-derives it on decrypt. SECRET: caller owns and wipes it.
    */
   readonly attachmentKey: Uint8Array;
+  /**
+   * The 32-byte receipt key (ADR 0006): same shared secret, the
+   * `CEMP-RECEIPT-KEY-V1` domain. The sender stores it on the outgoing row to
+   * verify the recipient's receipt proofs. SECRET: caller owns and wipes it.
+   */
+  readonly receiptKey: Uint8Array;
 }
 
 export interface DecryptEnvelopeParams {
@@ -101,9 +112,10 @@ export interface DecryptEnvelopeResult {
   /** Decoded clear header (already shape- and limit-validated, spec §12.1–3). */
   readonly header: codec.CempEnvelopeHeaderV1;
   /**
-   * Decrypted payload plaintext: the Molecule-encoded `CempPayloadV1`. The
-   * caller MUST continue the spec §12 pipeline (strict payload decode,
-   * `validatePayload`, `validateSemanticConsistency`) before using it.
+   * Decrypted payload plaintext: the Molecule-encoded payload in the layout
+   * `header.protocol_version` names (ADR 0006). The caller MUST continue the
+   * spec §12 pipeline (`validatePayloadForVersion`, `decodeCempPayload`,
+   * `validateSemanticConsistency`) before using it.
    */
   readonly payloadBytes: Uint8Array;
   /**
@@ -113,6 +125,12 @@ export interface DecryptEnvelopeResult {
    * sides derive byte-identical keys.
    */
   readonly attachmentKey: Uint8Array;
+  /**
+   * The 32-byte receipt key (ADR 0006), byte-identical to the sender's: the
+   * recipient proves decryption with it in its receipts. SECRET: caller owns
+   * and wipes it.
+   */
+  readonly receiptKey: Uint8Array;
 }
 
 function requireLength(label: string, value: Uint8Array, expected: number): void {
@@ -141,12 +159,14 @@ export function encryptEnvelope(
   // The recipient profile id lives inside the encrypted payload (spec §7), so
   // it is recovered by decoding the payload. This doubles as a sender-side
   // canonicality and header/payload consistency check.
-  let decodedPayload: codec.CempPayloadV1;
+  // The layout is chosen by the header's protocol_version (ADR 0006), never
+  // guessed: a payload that does not match it is a sender-side bug.
+  let decodedPayload: codec.CempPayloadV1 | codec.CempPayloadV2;
   try {
-    decodedPayload = codec.decodeCempPayloadV1(payload);
+    decodedPayload = codec.decodeCempPayload(header.protocol_version, payload).payload;
   } catch (e) {
     throw new CempCryptoError(
-      "encryptEnvelope: payload is not a canonical CempPayloadV1 encoding",
+      `encryptEnvelope: payload is not a canonical payload encoding for protocol_version ${String(header.protocol_version)}`,
       e,
     );
   }
@@ -181,6 +201,7 @@ export function encryptEnvelope(
   );
   let encryptedPayload: Uint8Array;
   let attachmentKey: Uint8Array;
+  let receiptKey: Uint8Array;
   try {
     const aad = codec.encodeCempEnvelopeHeaderV1(header);
     encryptedPayload = aes256GcmEncrypt(messageKey, nonce, payload, aad);
@@ -192,6 +213,13 @@ export function encryptEnvelope(
       header.sender_profile_id,
       decodedPayload.recipient_profile_id,
       "CEMP-ATTACHMENT-KEY-V1",
+    );
+    // Receipt key (ADR 0006): same secret, own domain.
+    receiptKey = deriveReceiptKey(
+      sharedSecret,
+      nonce,
+      header.sender_profile_id,
+      decodedPayload.recipient_profile_id,
     );
   } finally {
     // Best-effort wipe of per-envelope secrets (see identity.ts for the
@@ -212,7 +240,7 @@ export function encryptEnvelope(
   if (!check.ok) {
     throw new CempCryptoError(`encryptEnvelope produced an invalid envelope: ${check.reason}`);
   }
-  return { envelopeBytes, kemCiphertext: cipherText, nonce, attachmentKey };
+  return { envelopeBytes, kemCiphertext: cipherText, nonce, attachmentKey, receiptKey };
 }
 
 /**
@@ -270,7 +298,14 @@ export function decryptEnvelope(params: DecryptEnvelopeParams): DecryptEnvelopeR
       ownProfileId,
       "CEMP-ATTACHMENT-KEY-V1",
     );
-    return { header: envelope.header, payloadBytes, attachmentKey };
+    // Receipt key (ADR 0006), likewise only after the AEAD check passed.
+    const receiptKey = deriveReceiptKey(
+      sharedSecret,
+      envelope.nonce,
+      envelope.header.sender_profile_id,
+      ownProfileId,
+    );
+    return { header: envelope.header, payloadBytes, attachmentKey, receiptKey };
   } finally {
     messageKey.fill(0);
     sharedSecret.fill(0);

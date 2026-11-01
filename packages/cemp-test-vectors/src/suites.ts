@@ -31,6 +31,16 @@ export const VECTOR_SUITES: readonly VectorSuiteHeader[] = [
     description: "Molecule serialization round-trips (profiles, envelopes, payloads, manifests)",
   },
   {
+    id: "cemp-v2-serialization",
+    file: "cemp-v2-serialization.json",
+    description: "Protocol v2 Molecule round-trips (ReceiptEntryV2, CempPayloadV2; ADR 0006)",
+  },
+  {
+    id: "cemp-v2-receipt",
+    file: "cemp-v2-receipt.json",
+    description: "Receipt key + receipt proof known answers (ADR 0006; independent Python oracle)",
+  },
+  {
     id: "cemp-v1-envelope",
     file: "cemp-v1-envelope.json",
     description: "ML-KEM envelope seal/open against fixed identities",

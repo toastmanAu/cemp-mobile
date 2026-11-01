@@ -13,20 +13,23 @@
  * attempted.
  */
 
-import { CEMP_PROTOCOL_VERSION } from "../protocol.js";
+import { CEMP_ENVELOPE_PROTOCOL_VERSIONS, CEMP_PROTOCOL_VERSION } from "../protocol.js";
 import { CONTENT_TYPE } from "../envelope.js";
 import {
   bytesEqual,
   CempCodecError,
   decodeCempEnvelopeV1,
   decodeCempPayloadV1,
+  decodeCempPayloadV2,
   decodeCempProfileV1,
+  PAYLOAD_PROTOCOL_VERSION,
 } from "./codecs.js";
 import type {
   AlgorithmIdV1,
   CempEnvelopeHeaderV1,
   CempEnvelopeV1,
   CempPayloadV1,
+  CempPayloadV2,
   CempProfileV1,
 } from "./codecs.js";
 
@@ -53,6 +56,15 @@ export const V1_LIMITS = {
   maxProtocolVersions: 8,
   /** AES-256-GCM tag appended to `encrypted_payload` (spec §7). */
   gcmTagBytes: 16,
+} as const;
+
+/**
+ * Protocol version 2 limits (ADR 0006): identical to v1, plus the fixed
+ * receipt-proof width.
+ */
+export const V2_LIMITS = {
+  ...V1_LIMITS,
+  receiptProofBytes: 32,
 } as const;
 
 // ── known identifier bytes (spec §3, §7) ────────────────────────────────────
@@ -175,9 +187,11 @@ export function validateProfile(data: Uint8Array): ValidationResult {
  */
 export function validateEnvelopeFields(envelope: CempEnvelopeV1): ValidationResult {
   const { header } = envelope;
-  if (header.protocol_version !== CEMP_PROTOCOL_VERSION) {
+  // ADR 0006: the header version selects the payload layout; only 1 and 2 exist.
+  if (!CEMP_ENVELOPE_PROTOCOL_VERSIONS.includes(header.protocol_version)) {
     return fail(
-      `unknown protocol_version ${header.protocol_version} (expected ${CEMP_PROTOCOL_VERSION})`,
+      `unknown protocol_version ${header.protocol_version} ` +
+        `(expected one of ${CEMP_ENVELOPE_PROTOCOL_VERSIONS.join(", ")})`,
     );
   }
   if (header.network !== NETWORK_CKB_TESTNET) {
@@ -236,7 +250,7 @@ export function validateEnvelope(data: Uint8Array): ValidationResult {
  * to skip that single check when only the decoded value is at hand.
  */
 export function validatePayloadFields(
-  payload: CempPayloadV1,
+  payload: CempPayloadV1 | CempPayloadV2,
   totalBytes: number | undefined,
 ): ValidationResult {
   // Review C1: discriminant bytes are range-checked, not just shape-decoded.
@@ -253,6 +267,12 @@ export function validatePayloadFields(
     // Spec §9: status is the 0x00–0x06 enum (unknown…rejected).
     if (receipt.status > 0x06) {
       return fail(`unknown receipt status ${hexByte(receipt.status)} (spec §9)`);
+    }
+    // v2 (ADR 0006): guaranteed by the fixed Byte32; asserted anyway.
+    if ("proof" in receipt && receipt.proof.byteLength !== V2_LIMITS.receiptProofBytes) {
+      return fail(
+        `receipt proof is ${receipt.proof.byteLength} bytes, expected ${V2_LIMITS.receiptProofBytes}`,
+      );
     }
   }
   if (payload.text !== undefined && payload.text.byteLength > V1_LIMITS.maxTextBytes) {
@@ -296,6 +316,34 @@ export function validatePayload(bytes: Uint8Array): ValidationResult {
   }
 }
 
+/** Full v2 payload pipeline (ADR 0006): same field checks and limits as v1. */
+export function validatePayloadV2(bytes: Uint8Array): ValidationResult {
+  try {
+    const decoded = tryDecode("CempPayloadV2", decodeCempPayloadV2, bytes);
+    if (!decoded.ok) return decoded;
+    return validatePayloadFields(decoded.value, bytes.byteLength);
+  } catch (e) {
+    return fail(`payload validation error: ${errorMessage(e)}`);
+  }
+}
+
+/**
+ * The payload pipeline for the layout the envelope header's
+ * `protocol_version` names (ADR 0006). Explicit dispatch, never a fallback.
+ */
+export function validatePayloadForVersion(
+  protocolVersion: number,
+  bytes: Uint8Array,
+): ValidationResult {
+  if (protocolVersion === PAYLOAD_PROTOCOL_VERSION.V1) {
+    return validatePayload(bytes);
+  }
+  if (protocolVersion === PAYLOAD_PROTOCOL_VERSION.V2) {
+    return validatePayloadV2(bytes);
+  }
+  return fail(`unknown protocol_version ${String(protocolVersion)}`);
+}
+
 // ── semantic consistency (spec §12.5) ───────────────────────────────────────
 
 /**
@@ -305,7 +353,7 @@ export function validatePayload(bytes: Uint8Array): ValidationResult {
  */
 export function validateSemanticConsistency(
   header: CempEnvelopeHeaderV1,
-  payload: CempPayloadV1,
+  payload: Pick<CempPayloadV1, "message_id" | "body_type" | "recipient_profile_id">,
   ownProfileId: Uint8Array,
 ): ValidationResult {
   try {

@@ -32,8 +32,20 @@ export type KdfDomain = (typeof KDF_DOMAIN)[keyof typeof KDF_DOMAIN];
 export const MESSAGE_KEY_DOMAIN = {
   MessageKey: "CEMP-MESSAGE-KEY-V1",
   AttachmentKey: "CEMP-ATTACHMENT-KEY-V1",
+  /**
+   * Per-message receipt key (ADR 0006): same HKDF-Extract as the message key,
+   * own Expand info, so it reveals nothing about the message or attachment
+   * keys. Both the sender and the recipient hold it.
+   */
+  ReceiptKey: "CEMP-RECEIPT-KEY-V1",
 } as const;
 export type MessageKeyDomain = (typeof MESSAGE_KEY_DOMAIN)[keyof typeof MESSAGE_KEY_DOMAIN];
+
+/**
+ * HMAC domain of the receipt proof (ADR 0006):
+ * proof = HMAC-SHA256(receipt_key, "CEMP-RECEIPT-PROOF-V1" ‖ message_id[16] ‖ status[1]).
+ */
+export const RECEIPT_PROOF_DOMAIN = "CEMP-RECEIPT-PROOF-V1";
 
 /** Signature domain separation (spec §14.2). */
 export const SIGNATURE_DOMAIN = {

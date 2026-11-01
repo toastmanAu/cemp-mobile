@@ -7,7 +7,8 @@
  */
 
 import React, { useState } from "react";
-import { Button, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Button, ScrollView, StyleSheet, View } from "react-native";
+import { Text, TextInput } from "../components/text";
 import { useAppContainer } from "../navigation";
 import { MOBILE_VAULT_KDF } from "../platform/kdf";
 

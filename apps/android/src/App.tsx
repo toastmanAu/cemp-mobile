@@ -8,7 +8,8 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { Image, StyleSheet, Text, View, type ImageSourcePropType } from "react-native";
+import { Image, StyleSheet, View, type ImageSourcePropType } from "react-native";
+import { FontWeightAdjustmentProvider, Text, useAdjustedFontWeight } from "./components/text";
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
@@ -40,9 +41,13 @@ const TAB_ICONS: Record<keyof TabParamList, ImageSourcePropType> = {
 };
 
 function MainTabs(): React.JSX.Element {
+  const labelWeight = useAdjustedFontWeight();
   return (
     <Tabs.Navigator
       screenOptions={({ route }) => ({
+        // Bold text: the bar's labels are RN Text inside react-navigation,
+        // outside our Text wrapper, so they take the adjusted weight here.
+        ...(labelWeight === undefined ? {} : { tabBarLabelStyle: { fontWeight: labelWeight } }),
         // Full-colour artwork: the focused state is carried by opacity, not by
         // tintColor — tinting would flatten the icons' shading to a flat mask.
         // A fixed square box + `contain` normalises their differing aspect
@@ -70,6 +75,15 @@ const styles = StyleSheet.create({
 });
 
 export function App(): React.JSX.Element {
+  return (
+    <FontWeightAdjustmentProvider>
+      <AppContent />
+    </FontWeightAdjustmentProvider>
+  );
+}
+
+function AppContent(): React.JSX.Element {
+  const headerWeight = useAdjustedFontWeight();
   const [container, setContainer] = useState<AppContainer | null>(null);
   const [containerState, setContainerState] = useState<AppContainerState>("loading");
   const [initError, setInitError] = useState<string | null>(null);
@@ -127,7 +141,11 @@ export function App(): React.JSX.Element {
           }}
         >
           <NavigationContainer>
-            <Stack.Navigator>
+            <Stack.Navigator
+              screenOptions={
+                headerWeight === undefined ? {} : { headerTitleStyle: { fontWeight: headerWeight } }
+              }
+            >
               <Stack.Screen name="Main" component={MainTabs} options={{ headerShown: false }} />
               <Stack.Screen
                 name="Chat"

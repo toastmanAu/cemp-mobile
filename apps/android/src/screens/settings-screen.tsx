@@ -5,7 +5,8 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { Alert, Button, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { Alert, Button, ScrollView, StyleSheet, Switch, View } from "react-native";
+import { Text, TextInput } from "../components/text";
 import { LORA_ENABLED_SETTING_KEY, LORA_GATEWAY_URL_SETTING_KEY } from "@cemp/sync";
 import { LoraTransport } from "@cemp/lora";
 import { useAppContainer } from "../navigation";

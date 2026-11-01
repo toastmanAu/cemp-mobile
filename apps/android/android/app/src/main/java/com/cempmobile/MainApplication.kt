@@ -6,6 +6,7 @@ import com.cempmobile.imaging.CempImagePackage
 import com.cempmobile.kdf.CempKdfPackage
 import com.cempmobile.qr.CempQrScannerPackage
 import com.cempmobile.share.CempSharePackage
+import com.cempmobile.text.CempTextWeightPackage
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
@@ -25,6 +26,7 @@ class MainApplication : Application(), ReactApplication {
           add(CempImagePackage())
           add(CempSharePackage())
           add(CempQrScannerPackage())
+          add(CempTextWeightPackage())
         },
     )
   }

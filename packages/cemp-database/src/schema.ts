@@ -31,9 +31,14 @@
  *   AttachmentDownloaded` receipt (spec §8), which is what permits chunk-cell
  *   reclaim. Reclaiming on the plain `0x01` envelope ack destroyed images
  *   before a lazily-tapped download could ever fetch them.
+ * - 10: messages.receipt_key (ADR 0006) — the per-message receipt key. On an
+ *   OUTGOING row (stored before broadcast) it verifies the recipient's
+ *   receipt proofs; on an INCOMING row (stored at first ingest) it produces
+ *   them, possibly after the sender has reclaimed the message cell. NULL for
+ *   rows from before the upgrade and for legacy v1 incoming messages.
  */
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [

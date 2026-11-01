@@ -23,7 +23,8 @@
 import { buildReclaimTx, type CempMessageTypeRef } from "./builders.js";
 import type { TransactionLike } from "@ckb-ccc/core";
 import { CempCkbError, type CempClient } from "./client.js";
-import type { IncomingTextMessage } from "./incoming.js";
+import { verifyReceiptProof } from "@cemp/crypto";
+import type { IncomingReceipt, IncomingTextMessage } from "./incoming.js";
 import {
   JournaledAbandonedError,
   resumeJournaledBroadcast,
@@ -53,12 +54,20 @@ export interface LifecycleStore {
   setMessageChainRef(rowId: number, ref: { txHash: string; outpointIndex: number }): Promise<void>;
   /**
    * The OUTGOING message with this envelope id, plus the profile id of the
-   * contact it was sent to (null when that contact has no profile id). Used to
-   * bind a receipt to the message's recipient.
+   * contact it was sent to (null when that contact has no profile id) and
+   * the receipt key stored before broadcast (null for rows sent before ADR
+   * 0006). Used to bind a receipt to the message's recipient and to verify
+   * its proof of decryption. `receiptKey` is a fresh copy the caller wipes.
    */
-  findOutgoingByEnvelopeMessageId(
-    envelopeMessageIdHex: string,
-  ): Promise<{ rowId: number; state: string; recipientProfileIdHex: string | null } | undefined>;
+  findOutgoingByEnvelopeMessageId(envelopeMessageIdHex: string): Promise<
+    | {
+        rowId: number;
+        state: string;
+        recipientProfileIdHex: string | null;
+        receiptKey: Uint8Array | null;
+      }
+    | undefined
+  >;
   listOutgoingByState(state: string): Promise<LifecycleMessage[]>;
 
   recordOutgoingTx(input: {
@@ -175,12 +184,16 @@ export class ResponseLifecycle {
    *
    * Unknown ids are skipped silently (the reply may reference messages of
    * another device). Returns the acked row ids.
+   *
+   * Every receipt must pass the ADR 0006 acceptance rules
+   * ({@link #findReceiptTarget}); one that does not has NO side effect, and
+   * the remaining receipts are still processed.
    */
   async processAcknowledgements(incoming: IncomingTextMessage): Promise<number[]> {
     const acked: number[] = [];
     for (const receipt of incoming.receipts) {
       if (receipt.status === 0x05) {
-        const target = await this.#findReceiptTarget(incoming, receipt.messageId);
+        const target = await this.#findReceiptTarget(incoming, receipt);
         if (target !== undefined) {
           await this.#deps.store.markAttachmentRemoteDownloaded(target.rowId);
         }
@@ -189,7 +202,7 @@ export class ResponseLifecycle {
       if (receipt.status !== 0x01) {
         continue;
       }
-      const found = await this.#findReceiptTarget(incoming, receipt.messageId);
+      const found = await this.#findReceiptTarget(incoming, receipt);
       if (found === undefined || !ACKABLE_STATES.has(found.state)) {
         continue;
       }
@@ -212,29 +225,52 @@ export class ResponseLifecycle {
   }
 
   /**
-   * Receipt → recipient binding (security handoff Phase E): a receipt only
-   * counts when its sender is the contact the original message was sent to.
-   * Fails closed when that contact has no profile id.
+   * ADR 0006 receipt acceptance. A receipt names a target only when ALL hold:
    *
-   * LIMIT: v1 envelopes are unsigned, so `senderProfileId` is only a claim.
-   * The cleartext conversation_id = H(sorted(sender, recipient)) lets a
-   * chain observer find the recipient and claim to be them, so this stops a
-   * third party naming itself (RCPT-03) but NOT a forger impersonating the
-   * recipient (RCPT-01/02). See docs/review/PHASE-A-REPRODUCTION.md.
+   * 1. it arrived in a version-2 payload (v1 receipts carry no proof);
+   * 2. its message id names an OUTGOING row whose conversation contact is
+   *    the receipt's claimed sender (the recipient binding from `dbae853`,
+   *    kept as defence in depth; fails closed with no contact profile id);
+   * 3. that row has a stored receipt key (rows sent before ADR 0006 have
+   *    none and can never be released by a receipt);
+   * 4. the proof verifies, in constant time, for that message id AND status.
+   *
+   * Only the sender and the intended recipient can derive the receipt key,
+   * so a chain observer impersonating the recipient (RCPT-01/02/04) cannot
+   * produce rule 4, and a genuine proof cannot be relabelled or moved.
    */
   async #findReceiptTarget(
     incoming: IncomingTextMessage,
-    messageId: Uint8Array,
+    receipt: IncomingReceipt,
   ): Promise<{ rowId: number; state: string } | undefined> {
-    const found = await this.#deps.store.findOutgoingByEnvelopeMessageId(bytesToHex(messageId));
-    if (found === undefined || found.recipientProfileIdHex === null) {
+    if (incoming.protocolVersion !== 2 || receipt.proof === null) {
       return undefined;
     }
-    const sender = bytesToHex(incoming.senderProfileId).toLowerCase();
-    if (found.recipientProfileIdHex.toLowerCase() !== sender) {
+    const found = await this.#deps.store.findOutgoingByEnvelopeMessageId(
+      bytesToHex(receipt.messageId),
+    );
+    if (found === undefined) {
       return undefined;
     }
-    return { rowId: found.rowId, state: found.state };
+    const receiptKey = found.receiptKey;
+    try {
+      if (found.recipientProfileIdHex === null) {
+        return undefined;
+      }
+      const sender = bytesToHex(incoming.senderProfileId).toLowerCase();
+      if (found.recipientProfileIdHex.toLowerCase() !== sender) {
+        return undefined;
+      }
+      if (receiptKey === null) {
+        return undefined;
+      }
+      if (!verifyReceiptProof(receiptKey, receipt.messageId, receipt.status, receipt.proof)) {
+        return undefined;
+      }
+      return { rowId: found.rowId, state: found.state };
+    } finally {
+      receiptKey?.fill(0);
+    }
   }
 
   /* ---------------- worker-driven commit finalization (review M-2) ------ */

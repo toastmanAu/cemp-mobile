@@ -158,7 +158,7 @@ function markMessage(
 
 /** reply_to_outpoint match + a downloaded receipt for the original message (spec §9). */
 function verifyAcknowledgement(
-  payload: codec.CempPayloadV1,
+  payload: codec.CempPayloadV1 | codec.CempPayloadV2,
   originalMessageId: string,
   originalOutPoint: { txHash: string; index: string },
 ): void {
@@ -178,7 +178,12 @@ function verifyAcknowledgement(
   ) {
     throw new StepFailure("response reply_to_message_id does not match the original message");
   }
-  const receipt = payload.receipts.find(
+  // NOTE (ADR 0006): this operator-driven harness checks the receipt's
+  // presence only. It keeps no secrets in its JSON run state, so it holds no
+  // sender receipt key and cannot verify the proof; the app's lifecycle
+  // (`ResponseLifecycle.processAcknowledgements`) does.
+  const receipts: readonly { message_id: Uint8Array; status: number }[] = payload.receipts;
+  const receipt = receipts.find(
     (entry) => codec.bytesToHex(entry.message_id) === originalMessageId,
   );
   if (receipt === undefined || receipt.status !== 0x01) {

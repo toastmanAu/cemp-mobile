@@ -1,11 +1,18 @@
 import { Cell, CellOutput, Script, bytesFrom, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
 import { CKB_TESTNET, codec } from "@cemp/core";
-import { deriveIdentityKeys, mldsaV2KeygenFromSeed, wipeIdentityKeyBundle } from "@cemp/crypto";
+import {
+  computeReceiptProof,
+  deriveIdentityKeys,
+  mldsaV2KeygenFromSeed,
+  verifyReceiptProof,
+  wipeIdentityKeyBundle,
+} from "@cemp/crypto";
 import { describe, expect, it, vi } from "vitest";
 import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
 import type { AssembleTextMessageParams } from "./assemble.js";
 import { TYPE_ID_CODE_HASH, type CempMessageTypeRef } from "./builders.js";
 import { CempClient, type JsonRpcTransport } from "./client.js";
+import { processIncomingText } from "./incoming.js";
 import { MlDsaV2TxSigner } from "./signing.js";
 import { MockCkbClient, fillHex, toOutputLike } from "./testing/mock-ccc-client.js";
 import { hashFromRpcBody } from "./testing/rpc-body.js";
@@ -68,7 +75,7 @@ function fundingCell(ckb: number, seed: number, lock: Script): Cell {
 // ── fake publication store (records event order for rule-6 assertions) ────
 
 interface StoreEvent {
-  kind: "transition" | "chainref" | "journal" | "txstate" | "broadcast";
+  kind: "transition" | "chainref" | "journal" | "txstate" | "broadcast" | "receiptkey";
   detail: string;
 }
 
@@ -135,6 +142,15 @@ class FakeStore implements PublicationStore {
 
   setEnvelopeMessageId(_id: number, envelopeMessageIdHex: string): Promise<void> {
     this.events.push({ kind: "chainref", detail: `envelope:${envelopeMessageIdHex}` });
+    return Promise.resolve();
+  }
+
+  /** Copies of the stored receipt keys (the publisher wipes its own). */
+  readonly receiptKeys = new Map<number, Uint8Array>();
+
+  setReceiptKey(id: number, receiptKey: Uint8Array): Promise<void> {
+    this.receiptKeys.set(id, receiptKey.slice());
+    this.events.push({ kind: "receiptkey", detail: String(id) });
     return Promise.resolve();
   }
 
@@ -596,6 +612,39 @@ describe("MessagePublisher.publishText", () => {
  * function the publisher calls fresh on every `publishText`, and it must
  * reject (never fabricate a zero id) when no profile exists yet.
  */
+describe("MessagePublisher stores the ADR 0006 receipt key", () => {
+  it("persists the envelope's receipt key BEFORE broadcast, sends protocol v2, and the recipient derives the same key", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const { publisher, store, sentBodies } = makeFixture(json);
+    await publisher.publishText({
+      messageRowId: 9,
+      logicalMessageId: "lm-receipt-key",
+      text: "prove you read this",
+      recipientProfileIdHex: profileIdHex,
+    });
+
+    const kinds = store.events.map((e) => e.kind);
+    expect(kinds).toContain("receiptkey");
+    expect(kinds.indexOf("receiptkey")).toBeLessThan(kinds.indexOf("broadcast"));
+    const stored = store.receiptKeys.get(9);
+    expect(stored).toHaveLength(32);
+    expect(stored!.some((b) => b !== 0)).toBe(true);
+
+    // Decrypt the broadcast cell as the recipient: v2, same receipt key.
+    const body = sentBodies[0] as { outputs_data: string[] };
+    const recipient = deriveIdentityKeys(hexToBytes(`0x${"77".repeat(64)}`));
+    const incoming = processIncomingText({
+      cellData: hexToBytes(body.outputs_data[0]!),
+      ownKemSecretKey: recipient.mlKem.secretKey,
+      ownProfileId: hexToBytes(profileIdHex),
+    });
+    wipeIdentityKeyBundle(recipient);
+    expect(incoming.protocolVersion).toBe(2);
+    const proof = computeReceiptProof(incoming.receiptKey!, incoming.messageId, 0x01);
+    expect(verifyReceiptProof(stored!, incoming.messageId, 0x01, proof)).toBe(true);
+  });
+});
+
 describe("MessagePublisher sender profile id (fresh lookup, no cache — device bug regression)", () => {
   it("re-resolves the sender profile id on every publish, so a profile published mid-session is used immediately", async () => {
     mockAssembleSpy.mockClear();

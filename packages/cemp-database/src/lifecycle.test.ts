@@ -1,6 +1,6 @@
 import { Cell, CellOutput, Script, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
 import { CKB_TESTNET } from "@cemp/core";
-import { mldsaV2KeygenFromSeed } from "@cemp/crypto";
+import { computeReceiptProof, mldsaV2KeygenFromSeed } from "@cemp/crypto";
 import { buildMessageTypeArgs, type CempMessageTypeRef } from "@cemp/ckb";
 import { CempClient, type JsonRpcTransport } from "@cemp/ckb";
 import type { IncomingTextMessage } from "@cemp/ckb";
@@ -190,6 +190,16 @@ async function makeOutgoingConversation(
   return conv;
 }
 
+/**
+ * The receipt key stored on test outgoing rows (ADR 0006). A real one comes
+ * from the envelope; any fixed 32 bytes exercise the same verification.
+ */
+const TEST_RECEIPT_KEY = new Uint8Array(32).fill(0x3c);
+
+function proofFor(messageId: Uint8Array, status: number): Uint8Array {
+  return computeReceiptProof(TEST_RECEIPT_KEY, messageId, status);
+}
+
 const OUTGOING_HAPPY_PATH = [
   "queued",
   "encrypting",
@@ -226,11 +236,14 @@ describe("ResponseLifecycle.processAcknowledgements (tasks 4–5)", () => {
       }
       const envId = hexToBytes("1234567890abcdef1234567890abcdef");
       await stack.messages.setEnvelopeMessageId(message.id, "1234567890abcdef1234567890abcdef");
+      await stack.messages.setReceiptKey(message.id, TEST_RECEIPT_KEY);
 
       const reply: IncomingTextMessage = {
         contentType: 0x01,
         attachmentManifests: [],
         attachmentKey: new Uint8Array(32),
+        receiptKey: null,
+        protocolVersion: 2,
         messageId: hexToBytes("ffffffffffffffffffffffffffffffff"),
         conversationId: hexToBytes("99".repeat(32)),
         senderProfileId: hexToBytes("88".repeat(32)),
@@ -238,9 +251,15 @@ describe("ResponseLifecycle.processAcknowledgements (tasks 4–5)", () => {
         replyToMessageId: envId,
         replyToOutpoint: null,
         receipts: [
-          { messageId: envId, status: 0x01 },
-          { messageId: hexToBytes("00".repeat(16)), status: 0x01 }, // unknown — skipped
-          { messageId: envId, status: 0x02 }, // not an ack status — skipped
+          { messageId: envId, status: 0x01, proof: proofFor(envId, 0x01) },
+          // unknown — skipped
+          {
+            messageId: hexToBytes("00".repeat(16)),
+            status: 0x01,
+            proof: proofFor(hexToBytes("00".repeat(16)), 0x01),
+          },
+          // not an ack status — skipped
+          { messageId: envId, status: 0x02, proof: proofFor(envId, 0x02) },
         ],
         clientTimestamp: 0n,
         senderDeviceId: hexToBytes("77".repeat(16)),
@@ -275,6 +294,7 @@ describe("ResponseLifecycle.processAcknowledgements (tasks 4–5)", () => {
       }
       const envId = hexToBytes("abcdefabcdefabcdefabcdefabcdefab");
       await stack.messages.setEnvelopeMessageId(message.id, "abcdefabcdefabcdefabcdefabcdefab");
+      await stack.messages.setReceiptKey(message.id, TEST_RECEIPT_KEY);
       await stack.attachments.create({
         messageId: message.id,
         kind: "image",
@@ -287,13 +307,15 @@ describe("ResponseLifecycle.processAcknowledgements (tasks 4–5)", () => {
         contentType: 0x01,
         attachmentManifests: [],
         attachmentKey: new Uint8Array(32),
+        receiptKey: null,
+        protocolVersion: 2,
         messageId: hexToBytes("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
         conversationId: hexToBytes("99".repeat(32)),
         senderProfileId: hexToBytes("88".repeat(32)),
         text: "",
         replyToMessageId: envId,
         replyToOutpoint: null,
-        receipts: [{ messageId: envId, status: 0x05 }],
+        receipts: [{ messageId: envId, status: 0x05, proof: proofFor(envId, 0x05) }],
         clientTimestamp: 0n,
         senderDeviceId: hexToBytes("77".repeat(16)),
       };
@@ -320,13 +342,22 @@ describe("ResponseLifecycle.processAcknowledgements binds receipts to the recipi
       contentType: 0x01,
       attachmentManifests: [],
       attachmentKey: new Uint8Array(32),
+      receiptKey: null,
+      protocolVersion: 2,
       messageId: hexToBytes("dd".repeat(16)),
       conversationId: hexToBytes("99".repeat(32)),
       senderProfileId: hexToBytes(senderProfileIdHex),
       text: "",
       replyToMessageId: null,
       replyToOutpoint: null,
-      receipts: [{ messageId: hexToBytes(ENV_ID_HEX), status }],
+      // A VALID proof: these tests isolate the recipient binding.
+      receipts: [
+        {
+          messageId: hexToBytes(ENV_ID_HEX),
+          status,
+          proof: proofFor(hexToBytes(ENV_ID_HEX), status),
+        },
+      ],
       clientTimestamp: 0n,
       senderDeviceId: hexToBytes("77".repeat(16)),
     };
@@ -357,6 +388,7 @@ describe("ResponseLifecycle.processAcknowledgements binds receipts to the recipi
       }
     }
     await stack.messages.setEnvelopeMessageId(message.id, ENV_ID_HEX);
+    await stack.messages.setReceiptKey(message.id, TEST_RECEIPT_KEY);
     await stack.attachments.create({
       messageId: message.id,
       kind: "image",

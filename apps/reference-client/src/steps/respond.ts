@@ -1,5 +1,6 @@
 import { codec } from "@cemp/core";
-import { buildSendMessageTx } from "@cemp/ckb";
+import { computeReceiptProof } from "@cemp/crypto";
+import { buildSendMessageTx, processIncomingText } from "@cemp/ckb";
 import {
   StepFailure,
   assembleTextMessage,
@@ -59,6 +60,29 @@ export const stepRespond: StepFn = async (ctx, log) => {
   checkProfileFingerprint(resolved, aliceRecord);
 
   const originalMessageId = codec.hexToBytes(original.messageId);
+  // ADR 0006: the receipt proves Bob decrypted the original. The receipt key
+  // is never written to the run state (secrets stay out of JSON), so it is
+  // re-derived here from the original cell, which is still live: Alice only
+  // reclaims it after this receipt.
+  const live = await ctx.client.getLiveCell(original.outPoint);
+  if (live.status !== "live") {
+    throw new StepFailure(
+      "alice's original message cell is no longer live — cannot re-derive the receipt key",
+    );
+  }
+  const reopened = processIncomingText({
+    cellData: codec.hexToBytes(
+      live.cell.data.startsWith("0x") ? live.cell.data.slice(2) : live.cell.data,
+    ),
+    ownKemSecretKey: bob.bundle.mlKem.secretKey,
+    ownProfileId: codec.hexToBytes(bobRecord.profileId),
+  });
+  reopened.attachmentKey.fill(0);
+  if (reopened.receiptKey === null) {
+    throw new StepFailure("alice's original is a v1 message: no proven receipt can be sent");
+  }
+  const proof = computeReceiptProof(reopened.receiptKey, originalMessageId, 0x01);
+  reopened.receiptKey.fill(0);
   const message = assembleTextMessage({
     text: RESPOND_TEXT,
     senderProfileId: codec.hexToBytes(bobRecord.profileId),
@@ -66,7 +90,7 @@ export const stepRespond: StepFn = async (ctx, log) => {
     recipientKemPublicKey: resolved.profile.ml_kem_public_key,
     senderDeviceId: codec.hexToBytes(bob.state.deviceId),
     replyTo: { messageId: originalMessageId, outPoint: original.outPoint },
-    receipts: [{ messageId: originalMessageId, status: 0x01 }], // downloaded
+    receipts: [{ messageId: originalMessageId, status: 0x01, proof }], // downloaded
     receiptRequest: 0x00,
   });
   log(

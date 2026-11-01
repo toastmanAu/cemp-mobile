@@ -1,4 +1,4 @@
-import { Script, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
+import { Cell, CellOutput, Script, bytesFrom, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
 import { CKB_TESTNET, codec, deriveConversationId, deriveRouteTag } from "@cemp/core";
 import {
   MessagePublisher,
@@ -6,17 +6,20 @@ import {
   RateLimiter,
   DEFAULT_RATE_LIMITS,
   ResponseLifecycle,
+  TYPE_ID_CODE_HASH,
   assembleTextMessage,
   currentRoutingEpoch,
   incomingLogicalMessageId,
   type CempMessageTypeRef,
 } from "@cemp/ckb";
 import { CempClient, type JsonRpcTransport } from "@cemp/ckb";
-import { MockCkbClient, fillHex, hashFromRpcBody } from "@cemp/ckb/testing";
+import { MockCkbClient, fillHex, hashFromRpcBody, toOutputLike } from "@cemp/ckb/testing";
 import {
   deriveIdentityKeys,
+  encryptEnvelope,
   mldsaV2KeygenFromSeed,
   mnemonicToSeed,
+  randomBytes,
   wipeIdentityKeyBundle,
   type IdentityKeyBundle,
 } from "@cemp/crypto";
@@ -44,13 +47,16 @@ import { BackoffPolicy } from "./retry.js";
 import { buildWorkerSpecs, ingestIncomingCellData, type SyncWorkerDeps } from "./workers.js";
 
 /**
- * SECURITY PHASE A — VULNERABILITY REPRODUCTION (pre-fix).
+ * SECURITY PHASE A reproductions through the REAL sync pipeline.
  *
- * Handoff matrix rows AUTH-01, AUTH-02, RCPT-01/02 and TRNS-01 through the
- * REAL sync pipeline (`ingestIncomingCellData`, the incoming-discovery and
- * reclaim-batch workers) on the REAL database stack. These tests PASS today
- * by asserting the VULNERABLE behaviour; Phase C/D/E are expected to flip
- * them deliberately. Nothing is broadcast: the chain transport is a fake.
+ * Handoff matrix rows AUTH-01, AUTH-02, RCPT-01/02 and TRNS-01 through
+ * `ingestIncomingCellData`, the incoming-discovery, response-sender and
+ * reclaim-batch workers on the REAL database stack. Content spoofing
+ * (AUTH-01/02, TRNS-01 content) is STILL OPEN and those tests still assert
+ * the vulnerable behaviour. Receipt forgery (RCPT-01/02, TRNS-01 receipts)
+ * is FIXED by ADR 0006 and those tests assert zero effect; an end-to-end
+ * test proves a genuine receipt still works. Nothing is broadcast: the
+ * chain transport is a fake.
  *
  * The stack below mirrors `makeStack` in workers.test.ts (not exported),
  * parameterised by WHICH identity owns the device, so the same harness can
@@ -144,15 +150,26 @@ function cellJson(
   };
 }
 
-function makeTransport(cells: unknown[]): JsonRpcTransport {
+function makeTransport(
+  cells: unknown[],
+  profileCells: unknown[],
+  sent: Record<string, unknown>[],
+): JsonRpcTransport {
   return {
     call(_url, method, params) {
       switch (method) {
-        case "get_cells":
+        case "get_cells": {
+          const isProfileQuery =
+            (params[0] as { script?: { code_hash?: string } }).script?.code_hash ===
+            TYPE_ID_CODE_HASH;
           if (params[3] !== undefined) {
             return Promise.resolve({ objects: [], last_cursor: "0x" });
           }
-          return Promise.resolve({ objects: cells, last_cursor: "0x" });
+          return Promise.resolve({
+            objects: isProfileQuery ? profileCells : cells,
+            last_cursor: "0x",
+          });
+        }
         case "get_transaction":
           return Promise.resolve({
             tx_status: { status: "committed", block_hash: fillHex(0x99, 32) },
@@ -165,6 +182,7 @@ function makeTransport(cells: unknown[]): JsonRpcTransport {
             hash: fillHex(0x99, 32),
           });
         case "send_transaction":
+          sent.push(params[0] as Record<string, unknown>);
           return Promise.resolve(hashFromRpcBody(params[0] as Record<string, unknown>));
         case "get_live_cell":
           // The fake chain reports every cell already spent; the batch reclaim
@@ -183,7 +201,11 @@ interface Device {
   keys: IdentityKeyBundle;
 }
 
-async function makeStack(device: Device, cells: unknown[] = []) {
+async function makeStack(
+  device: Device,
+  cells: unknown[] = [],
+  opts: { profileCells?: unknown[]; fundSigner?: boolean } = {},
+) {
   const db = new NodeSqliteAdapter();
   await migrate(db);
   const contacts = new ContactRepository(db);
@@ -204,8 +226,23 @@ async function makeStack(device: Device, cells: unknown[] = []) {
     walletId,
     attachments,
   });
-  const client = new CempClient({ transport: makeTransport(cells) });
-  const signer = new MlDsaV2TxSigner({ keyPair: signerKeyPair, client: new MockCkbClient() });
+  const sent: Record<string, unknown>[] = [];
+  const client = new CempClient({
+    transport: makeTransport(cells, opts.profileCells ?? [], sent),
+  });
+  const wallet = new MockCkbClient();
+  const signer = new MlDsaV2TxSigner({ keyPair: signerKeyPair, client: wallet });
+  if (opts.fundSigner === true) {
+    wallet.addCells(
+      Cell.from({
+        outPoint: { txHash: fillHex(0xf1, 32), index: 0 },
+        cellOutput: toOutputLike(
+          CellOutput.from({ capacity: fixedPointFrom(100_000), lock: signer.lockScript() }),
+        ),
+        outputData: "0x",
+      }),
+    );
+  }
   const lifecycle = new ResponseLifecycle({ client, signer, messageType: MESSAGE_TYPE_REF, store });
   const publisher = new MessagePublisher({
     client,
@@ -268,6 +305,7 @@ async function makeStack(device: Device, cells: unknown[] = []) {
     outgoingTxs,
     walletId,
     reclaimGroupCalls,
+    sent,
   };
 }
 
@@ -457,6 +495,8 @@ async function aliceHasPendingImageToBob(
     state: "available_on_chain",
   });
   await stack.messages.setEnvelopeMessageId(row.id, bytesToHex(published.messageId));
+  // ADR 0006: the publisher stores the sender's receipt key before broadcast.
+  await stack.messages.setReceiptKey(row.id, published.receiptKey);
   await stack.messages.setChainRef(row.id, { txHash: ALICE_MESSAGE_TX, outpointIndex: 0 });
   await stack.attachments.create({
     messageId: row.id,
@@ -497,57 +537,45 @@ function malloryForgesBobReceipts(publishedCellData: Uint8Array) {
     recipientProfileId: header.sender_profile_id,
     recipientKemPublicKey: ALICE.mlKem.publicKey,
     senderDeviceId: MALLORY_DEVICE,
+    // v2 receipts need a proof under Alice→Bob's receipt key, which only
+    // Alice and Bob can derive: Mallory can only guess.
     receipts: [
-      { messageId: header.message_id, status: 0x01 },
-      { messageId: header.message_id, status: 0x05 },
+      { messageId: header.message_id, status: 0x01, proof: randomBytes(32) },
+      { messageId: header.message_id, status: 0x05, proof: randomBytes(32) },
     ],
   });
 }
 
-describe("VULN reproduction (pre-fix): RCPT-01/02 forged receipts through the sync pipeline", () => {
-  it("chain discovery: forged 0x01+0x05 → reclaim_queued, reserved→reclaimable, chunk gate open, chunks reclaimed", async () => {
+async function expectUntouched(stack: Stack, rowId: number): Promise<void> {
+  expect((await stack.messages.getById(rowId))?.state).toBe("available_on_chain");
+  const balance = await stack.balances.getBalance(stack.walletId);
+  expect(balance.reservedShannon).toBe(CELL_SHANNON);
+  expect(balance.reclaimableShannon).toBe(0n);
+  expect((await stack.attachments.listForMessage(rowId))[0]?.remoteDownloaded).toBe(false);
+}
+
+describe("FIXED (ADR 0006): RCPT-01/02 forged receipts through the sync pipeline", () => {
+  it("chain discovery: forged 0x01+0x05 have no effect — no state, no capacity, chunk gate shut, nothing reclaimed", async () => {
     const stack = await makeStack(ALICE_DEVICE);
     try {
       const { published, rowId } = await aliceHasPendingImageToBob(stack);
       const forged = malloryForgesBobReceipts(published.envelopeBytes);
-      // Deliver the forgery as a discovered cell (Mallory funds + signs it).
       await ingestIncomingCellData(stack.deps, ALICE_PROFILE_ID, bytesToHex(forged.envelopeBytes), {
         txHash: fillHex(0xe5, 32),
         outpointIndex: 0,
       });
 
-      // PRE-FIX state + balance effects, though Bob never received anything.
-      expect((await stack.messages.getById(rowId))?.state).toBe("reclaim_queued");
-      const balance = await stack.balances.getBalance(stack.walletId);
-      expect(balance.reservedShannon).toBe(0n);
-      expect(balance.reclaimableShannon).toBe(CELL_SHANNON);
-      expect((await stack.attachments.listForMessage(rowId))[0]?.remoteDownloaded).toBe(true);
-      // No chat bubble for the receipt-only forgery.
+      await expectUntouched(stack, rowId);
       expect(await stack.messages.listByState(["received"])).toHaveLength(0);
-
-      // Next reclaim pass: the message is reclaimed and — because the forged
-      // 0x05 opened the gate — the IMAGE CHUNKS are handed to the group
-      // reclaim (the chunks are the only copy of the image; spending them
-      // destroys it for Bob).
       expect(await stack.engine.runWorker("reclaim-batch")).toBe("success");
-      expect((await stack.messages.getById(rowId))?.state).toBe("reclaimed");
-      expect(stack.reclaimGroupCalls).toHaveLength(1);
-      expect(bytesToHex(stack.reclaimGroupCalls[0]!.reclaimGroupId)).toBe(
-        bytesToHex(RECLAIM_GROUP_ID),
-      );
-      expect(stack.reclaimGroupCalls[0]!.outpoints).toEqual([
-        { txHash: ALICE_MESSAGE_TX, index: "0x0" },
-        { txHash: `0x${"22".repeat(32)}`, index: "0x0" },
-        { txHash: `0x${"22".repeat(32)}`, index: "0x1" },
-      ]);
+      expect((await stack.messages.getById(rowId))?.state).toBe("available_on_chain");
+      expect(stack.reclaimGroupCalls).toHaveLength(0);
     } finally {
       await stack.db.close();
     }
   });
 
-  it("incoming-discovery worker: the forged receipt cell is found by Alice's PUBLIC route tag and applied", async () => {
-    // Route tag = deriveRouteTag(alice public id, epoch): Mallory addresses
-    // Alice's inbox with no secret. The worker scans that tag and applies it.
+  it("incoming-discovery worker: the forged receipt cell is found by Alice's PUBLIC route tag but ignored", async () => {
     const published = alicePublishesImageToBob();
     const forged = malloryForgesBobReceipts(published.envelopeBytes);
     expect(forged.routeTag).toEqual(deriveRouteTag(ALICE_PROFILE_ID, currentRoutingEpoch()));
@@ -555,14 +583,13 @@ describe("VULN reproduction (pre-fix): RCPT-01/02 forged receipts through the sy
     try {
       const { rowId } = await aliceHasPendingImageToBob(stack, published);
       expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
-      expect((await stack.messages.getById(rowId))?.state).toBe("reclaim_queued");
-      expect((await stack.attachments.listForMessage(rowId))[0]?.remoteDownloaded).toBe(true);
+      await expectUntouched(stack, rowId);
     } finally {
       await stack.db.close();
     }
   });
 
-  it("TRNS-01 receipts: the same forged receipt bytes via LoRa (source: null) have the same lifecycle effect", async () => {
+  it("TRNS-01 receipts: the same forged receipt bytes via LoRa (source: null) are ignored on both transports", async () => {
     const chain = await makeStack(ALICE_DEVICE);
     const lora = await makeStack(ALICE_DEVICE);
     try {
@@ -575,18 +602,175 @@ describe("VULN reproduction (pre-fix): RCPT-01/02 forged receipts through the sy
         outpointIndex: 0,
       });
       await ingestIncomingCellData(lora.deps, ALICE_PROFILE_ID, forgedHex, null);
-
-      for (const [s, id] of [
-        [chain, c.rowId],
-        [lora, loraRow],
-      ] as const) {
-        expect((await s.messages.getById(id))?.state).toBe("reclaim_queued");
-        expect((await s.balances.getBalance(s.walletId)).reclaimableShannon).toBe(CELL_SHANNON);
-        expect((await s.attachments.listForMessage(id))[0]?.remoteDownloaded).toBe(true);
-      }
+      await expectUntouched(chain, c.rowId);
+      await expectUntouched(lora, loraRow);
     } finally {
       await chain.db.close();
       await lora.db.close();
+    }
+  });
+});
+
+/* ── ADR 0006 end to end: a GENUINE receipt still releases capacity ─────── */
+
+/** Alice's on-chain profile cell, so Bob's real publisher can encrypt to her. */
+function aliceProfileCellJson(): unknown {
+  const lock = Script.from({
+    codeHash: fillHex(0x77, 32),
+    hashType: "type",
+    args: `0x${"a1".repeat(37)}`,
+  });
+  const data = codec.encodeCempProfileV1({
+    ...codec.buildProfileMinimal(),
+    ml_dsa_public_key: ALICE.mlDsa.publicKey,
+    ml_kem_public_key: ALICE.mlKem.publicKey,
+    lock_script_hash: bytesFrom(lock.hash()),
+  });
+  return {
+    out_point: { tx_hash: fillHex(0x5a, 32), index: "0x0" },
+    output: {
+      capacity: `0x${fixedPointFrom(4000).toString(16)}`,
+      lock: { code_hash: lock.codeHash, hash_type: "type", args: lock.args },
+      type: {
+        code_hash: TYPE_ID_CODE_HASH,
+        hash_type: "type",
+        args: `0x${bytesToHex(ALICE_PROFILE_ID)}`,
+      },
+    },
+    output_data: hexFrom(data),
+    block_number: "0x1",
+  };
+}
+
+/** The message-cell data of every message Bob's device broadcast. */
+function broadcastEnvelopes(stack: Stack): string[] {
+  return stack.sent.map((body) => (body as { outputs_data: string[] }).outputs_data[0]!);
+}
+
+describe("ADR 0006 end to end: Bob's real acks via the real response sender", () => {
+  it("Alice→Bob image; Bob's device auto-acks (0x01) and confirms the download (0x05); Alice accepts both and reclaims message + chunks", async () => {
+    const published = alicePublishesImageToBob();
+    const bob = await makeStack(BOB_DEVICE, [cellJson(published, 0xa1, ALICE_LOCK)], {
+      profileCells: [aliceProfileCellJson()],
+      fundSigner: true,
+    });
+    const alice = await makeStack(ALICE_DEVICE);
+    try {
+      // Bob: discover → ingest (stores HIS receipt key) → auto-ack queued.
+      await bobKnowsAlice(bob);
+      expect(await bob.engine.runWorker("incoming-discovery")).toBe("success");
+      const original = await rowFor(bob, published.messageId);
+      expect(original?.state).toBe("received");
+      const bobKey = await bob.messages.getReceiptKey(original!.id);
+      expect(Array.from(bobKey!)).toEqual(Array.from(published.receiptKey));
+      // Bob taps to download: the app queues the 0x05 confirmation the same
+      // way MessagingService#queueAttachmentAck does.
+      const ack5 = await bob.messages.insert({
+        conversationId: original!.conversationId,
+        direction: "outgoing",
+        body: "",
+        logicalMessageId: `ack-attachment:${original!.logicalMessageId}`,
+        state: "queued",
+      });
+      await bob.messages.setChainRef(ack5.id, {
+        replyToTxHash: ALICE_MESSAGE_TX,
+        replyToOutpointIndex: 0,
+      });
+
+      // The REAL response sender proves both receipts and publishes them.
+      await bob.balances.setChainBalances(
+        bob.walletId,
+        fixedPointFrom(100_000),
+        fixedPointFrom(100_000),
+      );
+      expect(await bob.engine.runWorker("response-sender")).toBe("success");
+      const envelopes = broadcastEnvelopes(bob);
+      expect(envelopes).toHaveLength(2);
+
+      // Alice: her pending image row, then Bob's two broadcast acks arrive.
+      const { rowId } = await aliceHasPendingImageToBob(alice, published);
+      for (const [i, envelope] of envelopes.entries()) {
+        await ingestIncomingCellData(alice.deps, ALICE_PROFILE_ID, envelope, {
+          txHash: fillHex(0xb0 + i, 32),
+          outpointIndex: 0,
+        });
+      }
+      expect((await alice.messages.getById(rowId))?.state).toBe("reclaim_queued");
+      const balance = await alice.balances.getBalance(alice.walletId);
+      expect(balance.reservedShannon).toBe(0n);
+      expect(balance.reclaimableShannon).toBe(CELL_SHANNON);
+      expect((await alice.attachments.listForMessage(rowId))[0]?.remoteDownloaded).toBe(true);
+      expect(await alice.engine.runWorker("reclaim-batch")).toBe("success");
+      expect((await alice.messages.getById(rowId))?.state).toBe("reclaimed");
+      expect(alice.reclaimGroupCalls).toHaveLength(1);
+    } finally {
+      await bob.db.close();
+      await alice.db.close();
+    }
+  });
+
+  it("the response sender sends NOTHING for a v1 original (no receipt key) and leaves the row queued", async () => {
+    // A legacy v1 message from Alice: decrypts and displays, but its sender
+    // cannot verify a proof, so no receipt is ever owed or sent.
+    const messageId = hexToBytes("71".repeat(16));
+    const payload = codec.encodeCempPayloadV1({
+      message_id: messageId,
+      body_type: 0x01,
+      recipient_profile_id: BOB_PROFILE_ID,
+      text: new TextEncoder().encode("hello from an old build"),
+      attachment_manifests: [],
+      reply_to_message_id: undefined,
+      reply_to_outpoint: undefined,
+      receipts: [],
+      receipt_request: 1,
+      client_timestamp: 1n,
+      sender_device_id: hexToBytes("01".repeat(16)),
+      padding: new Uint8Array(0),
+    });
+    const envelope = encryptEnvelope({
+      payload,
+      recipientKemPublicKey: BOB.mlKem.publicKey,
+      header: {
+        protocol_version: 1,
+        network: 0x01,
+        content_type: 0x01,
+        message_id: messageId,
+        conversation_id: deriveConversationId(ALICE_PROFILE_ID, BOB_PROFILE_ID),
+        sender_profile_id: ALICE_PROFILE_ID,
+        created_at_client: 1n,
+        reply_to_message_id: undefined,
+        expiry_hint: 0n,
+      },
+    }).envelopeBytes;
+    const bob = await makeStack(BOB_DEVICE, [], {
+      profileCells: [aliceProfileCellJson()],
+      fundSigner: true,
+    });
+    try {
+      await bobKnowsAlice(bob);
+      await ingestIncomingCellData(bob.deps, BOB_PROFILE_ID, bytesToHex(envelope), {
+        txHash: fillHex(0xc1, 32),
+        outpointIndex: 0,
+      });
+      const row = await rowFor(bob, messageId);
+      expect(row?.state).toBe("received");
+      expect(row?.body).toBe("hello from an old build");
+      expect(await bob.messages.getReceiptKey(row!.id)).toBeNull();
+
+      // Funded exactly like the end-to-end test, so a send WOULD succeed.
+      await bob.balances.setChainBalances(
+        bob.walletId,
+        fixedPointFrom(100_000),
+        fixedPointFrom(100_000),
+      );
+      expect(await bob.engine.runWorker("response-sender")).toBe("success");
+      expect(bob.sent).toHaveLength(0);
+      const queued = (await bob.messages.listByState(["queued"])).filter((m) =>
+        m.logicalMessageId.startsWith("response:"),
+      );
+      expect(queued).toHaveLength(1);
+    } finally {
+      await bob.db.close();
     }
   });
 });

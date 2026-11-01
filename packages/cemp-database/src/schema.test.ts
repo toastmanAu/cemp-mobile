@@ -7,10 +7,9 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v9: attachments.remote_downloaded — the recipient's `0x05` receipt,
-    // which gates chunk-cell reclaim so a lazily-downloaded image is not
-    // destroyed on the envelope ack alone.
-    expect(SCHEMA_VERSION).toBe(9);
+    // v10: messages.receipt_key — the ADR 0006 per-message receipt key that
+    // verifies (sender) or produces (recipient) receipt proofs.
+    expect(SCHEMA_VERSION).toBe(10);
   });
 
   it("covers the spec §11 core tables", () => {

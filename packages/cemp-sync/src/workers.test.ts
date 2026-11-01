@@ -12,6 +12,7 @@ import {
 import { CempClient, type JsonRpcTransport } from "@cemp/ckb";
 import { MockCkbClient, fillHex, hashFromRpcBody } from "@cemp/ckb/testing";
 import {
+  computeReceiptProof,
   deriveIdentityKeys,
   decryptEnvelope,
   mldsaV2KeygenFromSeed,
@@ -176,7 +177,9 @@ function discoveryAttachmentCellJson(manifest: codec.AttachmentManifestV1): {
 }
 
 /** A receipt-only ack cell (empty body + 0x01 receipts) addressed to Bob. */
-function receiptOnlyCellJson(receipts: readonly { messageId: Uint8Array; status: number }[]): {
+function receiptOnlyCellJson(
+  receipts: readonly { messageId: Uint8Array; status: number; proof: Uint8Array }[],
+): {
   json: unknown;
   messageId: Uint8Array;
 } {
@@ -679,7 +682,10 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
 
   it("a receipt-only ack advances our outgoing message, no bubble, no re-ack (ADR 0005)", async () => {
     const envId = hexToBytes("cd".repeat(16)); // envelope message ids are 16 bytes
-    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01 }]);
+    // ADR 0006: our row holds the receipt key; Alice's ack proves it.
+    const receiptKey = new Uint8Array(32).fill(0x6b);
+    const proof = computeReceiptProof(receiptKey, envId, 0x01);
+    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01, proof }]);
     const stack = await makeStack({ cells: [json] });
     try {
       // Seed one of OUR outgoing messages, on-chain, awaiting acknowledgement.
@@ -696,6 +702,7 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
         state: "available_on_chain",
       });
       await stack.messages.setEnvelopeMessageId(mine.id, bytesToHex(envId));
+      await stack.messages.setReceiptKey(mine.id, receiptKey);
 
       expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
 
@@ -1082,7 +1089,9 @@ describe("pending-transactions worker (exit criterion 2)", () => {
     // consumed by the discovery cursor — permanently losing the ack, so the
     // message can never reach delivered/read. Found live on-device.
     const envId = hexToBytes("ef".repeat(16));
-    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01 }]);
+    const receiptKey = new Uint8Array(32).fill(0x6c);
+    const proof = computeReceiptProof(receiptKey, envId, 0x01);
+    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01, proof }]);
     const stack = await makeStack({ cells: [json] });
     try {
       const contact = await stack.contacts.create({
@@ -1098,6 +1107,7 @@ describe("pending-transactions worker (exit criterion 2)", () => {
         state: "pending",
       });
       await stack.messages.setEnvelopeMessageId(mine.id, bytesToHex(envId));
+      await stack.messages.setReceiptKey(mine.id, receiptKey);
       // Its tx already committed (the monitor was interrupted before advancing
       // the row), so pending-transactions must make it ack-able THIS pass.
       await stack.outgoingTxs.record({

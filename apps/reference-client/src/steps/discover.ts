@@ -20,7 +20,8 @@ import type { OutPointJson } from "../state.js";
 export interface DecryptedMessage {
   outPoint: OutPointJson;
   header: codec.CempEnvelopeHeaderV1;
-  payload: codec.CempPayloadV1;
+  /** v1 or v2 layout, as the header's protocol_version selected (ADR 0006). */
+  payload: codec.CempPayloadV1 | codec.CempPayloadV2;
   /** UTF-8 text when the payload carries it. */
   text: string | null;
 }
@@ -82,7 +83,7 @@ export async function scanAndDecrypt(
 
 interface DecryptedParts {
   header: codec.CempEnvelopeHeaderV1;
-  payload: codec.CempPayloadV1;
+  payload: codec.CempPayloadV1 | codec.CempPayloadV2;
   text: string | null;
 }
 
@@ -106,11 +107,12 @@ function tryDecrypt(
       recipientKemSecretKey: me.bundle.mlKem.secretKey,
       ownProfileId,
     });
-    const payloadCheck = codec.validatePayload(payloadBytes);
+    // ADR 0006: explicit dispatch on the header version, never a fallback.
+    const payloadCheck = codec.validatePayloadForVersion(header.protocol_version, payloadBytes);
     if (!payloadCheck.ok) {
       return null;
     }
-    const payload = codec.decodeCempPayloadV1(payloadBytes);
+    const payload = codec.decodeCempPayload(header.protocol_version, payloadBytes).payload;
     const semantic = codec.validateSemanticConsistency(header, payload, ownProfileId);
     if (!semantic.ok) {
       return null;

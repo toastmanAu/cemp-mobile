@@ -93,6 +93,11 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
     await this.#messages.setEnvelopeMessageId(messageRowId, envelopeMessageIdHex);
   }
 
+  /** ADR 0006: the outgoing row's receipt key, stored before broadcast. */
+  async setReceiptKey(messageRowId: number, receiptKey: Uint8Array): Promise<void> {
+    await this.#messages.setReceiptKey(messageRowId, receiptKey);
+  }
+
   async recordOutgoingTx(input: {
     txHash: string;
     purpose: string;
@@ -130,9 +135,15 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
 
   /* -------------------------------------------------- lifecycle (P8) -- */
 
-  async findOutgoingByEnvelopeMessageId(
-    envelopeMessageIdHex: string,
-  ): Promise<{ rowId: number; state: string; recipientProfileIdHex: string | null } | undefined> {
+  async findOutgoingByEnvelopeMessageId(envelopeMessageIdHex: string): Promise<
+    | {
+        rowId: number;
+        state: string;
+        recipientProfileIdHex: string | null;
+        receiptKey: Uint8Array | null;
+      }
+    | undefined
+  > {
     const found =
       await this.#messages.getOutgoingWithRecipientByEnvelopeMessageId(envelopeMessageIdHex);
     return found === undefined
@@ -141,6 +152,7 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
           rowId: found.message.id,
           state: found.message.state,
           recipientProfileIdHex: found.recipientProfileIdHex,
+          receiptKey: found.receiptKey,
         };
   }
 

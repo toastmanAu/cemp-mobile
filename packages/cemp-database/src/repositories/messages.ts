@@ -13,6 +13,7 @@
  */
 
 import type { SqliteAdapter, SqlRow } from "../adapter.js";
+import { blobToBytes } from "../blob.js";
 import { DatabaseError } from "../errors.js";
 import {
   canTransitionMessage,
@@ -57,6 +58,12 @@ function rowToMessage(row: SqlRow): Message {
     createdAtMs: Number(row.created_at_ms),
     updatedAtMs: Number(row.updated_at_ms),
   };
+}
+
+/** A driver-agnostic copy of a stored 32-byte receipt key; anything else is null. */
+function receiptKeyCopy(value: unknown): Uint8Array | null {
+  const bytes = blobToBytes(value);
+  return bytes === null || bytes.length !== 32 ? null : bytes.slice();
 }
 
 export class MessageRepository {
@@ -286,13 +293,48 @@ export class MessageRepository {
     }
   }
 
+  /* ---------------------------------------- receipt key (schema v10) -- */
+
+  /**
+   * Persist the message's ADR 0006 receipt key. SECRET: kept only in the
+   * encrypted database (rule 3), deliberately absent from {@link Message} so
+   * ordinary reads never carry it.
+   */
+  async setReceiptKey(id: number, receiptKey: Uint8Array): Promise<void> {
+    if (receiptKey.length !== 32) {
+      throw new DatabaseError(
+        "constraint-violation",
+        `receipt key is ${String(receiptKey.length)} bytes, expected 32`,
+      );
+    }
+    const result = await this.#db.run(
+      "UPDATE messages SET receipt_key = ?, updated_at_ms = ? WHERE id = ?",
+      [receiptKey.slice(), Date.now(), id],
+    );
+    if (result.changes === 0) {
+      throw new DatabaseError("not-found", `message ${String(id)} does not exist`);
+    }
+  }
+
+  /** The stored receipt key (a fresh copy the caller wipes), or null. */
+  async getReceiptKey(id: number): Promise<Uint8Array | null> {
+    const row = await this.#db.get("SELECT receipt_key FROM messages WHERE id = ?", [id]);
+    return receiptKeyCopy(row?.receipt_key);
+  }
+
   /**
    * An OUTGOING message by envelope id, with the profile id of the contact its
-   * conversation is with — the party allowed to acknowledge it.
+   * conversation is with — the party allowed to acknowledge it — and the
+   * receipt key that verifies the proof (null for pre-ADR-0006 rows).
    */
-  async getOutgoingWithRecipientByEnvelopeMessageId(
-    envelopeMessageIdHex: string,
-  ): Promise<{ message: Message; recipientProfileIdHex: string | null } | undefined> {
+  async getOutgoingWithRecipientByEnvelopeMessageId(envelopeMessageIdHex: string): Promise<
+    | {
+        message: Message;
+        recipientProfileIdHex: string | null;
+        receiptKey: Uint8Array | null;
+      }
+    | undefined
+  > {
     const row = await this.#db.get(
       `SELECT m.*, ct.profile_id_hex AS recipient_profile_id_hex
          FROM messages m
@@ -309,6 +351,7 @@ export class MessageRepository {
       message: rowToMessage(row),
       recipientProfileIdHex:
         recipient === null || recipient === undefined ? null : String(recipient),
+      receiptKey: receiptKeyCopy(row.receipt_key),
     };
   }
 

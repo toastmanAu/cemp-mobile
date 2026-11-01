@@ -5,7 +5,12 @@
  * (publisher.ts), which wraps it.
  */
 
-import { codec, deriveConversationId, deriveRouteTag } from "@cemp/core";
+import {
+  CEMP_SEND_PROTOCOL_VERSION,
+  codec,
+  deriveConversationId,
+  deriveRouteTag,
+} from "@cemp/core";
 import { encryptEnvelope, randomBytes, randomPadding } from "@cemp/crypto";
 import { CempCkbError } from "./client.js";
 
@@ -15,6 +20,19 @@ export const ROUTING_EPOCH_SECONDS = 2_592_000;
 /** Current routing epoch (wall-clock, truncated to the epoch window). */
 export function currentRoutingEpoch(nowMs: number = Date.now()): bigint {
   return BigInt(Math.floor(nowMs / 1000 / ROUTING_EPOCH_SECONDS));
+}
+
+/**
+ * One outgoing receipt (ADR 0006). The caller supplies the proof it computed
+ * with `computeReceiptProof(receiptKey, messageId, status)` from the receipt
+ * key it stored for the ORIGINAL incoming message; assembly never sees a
+ * receipt key, and an entry without a 32-byte proof is refused. There is no
+ * unproven (v1) receipt send path.
+ */
+export interface ProvenReceipt {
+  readonly messageId: Uint8Array;
+  readonly status: number;
+  readonly proof: Uint8Array;
 }
 
 export interface AssembleTextMessageParams {
@@ -27,7 +45,7 @@ export interface AssembleTextMessageParams {
     readonly messageId: Uint8Array;
     readonly outPoint: { readonly txHash: string; readonly index: string | number };
   };
-  readonly receipts?: readonly { readonly messageId: Uint8Array; readonly status: number }[];
+  readonly receipts?: readonly ProvenReceipt[];
   readonly receiptRequest?: number;
   /** Attachment manifests for this message (Phase 10; ≤ 4 per payload). */
   readonly attachmentManifests?: readonly codec.AttachmentManifestV1Encodable[];
@@ -57,13 +75,21 @@ export interface AssembledMessage {
   readonly envelopeBytes: Uint8Array;
   /** The envelope-derived attachment key (Phase 10; SECRET — caller wipes). */
   readonly attachmentKey: Uint8Array;
+  /**
+   * The envelope-derived receipt key (ADR 0006; SECRET — caller stores it on
+   * the outgoing row before broadcast, then wipes this copy).
+   */
+  readonly receiptKey: Uint8Array;
 }
 
 function strip0x(hex: string): string {
   return hex.startsWith("0x") ? hex.slice(2) : hex;
 }
 
-/** Build + encrypt a v1 text message (spec §6–§8): payload → header → envelope. */
+/**
+ * Build + encrypt a text message (spec §6–§8): payload → header → envelope.
+ * Always protocol version 2 (ADR 0006): `CempPayloadV2`, proven receipts.
+ */
 export function assembleTextMessage(params: AssembleTextMessageParams): AssembledMessage {
   const messageId = params.messageId ?? randomBytes(16);
   const conversationId = deriveConversationId(params.senderProfileId, params.recipientProfileId);
@@ -73,7 +99,15 @@ export function assembleTextMessage(params: AssembleTextMessageParams): Assemble
   const now = BigInt(Math.floor((params.nowMs ?? Date.now()) / 1000));
   const contentType = params.contentType ?? 0x01;
 
-  const payload = codec.encodeCempPayloadV1({
+  for (const receipt of params.receipts ?? []) {
+    if (receipt.proof.length !== 32) {
+      throw new CempCkbError(
+        "assembleTextMessage",
+        `receipt proof is ${receipt.proof.length} bytes, expected 32 (ADR 0006)`,
+      );
+    }
+  }
+  const payload = codec.encodeCempPayloadV2({
     message_id: messageId,
     body_type: contentType,
     recipient_profile_id: params.recipientProfileId,
@@ -94,13 +128,14 @@ export function assembleTextMessage(params: AssembleTextMessageParams): Assemble
     receipts: (params.receipts ?? []).map((receipt) => ({
       message_id: receipt.messageId,
       status: receipt.status,
+      proof: receipt.proof,
     })),
     receipt_request: params.receiptRequest ?? 0,
     client_timestamp: now,
     sender_device_id: params.senderDeviceId,
     padding: randomPadding(),
   });
-  const payloadCheck = codec.validatePayload(payload);
+  const payloadCheck = codec.validatePayloadV2(payload);
   if (!payloadCheck.ok) {
     throw new CempCkbError(
       "assembleTextMessage",
@@ -109,7 +144,7 @@ export function assembleTextMessage(params: AssembleTextMessageParams): Assemble
   }
 
   const header: codec.CempEnvelopeHeaderV1Encodable = {
-    protocol_version: 1,
+    protocol_version: CEMP_SEND_PROTOCOL_VERSION,
     network: 0x01, // ckb_testnet
     content_type: contentType,
     message_id: messageId,
@@ -119,7 +154,7 @@ export function assembleTextMessage(params: AssembleTextMessageParams): Assemble
     reply_to_message_id: params.replyTo?.messageId,
     expiry_hint: 0n,
   };
-  const { envelopeBytes, attachmentKey } = encryptEnvelope({
+  const { envelopeBytes, attachmentKey, receiptKey } = encryptEnvelope({
     payload,
     recipientKemPublicKey: params.recipientKemPublicKey,
     header,
@@ -138,5 +173,6 @@ export function assembleTextMessage(params: AssembleTextMessageParams): Assemble
     messageNonce,
     envelopeBytes,
     attachmentKey,
+    receiptKey,
   };
 }

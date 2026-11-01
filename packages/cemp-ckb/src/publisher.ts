@@ -22,7 +22,7 @@
 
 import { codec } from "@cemp/core";
 import type { TransactionLike } from "@ckb-ccc/core";
-import { assembleTextMessage } from "./assemble.js";
+import { assembleTextMessage, type ProvenReceipt } from "./assemble.js";
 import { buildSendMessageTx, type CempMessageTypeRef } from "./builders.js";
 import { CempCkbError, type CempClient } from "./client.js";
 import {
@@ -55,6 +55,12 @@ export interface PublicationStore {
   ): Promise<void>;
   /** Persist the envelope's 16-byte message id (Phase 8 receipt matching). */
   setEnvelopeMessageId(messageRowId: number, envelopeMessageIdHex: string): Promise<void>;
+  /**
+   * Persist the envelope's receipt key (ADR 0006) on the outgoing row, BEFORE
+   * broadcast: it is what later verifies the recipient's receipt proofs.
+   * SECRET — encrypted database only, never logged.
+   */
+  setReceiptKey(messageRowId: number, receiptKey: Uint8Array): Promise<void>;
   recordOutgoingTx(input: {
     txHash: string;
     purpose: string;
@@ -203,7 +209,8 @@ export interface PublishTextInput {
     readonly messageId: Uint8Array;
     readonly outPoint: { readonly txHash: string; readonly index: string | number };
   };
-  readonly receipts?: readonly { readonly messageId: Uint8Array; readonly status: number }[];
+  /** Receipts with their ADR 0006 proofs (see {@link ProvenReceipt}). */
+  readonly receipts?: readonly ProvenReceipt[];
   readonly receiptRequest?: number;
   /** Payload content type (default 0x01 text; 0x03 = attachment manifest). */
   readonly contentType?: 0x01 | 0x03;
@@ -384,6 +391,14 @@ export class MessagePublisher {
       await store.setMessageChainRef(input.messageRowId, { txHash, outpointIndex: 0 });
       // Receipts and reply_to reference the ENVELOPE message id (Phase 8).
       await store.setEnvelopeMessageId(input.messageRowId, codec.bytesToHex(assembled.messageId));
+      // ADR 0006: the receipt key that verifies this message's receipts is
+      // stored with the envelope id, before broadcast — a receipt can then
+      // never arrive for a row that could not verify it.
+      try {
+        await store.setReceiptKey(input.messageRowId, assembled.receiptKey);
+      } finally {
+        assembled.receiptKey.fill(0);
+      }
 
       const accepted = await this.#deps.client.sendTransaction(wire);
       if (accepted !== txHash) {

@@ -26,11 +26,13 @@ import {
   processIncomingText,
   type CempClient,
   type CempMessageTypeRef,
+  type IncomingTextMessage,
   type MessagePublisher,
   type OutPoint,
   type RateLimiter,
 } from "@cemp/ckb";
 import { codec, deriveRouteTag } from "@cemp/core";
+import { computeReceiptProof } from "@cemp/crypto";
 import { checkManifest } from "@cemp/images";
 import { LoraTransport, type LoraPollResult } from "@cemp/lora";
 import type {
@@ -290,6 +292,21 @@ export async function ingestIncomingCellData(
     ownKemSecretKey: deps.ownKemSecretKey,
     ownProfileId,
   });
+  try {
+    await ingestDecrypted(deps, incoming, source);
+  } finally {
+    // The keys now live in the encrypted database where they are needed (or
+    // were never needed: acks, blocked senders); drop the in-memory copies.
+    incoming.attachmentKey.fill(0);
+    incoming.receiptKey?.fill(0);
+  }
+}
+
+async function ingestDecrypted(
+  deps: SyncWorkerDeps,
+  incoming: IncomingTextMessage,
+  source: { txHash: string; outpointIndex: number } | null,
+): Promise<void> {
   const senderProfileIdHex = bytesToHex(incoming.senderProfileId);
   // Phase 11 task 10: a blocked sender is dropped at ingestion — history is
   // untouched, nothing new is stored (rule 8 applies to history, not spam).
@@ -325,6 +342,19 @@ export async function ingestIncomingCellData(
     body: incoming.text,
     logicalMessageId: incomingLogicalMessageId(incoming.messageId),
   });
+  // ADR 0006: keep the recipient's receipt key with the row on first ingest.
+  // The 0x01 ack is sent later by the response sender and the 0x05 only after
+  // a tap, possibly once the sender has reclaimed the message cell, so the
+  // key cannot be re-derived from chain then. A v1 message has none (its
+  // sender cannot verify a proof), and is therefore never acked.
+  if (incoming.receiptKey !== null) {
+    const stored = await deps.messages.getReceiptKey(inserted.id);
+    if (stored === null) {
+      await deps.messages.setReceiptKey(inserted.id, incoming.receiptKey);
+    } else {
+      stored.fill(0);
+    }
+  }
   // Image branch (design §3 step 1): an attachment message stores its manifest
   // (thumbnail embedded) so the bubble renders immediately with no fetch. The
   // full-res chunk download is deferred to a user tap (downloadAttachment).
@@ -629,6 +659,20 @@ async function runResponseSender(deps: SyncWorkerDeps): Promise<void> {
       continue; // no verified recipient profile — the app resolves it first
     }
     const originalEnvelopeMessageId = hexToBytes(original.envelopeMessageIdHex);
+    // ADR 0006: the receipt carries a proof under the ORIGINAL message's
+    // receipt key. No stored key (a legacy v1 message, or a row from before
+    // the upgrade) means no proof is possible, and an unproven receipt would
+    // be ignored by the sender anyway — leave the row queued, send nothing.
+    const receiptKey = await deps.messages.getReceiptKey(original.id);
+    if (receiptKey === null) {
+      continue;
+    }
+    let proof: Uint8Array;
+    try {
+      proof = computeReceiptProof(receiptKey, originalEnvelopeMessageId, kind.status);
+    } finally {
+      receiptKey.fill(0);
+    }
     await deps.publisher.publishText({
       messageRowId: response.id,
       logicalMessageId: response.logicalMessageId,
@@ -638,7 +682,7 @@ async function runResponseSender(deps: SyncWorkerDeps): Promise<void> {
         messageId: originalEnvelopeMessageId,
         outPoint: { txHash: chainRef.replyToTxHash, index: chainRef.replyToOutpointIndex },
       },
-      receipts: [{ messageId: originalEnvelopeMessageId, status: kind.status }],
+      receipts: [{ messageId: originalEnvelopeMessageId, status: kind.status, proof }],
     });
     // An attachment ack is a bare confirmation that the bytes were fetched: it
     // carries no reply semantics, so it must NOT re-walk the original's state

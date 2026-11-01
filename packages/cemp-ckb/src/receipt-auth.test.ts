@@ -1,10 +1,12 @@
 import { Cell, CellOutput, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
 import { CKB_TESTNET, codec, deriveConversationId } from "@cemp/core";
 import {
+  computeReceiptProof,
   deriveIdentityKeys,
   encryptEnvelope,
   mldsaV2KeygenFromSeed,
   mnemonicToSeed,
+  randomBytes,
   wipeIdentityKeyBundle,
 } from "@cemp/crypto";
 import { afterAll, describe, expect, it } from "vitest";
@@ -12,7 +14,7 @@ import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
 import { assembleTextMessage } from "./assemble.js";
 import { buildMessageTypeArgs, type CempMessageTypeRef } from "./builders.js";
 import { CempClient, type JsonRpcTransport } from "./client.js";
-import { processIncomingText, type IncomingTextMessage } from "./incoming.js";
+import { parseMessageTypeArgs, processIncomingText, type IncomingTextMessage } from "./incoming.js";
 import {
   ResponseLifecycle,
   type LifecycleMessage,
@@ -24,14 +26,16 @@ import { MockCkbClient, fillHex, toOutputLike } from "./testing/mock-ccc-client.
 import { hashFromRpcBody } from "./testing/rpc-body.js";
 
 /**
- * SECURITY PHASE A — VULNERABILITY REPRODUCTION (pre-fix).
+ * SECURITY PHASE A reproductions, flipped by ADR 0006.
  *
- * Handoff matrix rows RCPT-01..RCPT-04 against `ResponseLifecycle`. These
- * tests PASS today by asserting the VULNERABLE behaviour: a receipt advances
- * (or releases the attachment of) an outgoing message knowing only its
- * 16-byte envelope message id, which is CLEARTEXT in the published cell. The
- * receipt's sender is never compared with the message's intended recipient.
- * Phase E is expected to flip these deliberately.
+ * Handoff matrix rows RCPT-01..RCPT-04 against `ResponseLifecycle`. Before
+ * the fix, a receipt advanced (or released the attachment of) an outgoing
+ * message knowing only its 16-byte envelope message id, which is CLEARTEXT
+ * in the published cell. Now a receipt counts only in a v2 payload, from the
+ * message's recipient, with a valid HMAC proof under the per-message receipt
+ * key that only the sender and the recipient can derive. Every forgery below
+ * must have ZERO side effects; the genuine-receipt tests prove the gate is
+ * not simply closed.
  *
  * Chain is fully mocked; nothing is broadcast. The fake store below is a
  * recording in-memory `LifecycleStore` (cemp-ckb cannot depend on
@@ -106,6 +110,8 @@ interface FakeRow {
   chainRef: { txHash: string; outpointIndex: number } | null;
   /** Profile id of the contact the message was sent to (the only valid acker). */
   recipientProfileIdHex: string | null;
+  /** ADR 0006 receipt key stored before broadcast (null = pre-upgrade row). */
+  receiptKey: Uint8Array | null;
 }
 
 class RecordingLifecycleStore implements LifecycleStore {
@@ -148,7 +154,13 @@ class RecordingLifecycleStore implements LifecycleStore {
     return Promise.resolve(
       row === undefined
         ? undefined
-        : { rowId: row.rowId, state: row.state, recipientProfileIdHex: row.recipientProfileIdHex },
+        : {
+            rowId: row.rowId,
+            state: row.state,
+            recipientProfileIdHex: row.recipientProfileIdHex,
+            // A fresh copy, as the DB would return: the lifecycle wipes it.
+            receiptKey: row.receiptKey === null ? null : row.receiptKey.slice(),
+          },
     );
   }
   listOutgoingByState(state: string): Promise<LifecycleMessage[]> {
@@ -343,8 +355,10 @@ function seedAliceOutgoingRow(
   store: RecordingLifecycleStore,
   envelopeMessageId: Uint8Array,
   cell: Cell,
+  receiptKey: Uint8Array | null,
 ) {
   store.rows.set(ROW_ID, {
+    receiptKey: receiptKey === null ? null : receiptKey.slice(),
     rowId: ROW_ID,
     state: "available_on_chain",
     envelopeMessageIdHex: bytesToHex(envelopeMessageId),
@@ -380,14 +394,16 @@ function malloryForgesReceipt(input: {
   if (claimedSender === undefined) {
     throw new Error("recipient not in directory");
   }
-  // 3. Encrypt a receipt-only message TO Alice, CLAIMING to be Bob.
+  // 3. Encrypt a receipt-only message TO Alice, CLAIMING to be Bob. v2 needs
+  //    a proof under Alice→Bob's receipt key, which only Alice and Bob can
+  //    derive; Mallory's best effort is a guess.
   const forged = assembleTextMessage({
     text: "",
     senderProfileId: claimedSender,
     recipientProfileId: aliceId,
     recipientKemPublicKey: input.aliceKemPublicKey,
     senderDeviceId: MALLORY_DEVICE,
-    receipts: [{ messageId: stolenMessageId, status: input.status }],
+    receipts: [{ messageId: stolenMessageId, status: input.status, proof: randomBytes(32) }],
   });
   return { forgedEnvelope: forged.envelopeBytes, claimedSender, stolenMessageId };
 }
@@ -415,17 +431,99 @@ function makeLifecycle(liveCells: Map<string, Cell> = new Map()) {
   return { lifecycle, store, signer, mockChain, chain };
 }
 
+/** What Bob's device holds after genuinely decrypting Alice's message. */
+function bobDecrypts(cellData: Uint8Array): IncomingTextMessage {
+  return processIncomingText({
+    cellData,
+    ownKemSecretKey: BOB.mlKem.secretKey,
+    ownProfileId: BOB_PROFILE_ID,
+  });
+}
+
+/** Bob's real receipt-only ack to Alice (the shape the response sender emits). */
+function bobsReceipt(receipts: { messageId: Uint8Array; status: number; proof: Uint8Array }[]) {
+  return assembleTextMessage({
+    text: "",
+    senderProfileId: BOB_PROFILE_ID,
+    recipientProfileId: ALICE_PROFILE_ID,
+    recipientKemPublicKey: ALICE.mlKem.publicKey,
+    senderDeviceId: hexToBytes("bb".repeat(16)),
+    receipts,
+  }).envelopeBytes;
+}
+
+/**
+ * A receipt-only envelope to Alice with full control over the header and
+ * the payload VERSION (v1 = legacy unproven receipts, v2 = with proof).
+ */
+function receiptWithHeader(over: {
+  conversationId: Uint8Array;
+  network: number;
+  messageId: Uint8Array;
+  version?: 1 | 2;
+  proof?: Uint8Array;
+  status?: number;
+}): Uint8Array {
+  const version = over.version ?? 2;
+  const status = over.status ?? 0x01;
+  const receiptEnvelopeId = hexToBytes("ab".repeat(16));
+  const common = {
+    message_id: receiptEnvelopeId,
+    body_type: 0x01,
+    recipient_profile_id: ALICE_PROFILE_ID,
+    text: new Uint8Array(0),
+    attachment_manifests: [],
+    reply_to_message_id: undefined,
+    reply_to_outpoint: undefined,
+    receipt_request: 0,
+    client_timestamp: 1n,
+    sender_device_id: MALLORY_DEVICE,
+    padding: new Uint8Array(0),
+  };
+  const payload =
+    version === 1
+      ? codec.encodeCempPayloadV1({
+          ...common,
+          receipts: [{ message_id: over.messageId, status }],
+        })
+      : codec.encodeCempPayloadV2({
+          ...common,
+          receipts: [{ message_id: over.messageId, status, proof: over.proof ?? randomBytes(32) }],
+        });
+  return encryptEnvelope({
+    payload,
+    recipientKemPublicKey: ALICE.mlKem.publicKey,
+    header: {
+      protocol_version: version,
+      network: over.network,
+      content_type: 0x01,
+      message_id: receiptEnvelopeId,
+      conversation_id: over.conversationId,
+      sender_profile_id: BOB_PROFILE_ID,
+      created_at_client: 1n,
+      reply_to_message_id: undefined,
+      expiry_hint: 0n,
+    },
+  }).envelopeBytes;
+}
+
+function expectNoEffect(store: RecordingLifecycleStore, acked: number[]): void {
+  expect(acked).toEqual([]);
+  expect(store.transitions).toEqual([]);
+  expect(store.reclaimable).toEqual([]);
+  expect(store.attachmentRemoteDownloaded).toEqual([]);
+  expect(store.rows.get(ROW_ID)?.state).not.toBe("reclaim_queued");
+}
+
 /* ── tests ──────────────────────────────────────────────────────────────── */
 
-// STILL OPEN after the receipt→recipient binding: Mallory claims to BE Bob
-// (found via the cleartext conversation_id), and v1 cannot tell her apart.
-// Closing these needs an authenticated receipt (signature or proof of
-// decryption) — a wire change.
-describe("VULN reproduction (still open): RCPT-01 forged 0x01 receipt from public chain data", () => {
-  it("Mallory's receipt (built from Alice's published cell + Alice's public KEM key) walks Alice's message to reclaim_queued and funds reclaimable", async () => {
+// FIXED (ADR 0006): Mallory still finds Bob via the cleartext conversation_id
+// and claims to BE Bob, but cannot produce a proof under the receipt key.
+describe("FIXED (ADR 0006): RCPT-01 forged 0x01 receipt from public chain data", () => {
+  it("Mallory's receipt (built from Alice's published cell + Alice's public KEM key) has no effect", async () => {
     const { lifecycle, store, signer } = makeLifecycle();
     const { assembled, cell } = aliceSendsToBob(signer);
-    seedAliceOutgoingRow(store, assembled.messageId, cell);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
 
     const forgery = malloryForgesReceipt({
       publishedCellData: hexToBytes(cell.outputData),
@@ -433,27 +531,19 @@ describe("VULN reproduction (still open): RCPT-01 forged 0x01 receipt from publi
       directory: PUBLIC_PROFILE_DIRECTORY,
       status: 0x01,
     });
-    // Mallory recovered the exact id and the intended recipient from public data.
+    // Mallory still recovers the exact id and the intended recipient…
     expect(forgery.stolenMessageId).toEqual(assembled.messageId);
     expect(forgery.claimedSender).toEqual(BOB_PROFILE_ID);
-
     const incoming = aliceProcesses(forgery.forgedEnvelope);
     expect(incoming.senderProfileId).toEqual(BOB_PROFILE_ID); // claimed, unverified
+    expect(incoming.protocolVersion).toBe(2);
 
-    const acked = await lifecycle.processAcknowledgements(incoming);
-
-    // PRE-FIX: full delivery state walk + capacity moved reserved → reclaimable,
-    // although Bob never received anything. Post-fix: [] and no side effects.
-    expect(acked).toEqual([ROW_ID]);
-    expect(store.transitions).toEqual([
-      { rowId: ROW_ID, to: "downloaded_by_recipient" },
-      { rowId: ROW_ID, to: "acknowledged" },
-      { rowId: ROW_ID, to: "reclaim_queued" },
-    ]);
-    expect(store.reclaimable).toEqual([fixedPointFrom(CELL_CAPACITY_CKB).toString()]);
+    // …but her proof does not verify: no state walk, no reclaimable capacity.
+    expectNoEffect(store, await lifecycle.processAcknowledgements(incoming));
+    expect(store.rows.get(ROW_ID)?.state).toBe("available_on_chain");
   });
 
-  it("the next reclaim batch then SPENDS Alice's message cell before Bob ever read it (mocked broadcast)", async () => {
+  it("the next reclaim batch then has nothing to reclaim: Alice's message cell is NOT spent", async () => {
     const mockChain = new MockCkbClient();
     const signer = new MlDsaV2TxSigner({ keyPair: aliceTxKeyPair, client: mockChain });
     const { assembled, cell } = aliceSendsToBob(signer);
@@ -474,7 +564,7 @@ describe("VULN reproduction (still open): RCPT-01 forged 0x01 receipt from publi
       messageType: MESSAGE_TYPE_REF,
       store,
     });
-    seedAliceOutgoingRow(store, assembled.messageId, cell);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
 
     const forgery = malloryForgesReceipt({
       publishedCellData: hexToBytes(cell.outputData),
@@ -485,24 +575,18 @@ describe("VULN reproduction (still open): RCPT-01 forged 0x01 receipt from publi
     await lifecycle.processAcknowledgements(aliceProcesses(forgery.forgedEnvelope));
     const result = await lifecycle.executeReclaimBatch();
 
-    // PRE-FIX: a reclaim tx consuming the undelivered message cell is signed
-    // and handed to the (mock) node; the message is marked reclaimed and its
-    // capacity released. Bob can no longer fetch the message from chain.
-    expect(result?.reclaimedRowIds).toEqual([ROW_ID]);
-    expect(store.rows.get(ROW_ID)?.state).toBe("reclaimed");
-    expect(chain.sent).toHaveLength(1);
-    const inputs = (chain.sent[0] as { inputs: { previous_output: { tx_hash: string } }[] }).inputs;
-    expect(inputs.map((i) => i.previous_output.tx_hash)).toContain(cell.outPoint.txHash);
-    expect(store.released).toHaveLength(1);
-    expect(BigInt(store.released[0]!)).toBeGreaterThan(0n);
+    expect(result).toBeNull();
+    expect(chain.sent).toHaveLength(0);
+    expect(store.rows.get(ROW_ID)?.state).toBe("available_on_chain");
+    expect(store.released).toEqual([]);
   });
 });
 
-describe("VULN reproduction (still open): RCPT-02 forged 0x05 attachment receipt", () => {
-  it("marks Alice's attachment as remotely downloaded (permits chunk reclaim) without any real download", async () => {
+describe("FIXED (ADR 0006): RCPT-02 forged 0x05 attachment receipt", () => {
+  it("does NOT mark Alice's attachment as remotely downloaded", async () => {
     const { lifecycle, store, signer } = makeLifecycle();
     const { assembled, cell } = aliceSendsToBob(signer);
-    seedAliceOutgoingRow(store, assembled.messageId, cell);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
 
     const forgery = malloryForgesReceipt({
       publishedCellData: hexToBytes(cell.outputData),
@@ -510,19 +594,16 @@ describe("VULN reproduction (still open): RCPT-02 forged 0x05 attachment receipt
       directory: PUBLIC_PROFILE_DIRECTORY,
       status: 0x05,
     });
-    const acked = await lifecycle.processAcknowledgements(aliceProcesses(forgery.forgedEnvelope));
-
-    // PRE-FIX: the chunk-release gate (attachments.remote_downloaded) is set.
-    // The message state itself is untouched by 0x05 (existing design).
-    expect(acked).toEqual([]);
-    expect(store.attachmentRemoteDownloaded).toEqual([ROW_ID]);
-    expect(store.transitions).toEqual([]);
+    expectNoEffect(
+      store,
+      await lifecycle.processAcknowledgements(aliceProcesses(forgery.forgedEnvelope)),
+    );
   });
 
-  it("0x05 is applied even when the message row is in a non-ackable state (no state guard at all)", async () => {
+  it("a forged 0x05 has no effect on a row in a non-ackable state either", async () => {
     const { lifecycle, store, signer } = makeLifecycle();
     const { assembled, cell } = aliceSendsToBob(signer);
-    seedAliceOutgoingRow(store, assembled.messageId, cell);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
     store.rows.get(ROW_ID)!.state = "pending"; // not yet even committed
     const forgery = malloryForgesReceipt({
       publishedCellData: hexToBytes(cell.outputData),
@@ -531,7 +612,7 @@ describe("VULN reproduction (still open): RCPT-02 forged 0x05 attachment receipt
       status: 0x05,
     });
     await lifecycle.processAcknowledgements(aliceProcesses(forgery.forgedEnvelope));
-    expect(store.attachmentRemoteDownloaded).toEqual([ROW_ID]);
+    expect(store.attachmentRemoteDownloaded).toEqual([]);
   });
 });
 
@@ -539,11 +620,8 @@ describe("FIXED (receipt→recipient binding): RCPT-03 a real third party (Carol
   it("Carol, honestly identifying as Carol, acknowledging Alice→Bob is ignored", async () => {
     const { lifecycle, store, signer } = makeLifecycle();
     const { assembled, cell } = aliceSendsToBob(signer);
-    seedAliceOutgoingRow(store, assembled.messageId, cell);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
 
-    // v1 has no envelope signature, so "valid signer Carol" can only mean
-    // Carol truthfully naming herself (and funding/signing her own CKB tx).
-    // The lifecycle never compares the receipt sender with Bob.
     const { header } = codec.decodeCempEnvelopeV1(hexToBytes(cell.outputData));
     const carolsReceipt = assembleTextMessage({
       text: "",
@@ -551,66 +629,42 @@ describe("FIXED (receipt→recipient binding): RCPT-03 a real third party (Carol
       recipientProfileId: ALICE_PROFILE_ID,
       recipientKemPublicKey: ALICE.mlKem.publicKey,
       senderDeviceId: hexToBytes("cc".repeat(16)),
-      receipts: [{ messageId: header.message_id, status: 0x01 }],
+      receipts: [{ messageId: header.message_id, status: 0x01, proof: randomBytes(32) }],
     });
     const incoming = aliceProcesses(carolsReceipt.envelopeBytes);
     expect(incoming.senderProfileId).toEqual(CAROL_PROFILE_ID);
     expect(incoming.conversationId).toEqual(
       deriveConversationId(ALICE_PROFILE_ID, CAROL_PROFILE_ID),
     );
+    expectNoEffect(store, await lifecycle.processAcknowledgements(incoming));
+  });
 
-    const acked = await lifecycle.processAcknowledgements(incoming);
-    // Was accepted pre-fix (Carol ≠ Bob). Now: no ack, no state, no capacity.
-    expect(acked).toEqual([]);
-    expect(store.rows.get(ROW_ID)?.state).toBe("available_on_chain");
-    expect(store.transitions).toEqual([]);
-    expect(store.reclaimable).toEqual([]);
+  it("defence in depth: even a VALID proof is ignored when the claimed sender is not the recipient", async () => {
+    const { lifecycle, store, signer } = makeLifecycle();
+    const { assembled, cell } = aliceSendsToBob(signer);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
+    const bobView = bobDecrypts(hexToBytes(cell.outputData));
+    const genuineProof = computeReceiptProof(bobView.receiptKey!, assembled.messageId, 0x01);
+    const asCarol = assembleTextMessage({
+      text: "",
+      senderProfileId: CAROL_PROFILE_ID,
+      recipientProfileId: ALICE_PROFILE_ID,
+      recipientKemPublicKey: ALICE.mlKem.publicKey,
+      senderDeviceId: hexToBytes("cc".repeat(16)),
+      receipts: [{ messageId: assembled.messageId, status: 0x01, proof: genuineProof }],
+    });
+    expectNoEffect(
+      store,
+      await lifecycle.processAcknowledgements(aliceProcesses(asCarol.envelopeBytes)),
+    );
   });
 });
 
-describe("VULN reproduction (still open for impersonation): RCPT-04 wrong conversation / network / message id", () => {
-  /** Build a receipt-only envelope to Alice with full control over the header. */
-  function receiptWithHeader(over: {
-    conversationId: Uint8Array;
-    network: number;
-    messageId: Uint8Array;
-  }): Uint8Array {
-    const receiptEnvelopeId = hexToBytes("ab".repeat(16));
-    const payload = codec.encodeCempPayloadV1({
-      message_id: receiptEnvelopeId,
-      body_type: 0x01,
-      recipient_profile_id: ALICE_PROFILE_ID,
-      text: new Uint8Array(0),
-      attachment_manifests: [],
-      reply_to_message_id: undefined,
-      reply_to_outpoint: undefined,
-      receipts: [{ message_id: over.messageId, status: 0x01 }],
-      receipt_request: 0,
-      client_timestamp: 1n,
-      sender_device_id: MALLORY_DEVICE,
-      padding: new Uint8Array(0),
-    });
-    return encryptEnvelope({
-      payload,
-      recipientKemPublicKey: ALICE.mlKem.publicKey,
-      header: {
-        protocol_version: 1,
-        network: over.network,
-        content_type: 0x01,
-        message_id: receiptEnvelopeId,
-        conversation_id: over.conversationId,
-        sender_profile_id: BOB_PROFILE_ID,
-        created_at_client: 1n,
-        reply_to_message_id: undefined,
-        expiry_hint: 0n,
-      },
-    }).envelopeBytes;
-  }
-
-  it("REPRODUCED — wrong conversation: an arbitrary (all-zero) conversation_id is accepted and still acks", async () => {
+describe("RCPT-04 wrong conversation / network / message id", () => {
+  it("FIXED (ADR 0006) — wrong conversation: an all-zero conversation_id receipt with a guessed proof has no effect", async () => {
     const { lifecycle, store, signer } = makeLifecycle();
     const { assembled, cell } = aliceSendsToBob(signer);
-    seedAliceOutgoingRow(store, assembled.messageId, cell);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
     const incoming = aliceProcesses(
       receiptWithHeader({
         conversationId: new Uint8Array(32),
@@ -618,11 +672,11 @@ describe("VULN reproduction (still open for impersonation): RCPT-04 wrong conver
         messageId: assembled.messageId,
       }),
     );
-    // conversation_id is never checked against H(sender, recipient)…
+    // conversation_id is still not checked against H(sender, recipient)…
     expect(incoming.conversationId).toEqual(new Uint8Array(32));
-    // …nor against the target message's conversation.
-    expect(await lifecycle.processAcknowledgements(incoming)).toEqual([ROW_ID]);
-    expect(store.rows.get(ROW_ID)?.state).toBe("reclaim_queued");
+    // …but the proof gate holds regardless.
+    expectNoEffect(store, await lifecycle.processAcknowledgements(incoming));
+    expect(store.rows.get(ROW_ID)?.state).toBe("available_on_chain");
   });
 
   it("NOT reproduced — wrong network: non-testnet network bytes fail envelope validation before decryption", () => {
@@ -642,7 +696,7 @@ describe("VULN reproduction (still open for impersonation): RCPT-04 wrong conver
   it("NOT reproduced — wrong message id: an id matching no outgoing row has no state or capacity effect", async () => {
     const { lifecycle, store, signer } = makeLifecycle();
     const { assembled, cell } = aliceSendsToBob(signer);
-    seedAliceOutgoingRow(store, assembled.messageId, cell);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
     const incoming = aliceProcesses(
       receiptWithHeader({
         conversationId: deriveConversationId(ALICE_PROFILE_ID, BOB_PROFILE_ID),
@@ -650,10 +704,198 @@ describe("VULN reproduction (still open for impersonation): RCPT-04 wrong conver
         messageId: hexToBytes("00".repeat(16)),
       }),
     );
-    expect(await lifecycle.processAcknowledgements(incoming)).toEqual([]);
-    expect(store.transitions).toEqual([]);
-    expect(store.reclaimable).toEqual([]);
+    expectNoEffect(store, await lifecycle.processAcknowledgements(incoming));
+  });
+});
+
+describe("ADR 0006 acceptance: Bob's GENUINE receipts", () => {
+  it("a valid 0x01 proof from Bob walks the message to reclaim_queued and funds reclaimable", async () => {
+    const { lifecycle, store, signer } = makeLifecycle();
+    const { assembled, cell } = aliceSendsToBob(signer);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
+    const bobView = bobDecrypts(hexToBytes(cell.outputData));
+    expect(bobView.receiptKey).not.toBeNull();
+    const proof = computeReceiptProof(bobView.receiptKey!, assembled.messageId, 0x01);
+
+    const acked = await lifecycle.processAcknowledgements(
+      aliceProcesses(bobsReceipt([{ messageId: assembled.messageId, status: 0x01, proof }])),
+    );
+    expect(acked).toEqual([ROW_ID]);
+    expect(store.transitions).toEqual([
+      { rowId: ROW_ID, to: "downloaded_by_recipient" },
+      { rowId: ROW_ID, to: "acknowledged" },
+      { rowId: ROW_ID, to: "reclaim_queued" },
+    ]);
+    expect(store.reclaimable).toEqual([fixedPointFrom(CELL_CAPACITY_CKB).toString()]);
+  });
+
+  it("a valid 0x05 proof from Bob marks the attachment downloaded", async () => {
+    const { lifecycle, store, signer } = makeLifecycle();
+    const { assembled, cell } = aliceSendsToBob(signer);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
+    const bobView = bobDecrypts(hexToBytes(cell.outputData));
+    const proof = computeReceiptProof(bobView.receiptKey!, assembled.messageId, 0x05);
+    await lifecycle.processAcknowledgements(
+      aliceProcesses(bobsReceipt([{ messageId: assembled.messageId, status: 0x05, proof }])),
+    );
+    expect(store.attachmentRemoteDownloaded).toEqual([ROW_ID]);
+  });
+
+  it("a replay of the genuine receipt is harmless (idempotent, no second capacity move)", async () => {
+    const { lifecycle, store, signer } = makeLifecycle();
+    const { assembled, cell } = aliceSendsToBob(signer);
+    seedAliceOutgoingRow(store, assembled.messageId, cell, assembled.receiptKey);
+    const bobView = bobDecrypts(hexToBytes(cell.outputData));
+    const proof = computeReceiptProof(bobView.receiptKey!, assembled.messageId, 0x01);
+    const envelope = bobsReceipt([{ messageId: assembled.messageId, status: 0x01, proof }]);
+    await lifecycle.processAcknowledgements(aliceProcesses(envelope));
+    const replay = await lifecycle.processAcknowledgements(aliceProcesses(envelope));
+    expect(replay).toEqual([]);
+    expect(store.reclaimable).toHaveLength(1);
+  });
+});
+
+describe("ADR 0006 acceptance: everything else has ZERO effect", () => {
+  async function seeded() {
+    const ctx = makeLifecycle();
+    const { assembled, cell } = aliceSendsToBob(ctx.signer);
+    seedAliceOutgoingRow(ctx.store, assembled.messageId, cell, assembled.receiptKey);
+    const bobView = bobDecrypts(hexToBytes(cell.outputData));
+    return { ...ctx, assembled, cell, bobKey: bobView.receiptKey! };
+  }
+
+  it("a wrong proof (one flipped bit of Bob's real proof)", async () => {
+    const { lifecycle, store, assembled, bobKey } = await seeded();
+    const proof = computeReceiptProof(bobKey, assembled.messageId, 0x01);
+    proof[0] = proof[0]! ^ 0x01;
+    expectNoEffect(
+      store,
+      await lifecycle.processAcknowledgements(
+        aliceProcesses(bobsReceipt([{ messageId: assembled.messageId, status: 0x01, proof }])),
+      ),
+    );
+  });
+
+  it("a proof for another status: Bob's genuine 0x01 proof relabelled 0x05", async () => {
+    const { lifecycle, store, assembled, bobKey } = await seeded();
+    const proof = computeReceiptProof(bobKey, assembled.messageId, 0x01);
+    expectNoEffect(
+      store,
+      await lifecycle.processAcknowledgements(
+        aliceProcesses(bobsReceipt([{ messageId: assembled.messageId, status: 0x05, proof }])),
+      ),
+    );
+  });
+
+  it("a proof for another message: Bob's genuine proof for M2 attached to M1's id", async () => {
+    const { lifecycle, store, signer, assembled } = await seeded();
+    const second = aliceSendsToBob(signer);
+    const otherKey = bobDecrypts(hexToBytes(second.cell.outputData)).receiptKey!;
+    const proofForM2 = computeReceiptProof(otherKey, second.assembled.messageId, 0x01);
+    expectNoEffect(
+      store,
+      await lifecycle.processAcknowledgements(
+        aliceProcesses(
+          bobsReceipt([{ messageId: assembled.messageId, status: 0x01, proof: proofForM2 }]),
+        ),
+      ),
+    );
+  });
+
+  it("a v1 receipt from Bob (legacy, unproven)", async () => {
+    const { lifecycle, store, assembled } = await seeded();
+    const incoming = aliceProcesses(
+      receiptWithHeader({
+        conversationId: deriveConversationId(ALICE_PROFILE_ID, BOB_PROFILE_ID),
+        network: 0x01,
+        messageId: assembled.messageId,
+        version: 1,
+      }),
+    );
+    expect(incoming.protocolVersion).toBe(1);
+    expect(incoming.receipts[0]?.proof).toBeNull();
+    expectNoEffect(store, await lifecycle.processAcknowledgements(incoming));
+  });
+
+  it("an outgoing row with no stored receipt key (sent before the upgrade), even with Bob's real proof", async () => {
+    const { lifecycle, store, cell, assembled, bobKey } = await seeded();
+    seedAliceOutgoingRow(store, assembled.messageId, cell, null);
+    const proof = computeReceiptProof(bobKey, assembled.messageId, 0x01);
+    expectNoEffect(
+      store,
+      await lifecycle.processAcknowledgements(
+        aliceProcesses(bobsReceipt([{ messageId: assembled.messageId, status: 0x01, proof }])),
+      ),
+    );
+  });
+
+  it("a bad receipt does not block a good one in the same payload", async () => {
+    const { lifecycle, store, assembled, bobKey } = await seeded();
+    const good = computeReceiptProof(bobKey, assembled.messageId, 0x01);
+    const acked = await lifecycle.processAcknowledgements(
+      aliceProcesses(
+        bobsReceipt([
+          { messageId: assembled.messageId, status: 0x05, proof: randomBytes(32) },
+          { messageId: assembled.messageId, status: 0x01, proof: good },
+        ]),
+      ),
+    );
+    expect(acked).toEqual([ROW_ID]);
     expect(store.attachmentRemoteDownloaded).toEqual([]);
+  });
+});
+
+describe("v1 content still decrypts (historical messages)", () => {
+  it("a v1 envelope decrypts and displays, with no receipt key owed", () => {
+    const text = "an old v1 message";
+    const messageId = hexToBytes("5a".repeat(16));
+    const payload = codec.encodeCempPayloadV1({
+      message_id: messageId,
+      body_type: 0x01,
+      recipient_profile_id: ALICE_PROFILE_ID,
+      text: new TextEncoder().encode(text),
+      attachment_manifests: [],
+      reply_to_message_id: undefined,
+      reply_to_outpoint: undefined,
+      receipts: [],
+      receipt_request: 1,
+      client_timestamp: 1n,
+      sender_device_id: hexToBytes("bb".repeat(16)),
+      padding: new Uint8Array(0),
+    });
+    const envelope = encryptEnvelope({
+      payload,
+      recipientKemPublicKey: ALICE.mlKem.publicKey,
+      header: {
+        protocol_version: 1,
+        network: 0x01,
+        content_type: 0x01,
+        message_id: messageId,
+        conversation_id: deriveConversationId(ALICE_PROFILE_ID, BOB_PROFILE_ID),
+        sender_profile_id: BOB_PROFILE_ID,
+        created_at_client: 1n,
+        reply_to_message_id: undefined,
+        expiry_hint: 0n,
+      },
+    }).envelopeBytes;
+    const incoming = aliceProcesses(envelope);
+    expect(incoming.protocolVersion).toBe(1);
+    expect(incoming.text).toBe(text);
+    expect(incoming.receiptKey).toBeNull();
+  });
+});
+
+describe("ADR 0006 open question: type args do not depend on the payload version", () => {
+  it("a v2 message cell carries the unchanged 81-byte v1 type args (version byte 0x01)", () => {
+    const { cell } = aliceSendsToBob(
+      new MlDsaV2TxSigner({ keyPair: aliceTxKeyPair, client: new MockCkbClient() }),
+    );
+    const { header } = codec.decodeCempEnvelopeV1(hexToBytes(cell.outputData));
+    expect(header.protocol_version).toBe(2);
+    const args = hexToBytes(cell.cellOutput.type!.args);
+    expect(args).toHaveLength(81);
+    expect(args[0]).toBe(0x01);
+    expect(parseMessageTypeArgs(args).routeTag).toHaveLength(32);
   });
 });
 

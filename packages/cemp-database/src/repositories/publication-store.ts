@@ -132,9 +132,16 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
 
   async findOutgoingByEnvelopeMessageId(
     envelopeMessageIdHex: string,
-  ): Promise<{ rowId: number; state: string } | undefined> {
-    const message = await this.#messages.getByEnvelopeMessageId(envelopeMessageIdHex);
-    return message === undefined ? undefined : { rowId: message.id, state: message.state };
+  ): Promise<{ rowId: number; state: string; recipientProfileIdHex: string | null } | undefined> {
+    const found =
+      await this.#messages.getOutgoingWithRecipientByEnvelopeMessageId(envelopeMessageIdHex);
+    return found === undefined
+      ? undefined
+      : {
+          rowId: found.message.id,
+          state: found.message.state,
+          recipientProfileIdHex: found.recipientProfileIdHex,
+        };
   }
 
   async listOutgoingByState(

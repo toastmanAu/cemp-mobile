@@ -243,6 +243,31 @@ acks. _Incoming_ receipts over LoRa still reach `processAcknowledgements`.
 - "TRNS-01 receipts: the same forged receipt bytes via LoRa (source: null)
   have the same lifecycle effect".
 
+## Status after the receipt→recipient binding (follow-up commit)
+
+`ResponseLifecycle.processAcknowledgements` now accepts a `0x01`/`0x05`
+receipt only when its claimed sender equals the profile id of the contact the
+original OUTGOING message's conversation is with (fails closed if that
+contact has no profile id; never matches an incoming row). Wire-compatible.
+
+| Finding                      | Status         | Why                                                                                                                                                                                                 |
+| ---------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RCPT-03                      | **FIXED**      | Carol naming herself no longer matches Bob. Test flipped to assert no effect.                                                                                                                       |
+| RCPT-01 / RCPT-02            | **STILL OPEN** | The forgery claims to BE Bob. The cleartext `conversation_id = H(sorted(alice, bob))` lets any observer find Bob by hashing Alice's id against public profile ids, so the claim passes the binding. |
+| RCPT-04 (wrong conversation) | **STILL OPEN** | Same: the impersonating sender id is Bob's.                                                                                                                                                         |
+| AUTH-01/02, TRNS-01          | **STILL OPEN** | Unchanged; needs sender authentication.                                                                                                                                                             |
+
+Closing RCPT-01/02 requires an AUTHENTICATED receipt, i.e. a wire change.
+Two candidates: (a) the v2 ML-DSA-signed envelope (~3.3 KB per message,
+also fixes AUTH-01), or (b) a receipt that proves decryption, e.g. a 32-byte
+MAC keyed by the original message's key, which only Alice and Bob hold (~32
+bytes per receipt; fixes receipts only, not AUTH-01).
+
+Additional finding while doing this: the cleartext `conversation_id`
+effectively publishes the RECIPIENT of every message to anyone holding the
+public profile list, contrary to the envelope comment that the recipient is
+not in the clear header.
+
 ## Test inventory
 
 | File                                            | Tests                                           |

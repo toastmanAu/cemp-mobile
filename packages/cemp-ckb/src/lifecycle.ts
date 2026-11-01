@@ -51,9 +51,14 @@ export interface LifecycleWatch {
 export interface LifecycleStore {
   transitionMessage(rowId: number, to: string): Promise<void>;
   setMessageChainRef(rowId: number, ref: { txHash: string; outpointIndex: number }): Promise<void>;
+  /**
+   * The OUTGOING message with this envelope id, plus the profile id of the
+   * contact it was sent to (null when that contact has no profile id). Used to
+   * bind a receipt to the message's recipient.
+   */
   findOutgoingByEnvelopeMessageId(
     envelopeMessageIdHex: string,
-  ): Promise<{ rowId: number; state: string } | undefined>;
+  ): Promise<{ rowId: number; state: string; recipientProfileIdHex: string | null } | undefined>;
   listOutgoingByState(state: string): Promise<LifecycleMessage[]>;
 
   recordOutgoingTx(input: {
@@ -175,9 +180,7 @@ export class ResponseLifecycle {
     const acked: number[] = [];
     for (const receipt of incoming.receipts) {
       if (receipt.status === 0x05) {
-        const target = await this.#deps.store.findOutgoingByEnvelopeMessageId(
-          bytesToHex(receipt.messageId),
-        );
+        const target = await this.#findReceiptTarget(incoming, receipt.messageId);
         if (target !== undefined) {
           await this.#deps.store.markAttachmentRemoteDownloaded(target.rowId);
         }
@@ -186,9 +189,7 @@ export class ResponseLifecycle {
       if (receipt.status !== 0x01) {
         continue;
       }
-      const found = await this.#deps.store.findOutgoingByEnvelopeMessageId(
-        bytesToHex(receipt.messageId),
-      );
+      const found = await this.#findReceiptTarget(incoming, receipt.messageId);
       if (found === undefined || !ACKABLE_STATES.has(found.state)) {
         continue;
       }
@@ -208,6 +209,32 @@ export class ResponseLifecycle {
       acked.push(found.rowId);
     }
     return acked;
+  }
+
+  /**
+   * Receipt → recipient binding (security handoff Phase E): a receipt only
+   * counts when its sender is the contact the original message was sent to.
+   * Fails closed when that contact has no profile id.
+   *
+   * LIMIT: v1 envelopes are unsigned, so `senderProfileId` is only a claim.
+   * The cleartext conversation_id = H(sorted(sender, recipient)) lets a
+   * chain observer find the recipient and claim to be them, so this stops a
+   * third party naming itself (RCPT-03) but NOT a forger impersonating the
+   * recipient (RCPT-01/02). See docs/review/PHASE-A-REPRODUCTION.md.
+   */
+  async #findReceiptTarget(
+    incoming: IncomingTextMessage,
+    messageId: Uint8Array,
+  ): Promise<{ rowId: number; state: string } | undefined> {
+    const found = await this.#deps.store.findOutgoingByEnvelopeMessageId(bytesToHex(messageId));
+    if (found === undefined || found.recipientProfileIdHex === null) {
+      return undefined;
+    }
+    const sender = bytesToHex(incoming.senderProfileId).toLowerCase();
+    if (found.recipientProfileIdHex.toLowerCase() !== sender) {
+      return undefined;
+    }
+    return { rowId: found.rowId, state: found.state };
   }
 
   /* ---------------- worker-driven commit finalization (review M-2) ------ */

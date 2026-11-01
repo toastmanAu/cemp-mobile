@@ -104,6 +104,8 @@ interface FakeRow {
   envelopeMessageIdHex: string;
   logicalMessageId: string;
   chainRef: { txHash: string; outpointIndex: number } | null;
+  /** Profile id of the contact the message was sent to (the only valid acker). */
+  recipientProfileIdHex: string | null;
 }
 
 class RecordingLifecycleStore implements LifecycleStore {
@@ -143,7 +145,11 @@ class RecordingLifecycleStore implements LifecycleStore {
   }
   findOutgoingByEnvelopeMessageId(hex: string) {
     const row = [...this.rows.values()].find((r) => r.envelopeMessageIdHex === hex);
-    return Promise.resolve(row === undefined ? undefined : { rowId: row.rowId, state: row.state });
+    return Promise.resolve(
+      row === undefined
+        ? undefined
+        : { rowId: row.rowId, state: row.state, recipientProfileIdHex: row.recipientProfileIdHex },
+    );
   }
   listOutgoingByState(state: string): Promise<LifecycleMessage[]> {
     return Promise.resolve(
@@ -344,6 +350,7 @@ function seedAliceOutgoingRow(
     envelopeMessageIdHex: bytesToHex(envelopeMessageId),
     logicalMessageId: "lm-alice-to-bob",
     chainRef: { txHash: cell.outPoint.txHash, outpointIndex: Number(cell.outPoint.index) },
+    recipientProfileIdHex: bytesToHex(BOB_PROFILE_ID),
   });
   store.messageJournalCapacity.set("lm-alice-to-bob", fixedPointFrom(CELL_CAPACITY_CKB).toString());
 }
@@ -410,7 +417,11 @@ function makeLifecycle(liveCells: Map<string, Cell> = new Map()) {
 
 /* ── tests ──────────────────────────────────────────────────────────────── */
 
-describe("VULN reproduction (pre-fix): RCPT-01 forged 0x01 receipt from public chain data", () => {
+// STILL OPEN after the receipt→recipient binding: Mallory claims to BE Bob
+// (found via the cleartext conversation_id), and v1 cannot tell her apart.
+// Closing these needs an authenticated receipt (signature or proof of
+// decryption) — a wire change.
+describe("VULN reproduction (still open): RCPT-01 forged 0x01 receipt from public chain data", () => {
   it("Mallory's receipt (built from Alice's published cell + Alice's public KEM key) walks Alice's message to reclaim_queued and funds reclaimable", async () => {
     const { lifecycle, store, signer } = makeLifecycle();
     const { assembled, cell } = aliceSendsToBob(signer);
@@ -487,7 +498,7 @@ describe("VULN reproduction (pre-fix): RCPT-01 forged 0x01 receipt from public c
   });
 });
 
-describe("VULN reproduction (pre-fix): RCPT-02 forged 0x05 attachment receipt", () => {
+describe("VULN reproduction (still open): RCPT-02 forged 0x05 attachment receipt", () => {
   it("marks Alice's attachment as remotely downloaded (permits chunk reclaim) without any real download", async () => {
     const { lifecycle, store, signer } = makeLifecycle();
     const { assembled, cell } = aliceSendsToBob(signer);
@@ -524,8 +535,8 @@ describe("VULN reproduction (pre-fix): RCPT-02 forged 0x05 attachment receipt", 
   });
 });
 
-describe("VULN reproduction (pre-fix): RCPT-03 a real third party (Carol) acks a message meant for Bob", () => {
-  it("Carol, honestly identifying as Carol, acknowledges Alice→Bob and it is accepted", async () => {
+describe("FIXED (receipt→recipient binding): RCPT-03 a real third party (Carol) acks a message meant for Bob", () => {
+  it("Carol, honestly identifying as Carol, acknowledging Alice→Bob is ignored", async () => {
     const { lifecycle, store, signer } = makeLifecycle();
     const { assembled, cell } = aliceSendsToBob(signer);
     seedAliceOutgoingRow(store, assembled.messageId, cell);
@@ -549,14 +560,15 @@ describe("VULN reproduction (pre-fix): RCPT-03 a real third party (Carol) acks a
     );
 
     const acked = await lifecycle.processAcknowledgements(incoming);
-    // PRE-FIX: accepted although Carol ≠ Bob and the conversation differs.
-    expect(acked).toEqual([ROW_ID]);
-    expect(store.rows.get(ROW_ID)?.state).toBe("reclaim_queued");
-    expect(store.reclaimable).toHaveLength(1);
+    // Was accepted pre-fix (Carol ≠ Bob). Now: no ack, no state, no capacity.
+    expect(acked).toEqual([]);
+    expect(store.rows.get(ROW_ID)?.state).toBe("available_on_chain");
+    expect(store.transitions).toEqual([]);
+    expect(store.reclaimable).toEqual([]);
   });
 });
 
-describe("VULN reproduction (pre-fix): RCPT-04 wrong conversation / network / message id", () => {
+describe("VULN reproduction (still open for impersonation): RCPT-04 wrong conversation / network / message id", () => {
   /** Build a receipt-only envelope to Alice with full control over the header. */
   function receiptWithHeader(over: {
     conversationId: Uint8Array;

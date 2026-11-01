@@ -175,8 +175,17 @@ async function makeDb() {
   };
 }
 
-async function makeOutgoingConversation(stack: Awaited<ReturnType<typeof makeDb>>) {
-  const contact = await stack.contacts.create({ displayName: "bob" });
+/** Profile id of the "bob" contact — the only party allowed to ack his messages. */
+const BOB_PROFILE_ID_HEX = "88".repeat(32);
+
+async function makeOutgoingConversation(
+  stack: Awaited<ReturnType<typeof makeDb>>,
+  profileIdHex: string | null = BOB_PROFILE_ID_HEX,
+) {
+  const contact = await stack.contacts.create({
+    displayName: "bob",
+    ...(profileIdHex === null ? {} : { profileIdHex }),
+  });
   const conv = await stack.conversations.getOrCreateForContact(contact.id);
   return conv;
 }
@@ -297,6 +306,122 @@ describe("ResponseLifecycle.processAcknowledgements (tasks 4–5)", () => {
       expect((await stack.messages.getById(message.id))?.state).toBe(stateBefore);
       const attachment = (await stack.attachments.listForMessage(message.id))[0];
       expect(attachment?.remoteDownloaded).toBe(true);
+    } finally {
+      await stack.db.close();
+    }
+  });
+});
+
+describe("ResponseLifecycle.processAcknowledgements binds receipts to the recipient", () => {
+  const ENV_ID_HEX = "5a".repeat(16);
+
+  function receiptFrom(senderProfileIdHex: string, status: number): IncomingTextMessage {
+    return {
+      contentType: 0x01,
+      attachmentManifests: [],
+      attachmentKey: new Uint8Array(32),
+      messageId: hexToBytes("dd".repeat(16)),
+      conversationId: hexToBytes("99".repeat(32)),
+      senderProfileId: hexToBytes(senderProfileIdHex),
+      text: "",
+      replyToMessageId: null,
+      replyToOutpoint: null,
+      receipts: [{ messageId: hexToBytes(ENV_ID_HEX), status }],
+      clientTimestamp: 0n,
+      senderDeviceId: hexToBytes("77".repeat(16)),
+    };
+  }
+
+  async function setup(
+    recipientProfileIdHex: string | null,
+    direction: "outgoing" | "incoming" = "outgoing",
+  ) {
+    const stack = await makeDb();
+    const { client, signer } = makeChain(new Map());
+    const lifecycle = new ResponseLifecycle({
+      client,
+      signer,
+      messageType: MESSAGE_TYPE_REF,
+      store: stack.store,
+    });
+    const conv = await makeOutgoingConversation(stack, recipientProfileIdHex);
+    const message = await stack.messages.insert({
+      conversationId: conv.id,
+      direction,
+      body: "original",
+      logicalMessageId: `lm-bind-${direction}`,
+    });
+    if (direction === "outgoing") {
+      for (const state of OUTGOING_HAPPY_PATH) {
+        await stack.messages.transitionState(message.id, state);
+      }
+    }
+    await stack.messages.setEnvelopeMessageId(message.id, ENV_ID_HEX);
+    await stack.attachments.create({
+      messageId: message.id,
+      kind: "image",
+      byteLength: 10,
+      manifest: new Uint8Array([1]),
+    });
+    return { stack, lifecycle, message };
+  }
+
+  it("ignores a 0x01 from anyone but the recipient: no state change, no capacity", async () => {
+    const { stack, lifecycle, message } = await setup(BOB_PROFILE_ID_HEX);
+    try {
+      const before = await stack.balances.getBalance(stack.walletId);
+      expect(await lifecycle.processAcknowledgements(receiptFrom("c4".repeat(32), 0x01))).toEqual(
+        [],
+      );
+      expect((await stack.messages.getById(message.id))?.state).toBe("available_on_chain");
+      expect(await stack.balances.getBalance(stack.walletId)).toEqual(before);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("ignores a 0x05 from anyone but the recipient: attachment not marked downloaded", async () => {
+    const { stack, lifecycle, message } = await setup(BOB_PROFILE_ID_HEX);
+    try {
+      await lifecycle.processAcknowledgements(receiptFrom("c4".repeat(32), 0x05));
+      expect((await stack.attachments.listForMessage(message.id))[0]?.remoteDownloaded).toBe(false);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("matches the recipient case-insensitively and accepts their 0x01 and 0x05", async () => {
+    const { stack, lifecycle, message } = await setup(BOB_PROFILE_ID_HEX.toUpperCase());
+    try {
+      await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x05));
+      expect(
+        await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x01)),
+      ).toEqual([message.id]);
+      expect((await stack.attachments.listForMessage(message.id))[0]?.remoteDownloaded).toBe(true);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("fails closed when the conversation's contact has no profile id", async () => {
+    const { stack, lifecycle, message } = await setup(null);
+    try {
+      expect(
+        await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x01)),
+      ).toEqual([]);
+      await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x05));
+      expect((await stack.messages.getById(message.id))?.state).toBe("available_on_chain");
+      expect((await stack.attachments.listForMessage(message.id))[0]?.remoteDownloaded).toBe(false);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("never matches an INCOMING message, even for its own sender", async () => {
+    const { stack, lifecycle, message } = await setup(BOB_PROFILE_ID_HEX, "incoming");
+    try {
+      await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x05));
+      expect((await stack.attachments.listForMessage(message.id))[0]?.remoteDownloaded).toBe(false);
     } finally {
       await stack.db.close();
     }

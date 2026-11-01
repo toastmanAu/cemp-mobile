@@ -286,6 +286,32 @@ export class MessageRepository {
     }
   }
 
+  /**
+   * An OUTGOING message by envelope id, with the profile id of the contact its
+   * conversation is with — the party allowed to acknowledge it.
+   */
+  async getOutgoingWithRecipientByEnvelopeMessageId(
+    envelopeMessageIdHex: string,
+  ): Promise<{ message: Message; recipientProfileIdHex: string | null } | undefined> {
+    const row = await this.#db.get(
+      `SELECT m.*, ct.profile_id_hex AS recipient_profile_id_hex
+         FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         JOIN contacts ct ON ct.id = c.contact_id
+        WHERE m.envelope_message_id_hex = ? AND m.direction = 'outgoing'`,
+      [envelopeMessageIdHex],
+    );
+    if (row === undefined) {
+      return undefined;
+    }
+    const recipient = row.recipient_profile_id_hex;
+    return {
+      message: rowToMessage(row),
+      recipientProfileIdHex:
+        recipient === null || recipient === undefined ? null : String(recipient),
+    };
+  }
+
   /** Find a message by its envelope message id (receipt/reply matching). */
   async getByEnvelopeMessageId(envelopeMessageIdHex: string): Promise<Message | undefined> {
     const row = await this.#db.get("SELECT * FROM messages WHERE envelope_message_id_hex = ?", [

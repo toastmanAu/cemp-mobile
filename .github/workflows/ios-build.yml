@@ -70,6 +70,22 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Check the app record is visible to the API key
+        if: ${{ inputs.mode == 'release' }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          BUNDLE_ID: com.cempmobile
+        run: |
+          export ASC_KEY_PATH="$RUNNER_TEMP/precheck-key.p8"
+          printf '%s' "$ASC_KEY_BASE64" | /usr/bin/base64 -D > "$ASC_KEY_PATH"
+          chmod 600 "$ASC_KEY_PATH"
+          status=0
+          node tools/asc-check/app-visible.mjs || status=$?
+          rm -f "$ASC_KEY_PATH"
+          exit "$status"
+
       # The iOS pods consume the same workspace install as every other gate
       # (react-native resolves through the pnpm store from the Podfile).
       - run: pnpm install --frozen-lockfile
@@ -391,8 +407,15 @@ jobs:
             -allowProvisioningUpdates \
             -authenticationKeyPath "$KEY_PATH" \
             -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/xcodebuild-upload.log"
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/xcodebuild-upload.log" \
+            || status=$?
           rm -f "$KEY_PATH"
+          if [ "${status:-0}" -ne 0 ]; then
+            # Xcode's one-line summary hides the cause; keep its detailed logs.
+            mkdir -p "$RUNNER_TEMP/distribution-logs"
+            cp -R "${TMPDIR:-/tmp}"/*.xcdistributionlogs "$RUNNER_TEMP/distribution-logs/" 2>/dev/null || true
+            exit "$status"
+          fi
           echo "Uploaded build ${{ github.run_number }} to App Store Connect (TestFlight processing follows)."
 
       - name: Upload build logs
@@ -409,6 +432,7 @@ jobs:
             ${{ runner.temp }}/smoke.png
             ${{ runner.temp }}/xcodebuild-archive.log
             ${{ runner.temp }}/xcodebuild-upload.log
+            ${{ runner.temp }}/distribution-logs
             ${{ runner.temp }}/xcodebuild-export.log
           if-no-files-found: warn
           retention-days: 14

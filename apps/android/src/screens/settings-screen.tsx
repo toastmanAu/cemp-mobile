@@ -5,10 +5,18 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { Alert, Button, ScrollView, StyleSheet, Switch, View } from "react-native";
+import { Alert, Button, Pressable, ScrollView, StyleSheet, Switch, View } from "react-native";
 import { Text, TextInput } from "../components/text";
 import { LORA_ENABLED_SETTING_KEY, LORA_GATEWAY_URL_SETTING_KEY } from "@cemp/sync";
 import { LoraTransport } from "@cemp/lora";
+import {
+  DEFAULT_IMAGE_QUALITY,
+  IMAGE_QUALITIES,
+  IMAGE_QUALITY_PRESETS,
+  IMAGE_QUALITY_SETTING_KEY,
+  parseImageQuality,
+  type ImageQuality,
+} from "@cemp/images";
 import { useAppContainer } from "../navigation";
 
 export function SettingsScreen(): React.JSX.Element {
@@ -27,6 +35,7 @@ export function SettingsScreen(): React.JSX.Element {
   const [loraGatewayUrl, setLoraGatewayUrl] = useState("");
   const [loraTestResult, setLoraTestResult] = useState<string | null>(null);
   const [loraTesting, setLoraTesting] = useState(false);
+  const [imageQuality, setImageQuality] = useState<ImageQuality>(DEFAULT_IMAGE_QUALITY);
 
   useEffect(() => {
     void container.vault.getMetadata().then((meta) => {
@@ -44,6 +53,9 @@ export function SettingsScreen(): React.JSX.Element {
     });
     void container.repositories.localSettings.get(LORA_GATEWAY_URL_SETTING_KEY).then((value) => {
       setLoraGatewayUrl(value ?? "");
+    });
+    void container.repositories.localSettings.get(IMAGE_QUALITY_SETTING_KEY).then((value) => {
+      setImageQuality(parseImageQuality(value));
     });
   }, [container.hasMessaging]);
 
@@ -103,6 +115,12 @@ export function SettingsScreen(): React.JSX.Element {
       LORA_ENABLED_SETTING_KEY,
       next ? "true" : "false",
     );
+  }
+
+  async function chooseImageQuality(next: ImageQuality): Promise<void> {
+    if (!container.hasMessaging) return;
+    setImageQuality(next);
+    await container.repositories.localSettings.set(IMAGE_QUALITY_SETTING_KEY, next);
   }
 
   async function saveLoraGatewayUrl(): Promise<void> {
@@ -224,6 +242,32 @@ export function SettingsScreen(): React.JSX.Element {
       )}
       {publishMessage !== null ? <Text style={styles.muted}>{publishMessage}</Text> : null}
 
+      <Text style={styles.section}>Photo sending</Text>
+      <Text style={styles.muted}>
+        Photos are stored on-chain, which locks about 1 CKB per byte until the message is reclaimed.
+        Lower quality locks less.
+      </Text>
+      {IMAGE_QUALITIES.map((quality) => {
+        const preset = IMAGE_QUALITY_PRESETS[quality];
+        const selected = quality === imageQuality;
+        return (
+          <Pressable
+            key={quality}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: selected, disabled: !container.hasMessaging }}
+            disabled={!container.hasMessaging}
+            onPress={() => void chooseImageQuality(quality)}
+            style={[styles.option, selected ? styles.optionSelected : null]}
+          >
+            <Text style={styles.optionLabel}>
+              {selected ? "● " : "○ "}
+              {preset.label}
+            </Text>
+            <Text style={styles.muted}>{preset.description}</Text>
+          </Pressable>
+        );
+      })}
+
       <Text style={styles.section}>Network</Text>
       <Text style={styles.muted}>CKB testnet (this build never touches mainnet).</Text>
 
@@ -276,4 +320,7 @@ const styles = StyleSheet.create({
   profileBox: { borderWidth: 1, borderColor: "#999", borderRadius: 8, padding: 12, gap: 6 },
   mono: { fontFamily: "monospace", fontSize: 12 },
   error: { color: "#b00020" },
+  option: { borderWidth: 1, borderColor: "#999", borderRadius: 8, padding: 12, gap: 4 },
+  optionSelected: { borderColor: "#1a73e8", borderWidth: 2 },
+  optionLabel: { fontWeight: "600" },
 });

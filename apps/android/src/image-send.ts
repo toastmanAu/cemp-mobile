@@ -24,6 +24,7 @@ import {
   hasSufficientCapacity,
   prepareImage,
   type ImageCodec,
+  type ImageLimits,
   type PreparedImage,
   type PublishImageMessageInput,
   type PublishImageMessageResult,
@@ -38,6 +39,11 @@ export interface RunImageSendDeps {
    * `releaseAll()` in `MessagingService.publishImage`.
    */
   readonly codec: ImageCodec;
+  /**
+   * Compressor limits from the user's send-quality preset
+   * (`limitsForQuality`). Omitted, the protocol defaults apply.
+   */
+  readonly limits?: ImageLimits;
   readonly availableShannon: bigint;
   readonly perChunkShannon: bigint;
   readonly messageCellShannon: bigint;
@@ -63,11 +69,10 @@ export async function runImageSend(
 ): Promise<RunImageSendResult> {
   let prepared: PreparedImage;
   try {
-    prepared = await prepareImage(
-      deps.codec,
-      input.sourceBytes,
-      input.format === undefined ? {} : { format: input.format },
-    );
+    prepared = await prepareImage(deps.codec, input.sourceBytes, {
+      ...(input.format === undefined ? {} : { format: input.format }),
+      ...(deps.limits === undefined ? {} : { limits: deps.limits }),
+    });
   } catch (error) {
     if (error instanceof ImageTooLargeError) {
       throw new Error("This photo's too large to send. Try a smaller one.", { cause: error });

@@ -14,6 +14,7 @@ import {
   type DecodedImage,
   type ImageCodec,
   type ImageEncodeFormat,
+  limitsForQuality,
   type PublishImageMessageInput,
 } from "@cemp/images";
 import { runImageSend, type RunImageSendDeps } from "./image-send.js";
@@ -172,6 +173,36 @@ describe("runImageSend capacity pre-flight (5A)", () => {
       /too large/i,
     );
     expect(publish).not.toHaveBeenCalled();
+  });
+});
+
+describe("runImageSend send quality", () => {
+  // Wallet funded for exactly one chunk: 1×33k + 20k message cell + 1 fee.
+  const ONE_CHUNK_BALANCE = (33_000n + 20_000n + 1n) * 100_000_000n;
+  const CAMERA_PHOTO = fakeSourceImage(4032, 3024);
+
+  it("refuses a camera photo at the protocol defaults on a one-chunk wallet", async () => {
+    const publish = vi.fn();
+    const deps = baseDeps({ availableShannon: ONE_CHUNK_BALANCE, publish });
+    await expect(runImageSend(deps, baseInput(CAMERA_PHOTO))).rejects.toThrow(
+      /not enough balance/i,
+    );
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("compresses to the chosen preset's limits before the capacity gate", async () => {
+    const publish = vi.fn().mockRejectedValue(new Error("reached publish"));
+    const deps = baseDeps({
+      availableShannon: ONE_CHUNK_BALANCE,
+      publish,
+      limits: limitsForQuality("economy"),
+    });
+    await expect(runImageSend(deps, baseInput(CAMERA_PHOTO))).rejects.toThrow("reached publish");
+    const publishInput = publish.mock.calls[0]![0] as PublishImageMessageInput;
+    expect(publishInput.preparedImage!.bytes.length).toBeLessThanOrEqual(32_768 - 16);
+    expect(Math.max(publishInput.preparedImage!.width, publishInput.preparedImage!.height)).toBe(
+      576,
+    );
   });
 });
 

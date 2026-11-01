@@ -38,6 +38,31 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Release-mode secrets are checked up front so a bad key fails in seconds,
+      # not after the ~20 min archive.
+      - name: Verify App Store Connect API key
+        if: ${{ inputs.mode == 'release' }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+        run: |
+          missing=0
+          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_BASE64; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing repository secret: $name" >&2
+              missing=1
+            fi
+          done
+          # A key id is exactly 10 uppercase letters/digits. Copying it from the
+          # AuthKey_<ID>.p8 filename (".p8" or "AuthKey_" left on) makes ASC
+          # reject the key only at the very end of a ~20 min archive.
+          if ! [[ "${ASC_KEY_ID:-}" =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "ASC_KEY_ID is not a 10-character key id (strip 'AuthKey_' and '.p8')" >&2
+            missing=1
+          fi
+          exit "$missing"
+
       - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v7
@@ -338,22 +363,6 @@ jobs:
           retention-days: 14
 
       # ── release mode: App Store Connect export + TestFlight upload ──
-
-      - name: Verify App Store Connect API key
-        if: ${{ inputs.mode == 'release' }}
-        env:
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
-        run: |
-          missing=0
-          for name in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_BASE64; do
-            if [ -z "${!name:-}" ]; then
-              echo "Missing repository secret: $name" >&2
-              missing=1
-            fi
-          done
-          exit "$missing"
 
       - name: Export and upload to TestFlight
         if: ${{ inputs.mode == 'release' }}

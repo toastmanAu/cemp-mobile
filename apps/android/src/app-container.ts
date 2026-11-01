@@ -27,6 +27,7 @@ import type { Notifier } from "@cemp/ui";
 import { MessagingService } from "./messaging";
 import { pickImage } from "./platform/native-image-picker";
 import { scanImageForQr, scanWithCamera } from "./platform/native-qr-scanner";
+import { onceAsync } from "./platform/once-async";
 import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
 import { shareImage } from "./platform/native-share";
 import { createRouteTagCache } from "./platform/route-tag-cache";
@@ -100,7 +101,20 @@ export class AppContainer {
     this.notifier = seams.createNotifier();
   }
 
-  static async init(): Promise<AppContainer> {
+  /**
+   * The process's container, created on first call. Process-scoped on purpose:
+   * Android can recreate the activity (Bold text / font change, restore) while
+   * the JS runtime lives on, which remounts <App/>. A second container would
+   * orphan the first one still unlocked — key in memory, database open,
+   * foreground sync running — behind a UI showing a fresh locked vault.
+   */
+  static init(): Promise<AppContainer> {
+    return AppContainer.#init();
+  }
+
+  static readonly #init = onceAsync(() => AppContainer.#create());
+
+  static async #create(): Promise<AppContainer> {
     const seams = platformSeams();
     const vault = await SecureVaultImpl.open({
       storage: new AsyncStorageVaultStorage(),

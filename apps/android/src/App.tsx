@@ -90,6 +90,9 @@ function AppContent(): React.JSX.Element {
 
   useEffect(() => {
     let cancelled = false;
+    // The container outlives this component (activity recreation remounts
+    // <App/> on the same JS runtime), so the listener must go with the mount.
+    let unsubscribe: (() => void) | null = null;
     AppContainer.init()
       .then((instance) => {
         if (cancelled) {
@@ -97,7 +100,7 @@ function AppContent(): React.JSX.Element {
         }
         setContainer(instance);
         setContainerState(instance.state);
-        instance.subscribe(() => {
+        unsubscribe = instance.subscribe(() => {
           setContainerState(instance.state);
         });
       })
@@ -108,6 +111,7 @@ function AppContent(): React.JSX.Element {
       });
     return () => {
       cancelled = true;
+      unsubscribe?.();
     };
   }, []);
 

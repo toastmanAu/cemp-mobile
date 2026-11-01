@@ -60,8 +60,10 @@ async function main() {
     `/apps?filter[bundleId]=${encodeURIComponent(BUNDLE_ID)}&fields[apps]=bundleId,name`,
     token,
   );
-  if (match.data.length > 0) {
-    const app = match.data[0];
+  // The API's bundleId filter is not an exact match (it returned an xtool
+  // "XTL-<team>.com.cempmobile" record for "com.cempmobile"), so compare.
+  const app = match.data.find((candidate) => candidate.attributes.bundleId === BUNDLE_ID);
+  if (app !== undefined) {
     console.log(
       `App record visible: "${app.attributes.name}" (${app.attributes.bundleId}, id ${app.id})`,
     );

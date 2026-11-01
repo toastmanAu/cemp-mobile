@@ -299,3 +299,52 @@ npx eslint <new files>; npx prettier --check <new files>
   (receipt-forgery victim). It uses the real DB stack, workers and assembly.
 - All keys come from deterministic BIP39 test vectors and are used only in
   tests.
+
+## Status after ADR 0006 (receipt proof of decryption, protocol v2)
+
+Every outgoing message is now protocol version 2. Each receipt carries
+`proof = HMAC-SHA256(receipt_key, "CEMP-RECEIPT-PROOF-V1" ‖ message_id ‖
+status)`, where `receipt_key` is derived from the original message's ML-KEM
+shared secret, so only its sender and its intended recipient can compute it.
+`processAcknowledgements` accepts a receipt only if it arrived in a v2
+payload, its claimed sender is the original message's recipient, the outgoing
+row has a stored receipt key, and the proof verifies in constant time.
+Anything else has no effect.
+
+| Finding                      | Status         | Why                                                                                                                                                        |
+| ---------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RCPT-01                      | **FIXED**      | Mallory can still find Bob and claim to be him, but she cannot compute the proof. Tests flipped: no state walk, no reclaimable capacity, no reclaim spend. |
+| RCPT-02                      | **FIXED**      | Same reason, for `0x05`. The chunk gate stays shut, including on a row in a non-ackable state.                                                             |
+| RCPT-03                      | **FIXED**      | Unchanged from the binding fix. A new test shows that even a valid proof is refused when the claimed sender is not the recipient.                          |
+| RCPT-04 (wrong conversation) | **FIXED**      | `conversation_id` is still not checked, but the receipt fails the proof check. The wrong-network and wrong-id controls are unchanged and still pass.       |
+| TRNS-01 (receipts)           | **FIXED**      | The same forged receipt bytes are ignored over both chain and LoRa.                                                                                        |
+| AUTH-01 / AUTH-02            | **STILL OPEN** | Content spoofing is out of scope for ADR 0006. It needs the signed envelope (planned protocol v3). The tests still assert the vulnerable behaviour.        |
+| TRNS-01 (content)            | **STILL OPEN** | Same as AUTH-01.                                                                                                                                           |
+
+New tests:
+
+- `packages/cemp-ckb/src/receipt-auth.test.ts`: a genuine `0x01` and `0x05`
+  from Bob are accepted, and a replay is harmless. The following all have
+  zero effect: a flipped proof bit, Bob's `0x01` proof relabelled `0x05`,
+  Bob's proof for another message, a v1 receipt, and an outgoing row with no
+  receipt key. A bad receipt does not block a good one. v1 content still
+  decrypts. A v2 message cell keeps the v1 type args.
+- `packages/cemp-sync/src/authentication.test.ts`: an end-to-end test where
+  Bob's device ingests Alice's image (and stores his receipt key), and the
+  real response sender publishes proven `0x01` and `0x05` receipts. Alice
+  accepts both and reclaims the message and its chunks. For a v1 original,
+  the response sender sends nothing and leaves the row queued.
+
+Mutation check: with `verifyReceiptProof` bypassed in
+`ResponseLifecycle.#findReceiptTarget`, 12 tests fail. These are the 3
+forged-receipt tests in `authentication.test.ts`, and 9 in
+`receipt-auth.test.ts`: both RCPT-01 tests, both RCPT-02 tests, RCPT-04
+wrong conversation, flipped bit, relabelled status, proof for another
+message, and "a bad receipt does not block a good one". The v1-receipt,
+no-receipt-key and binding tests stay green under this mutation because
+separate guards cover them. Restoring the check returns all 80 tests in the
+affected files to green.
+
+Still to do: outgoing rows created before the upgrade have no receipt key, so
+no receipt can release their capacity. They need the expiry or manual
+reclaim path from the ADR's follow-up.

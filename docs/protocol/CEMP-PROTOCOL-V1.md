@@ -283,6 +283,33 @@ ReceiptEntryV1
   `reply_to_outpoint`; this is what makes the original cell reclaim-eligible
   (spec §7.3).
 
+### 9.1 Protocol version 2: proven receipts (ADR 0006)
+
+The envelope is unchanged. Its header `protocol_version` selects the payload
+layout: `1` → `CempPayloadV1`, `2` → `CempPayloadV2`. Any other value is
+rejected. Receivers dispatch on that byte explicitly and never fall back.
+All new sends use version 2.
+
+```text
+CempPayloadV2   // CempPayloadV1, same fields and order, with:
+  receipts      Vec<ReceiptEntryV2>   // ≤ 64
+
+ReceiptEntryV2
+  message_id   [u8; 16]
+  status       u8
+  proof        [u8; 32]   // HMAC-SHA256(receipt_key,
+                          //   "CEMP-RECEIPT-PROOF-V1" ‖ message_id ‖ status)
+
+receipt_key = HKDF-Expand(PRK, "CEMP-RECEIPT-KEY-V1" ‖ sender_id ‖ recipient_id, 32)
+              // PRK as for the message key (§3)
+```
+
+A receipt changes state only if it arrives in a v2 payload from the original
+message's recipient, the sender holds that message's receipt key, and the
+proof verifies. v1 receipts are ignored. Limits are the same as v1. Schema:
+`packages/cemp-core/schemas/cemp-v2.mol`. Vectors:
+`cemp-v2-serialization.json` and `cemp-v2-receipt.json`.
+
 ## 10. Reclaim group (local journal — not published)
 
 Reclaim groups are a local construct (spec §7.3, §9.5); nothing below is

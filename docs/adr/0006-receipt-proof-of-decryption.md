@@ -83,14 +83,30 @@ table CempPayloadV2 {      // CempPayloadV1 with receipts: ReceiptVecV2
   `CempPayloadV2`. The decoder dispatches on that byte explicitly; it never
   tries one layout and falls back to the other. Any other value is rejected.
 - The on-chain message type script checks type-args length and version only;
-  type args are unchanged, so no contract redeploy is needed. (To be confirmed
-  by test before merge.)
+  type args are unchanged, so no contract redeploy is needed. Confirmed:
+  `contracts/cemp-message-type/src/lib.rs` `validate_type_args` checks only
+  `args.len() == 81` and `args[0] == 1`, and `main.rs` loads only its own
+  script (never cell data). The type-args version byte is the constant
+  `MESSAGE_TYPE_ARGS.version = 0x01` in `packages/cemp-ckb/src/builders.ts`
+  `buildMessageTypeArgs`, independent of the envelope's `protocol_version`.
+  Pinned by the test "a v2 message cell carries the unchanged 81-byte v1 type
+  args" in `packages/cemp-ckb/src/receipt-auth.test.ts`.
 - All outgoing messages (content, receipt-only, content-plus-receipt) are
   sent as version 2. No v1 send path remains, so there is nothing to silently
   downgrade to.
 - Golden vectors: v1 vectors stay byte-for-byte unchanged (historical
   decoding); new v2 vectors are added, including a known-answer vector for
   `receipt_key` and `proof`.
+- Implementation notes: the v2 schema additions live in
+  `packages/cemp-core/schemas/cemp-v2.mol` (read with `cemp-v1.mol`); v2
+  vectors are `cemp-v2-serialization.json` (generated) and
+  `cemp-v2-receipt.json` (receipt key and proof known answers, computed with
+  an independent Python HKDF/HMAC oracle). Profiles are unchanged and still
+  advertise protocol version 1. Senders supply each outgoing receipt as
+  `{messageId, status, proof}` (`ProvenReceipt`), computing the proof from
+  the receipt key stored on the original incoming row; assembly never sees a
+  receipt key. A v1 incoming message yields no receipt key (its sender cannot
+  verify a proof), so it is never acked.
 
 ### Acceptance (the original sender processing a receipt)
 

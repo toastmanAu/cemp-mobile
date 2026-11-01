@@ -69,3 +69,29 @@ export function sniffImageFormat(bytes: Uint8Array): SniffedFormat {
   }
   return "unknown";
 }
+
+/** Formats accepted as a SOURCE (picker / camera), before re-encoding. */
+export type SourceFormat = Exclude<SniffedFormat, "unknown"> | "heif" | "unknown";
+
+/**
+ * HEIF major brands (ISO/IEC 23008-12): still images and sequences, HEVC or
+ * generic. iPhone camera photos carry `heic`. AVIF is deliberately absent —
+ * platform decoders only gained it on Android 12 / iOS 16.
+ */
+const HEIF_BRANDS = new Set(["heic", "heix", "heim", "heis", "hevc", "hevx", "mif1", "msf1"]);
+
+/**
+ * Input-side sniff for {@link prepareImage}: everything the receive gate
+ * accepts, plus HEIF. Kept separate from {@link sniffImageFormat} on purpose:
+ * a sent attachment is always our own JPEG/WebP re-encode, so a HEIF
+ * plaintext arriving from the chain is still invalid.
+ */
+export function sniffSourceFormat(bytes: Uint8Array): SourceFormat {
+  const received = sniffImageFormat(bytes);
+  if (received !== "unknown") return received;
+  // ISO-BMFF: u32 box size, then "ftyp", then the 4-char major brand.
+  if (bytes.length < 12 || String.fromCharCode(...bytes.subarray(4, 8)) !== "ftyp") {
+    return "unknown";
+  }
+  return HEIF_BRANDS.has(String.fromCharCode(...bytes.subarray(8, 12))) ? "heif" : "unknown";
+}

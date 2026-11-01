@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { Scheduler } from "@cemp/sync";
 import type { KdfEngine, PlatformKeyStore } from "@cemp/secure-vault";
 import { NoopNotifier, type Notifier } from "@cemp/ui";
-import { selectSeams, type PlatformSeams, type SeamScheduler } from "./seams-core";
+import {
+  imageEncodeFormatFor,
+  selectSeams,
+  type PlatformSeams,
+  type SeamScheduler,
+} from "./seams-core";
 import type { ReleasableImageCodec } from "./handle-tracker";
 
 /**
@@ -78,5 +83,18 @@ describe("selectSeams", () => {
   it("factories hand the consumer a scheduler with cancelPeriodic (wipe needs it)", () => {
     const scheduler: Scheduler = selectSeams("android", ANDROID, IOS).createScheduler();
     expect(typeof (scheduler as SeamScheduler).cancelPeriodic).toBe("function");
+  });
+});
+
+describe("imageEncodeFormatFor", () => {
+  // iOS ImageIO can READ WebP but cannot WRITE it (CI XCTest logs
+  // "WEBP-ENCODE: unsupported-fallback"), so every iPhone image send failed
+  // with "could not encode image" while the app always asked for WebP.
+  it("encodes JPEG on iOS", () => {
+    expect(imageEncodeFormatFor("ios")).toBe("jpeg");
+  });
+
+  it.each(["android", "web", "windows"])("keeps WebP (spec preference) on %s", (os) => {
+    expect(imageEncodeFormatFor(os)).toBe("webp");
   });
 });

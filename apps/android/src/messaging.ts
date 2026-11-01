@@ -108,6 +108,7 @@ export class MessagingService {
   readonly #messageType: CempMessageTypeRef;
   readonly #senderDeviceId: Uint8Array;
   readonly #createImageCodec: (() => ReleasableImageCodec) | undefined;
+  readonly #imageEncodeFormat: ImageEncodeFormat | undefined;
 
   private constructor(deps: {
     signer: MlDsaV2TxSigner;
@@ -125,6 +126,7 @@ export class MessagingService {
     messageType: CempMessageTypeRef;
     senderDeviceId: Uint8Array;
     createImageCodec: (() => ReleasableImageCodec) | undefined;
+    imageEncodeFormat: ImageEncodeFormat | undefined;
   }) {
     this.#signer = deps.signer;
     this.#client = deps.client;
@@ -141,6 +143,7 @@ export class MessagingService {
     this.#messageType = deps.messageType;
     this.#senderDeviceId = deps.senderDeviceId;
     this.#createImageCodec = deps.createImageCodec;
+    this.#imageEncodeFormat = deps.imageEncodeFormat;
   }
 
   /** Build the service from the unlocked vault + opened DB. */
@@ -158,6 +161,12 @@ export class MessagingService {
      * guard): `publishImage` throws a clear error if called without one.
      */
     createImageCodec?: () => ReleasableImageCodec;
+    /**
+     * The format this platform can ENCODE (seams-core imageEncodeFormatFor):
+     * iOS ImageIO cannot write WebP. Used when a send names no format;
+     * omitted, prepareImage's WebP default applies.
+     */
+    imageEncodeFormat?: ImageEncodeFormat;
   }): Promise<MessagingService> {
     const { vault, db, notifier, scheduler } = deps;
     const bundle = await vault.withUnlockedSeed((seed) => deriveIdentityKeys(seed));
@@ -305,6 +314,7 @@ export class MessagingService {
       messageType,
       senderDeviceId: deviceId,
       createImageCodec: deps.createImageCodec,
+      imageEncodeFormat: deps.imageEncodeFormat,
     });
   }
 
@@ -500,6 +510,7 @@ export class MessagingService {
       throw new Error("publishImage: no image codec configured for this platform");
     }
     const tracker = new HandleTracker(this.#createImageCodec());
+    const format = input.format ?? this.#imageEncodeFormat;
     try {
       const resolved = await resolveLiveProfile(this.#client, input.recipientProfileIdHex);
       checkResolvedProfileBinding(resolved, input.recipientProfileIdHex);
@@ -544,7 +555,7 @@ export class MessagingService {
           recipientProfileId,
           sourceBytes: input.sourceBytes,
           ...(input.caption === undefined ? {} : { caption: input.caption }),
-          ...(input.format === undefined ? {} : { format: input.format }),
+          ...(format === undefined ? {} : { format }),
           ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
         },
       );

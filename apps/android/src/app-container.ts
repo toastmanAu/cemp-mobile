@@ -32,12 +32,12 @@ import { OpSqlCipherAdapter } from "./platform/sqlcipher-adapter";
 import { shareImage } from "./platform/native-share";
 import { createRouteTagCache } from "./platform/route-tag-cache";
 import { platformSeams } from "./platform/seams";
-import type { PlatformSeams } from "./platform/seams-core";
+import { imageEncodeFormatFor, type PlatformSeams } from "./platform/seams-core";
 import { AsyncStorageVaultStorage } from "./platform/vault-storage";
 import { bytesToHex } from "./platform/hex";
 import { isVaultUsable } from "./vault-liveness";
 import { ForegroundSync, IDLE_CADENCE_MS } from "./foreground-sync";
-import { AppState, type NativeEventSubscription } from "react-native";
+import { AppState, Platform, type NativeEventSubscription } from "react-native";
 
 export type AppContainerState = "loading" | "uninitialized" | "locked" | "ready";
 
@@ -229,6 +229,7 @@ export class AppContainer {
         notifier: this.notifier,
         scheduler: this.#seams.createScheduler(),
         createImageCodec: this.#seams.createImageCodec,
+        imageEncodeFormat: imageEncodeFormatFor(Platform.OS),
       });
     }
     this.#setState("ready");

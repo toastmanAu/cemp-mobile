@@ -7,7 +7,7 @@
  */
 
 import type { ImageCodec, ImageEncodeFormat } from "./codec.js";
-import { sniffImageFormat } from "./codec.js";
+import { sniffSourceFormat } from "./codec.js";
 import { compressToLimits, type CompressResult } from "./compress.js";
 import { blake2b256 } from "./encrypt.js";
 import { DEFAULT_IMAGE_LIMITS, planThumbnailFit, type ImageLimits } from "./limits.js";
@@ -56,8 +56,7 @@ export async function prepareImage(
   options: { format?: ImageEncodeFormat; limits?: ImageLimits } = {},
 ): Promise<PreparedImage> {
   const limits = options.limits ?? DEFAULT_IMAGE_LIMITS;
-  const sniffed = sniffImageFormat(sourceBytes);
-  if (sniffed === "unknown") {
+  if (sniffSourceFormat(sourceBytes) === "unknown") {
     throw new Error("prepareImage: unsupported or corrupt image data");
   }
   const format = options.format ?? "webp";

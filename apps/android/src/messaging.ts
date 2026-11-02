@@ -27,8 +27,11 @@ import {
 import {
   CONSERVATIVE_MESSAGE_CELL_SHANNON,
   CONSERVATIVE_PER_CHUNK_SHANNON,
+  IMAGE_QUALITY_SETTING_KEY,
   SEND_FEE_RESERVE_SHANNONS,
   downloadAttachment,
+  limitsForQuality,
+  parseImageQuality,
   publishImageMessage,
   reclaimAttachmentGroup,
   type DownloadedAttachment,
@@ -108,6 +111,8 @@ export class MessagingService {
   readonly #messageType: CempMessageTypeRef;
   readonly #senderDeviceId: Uint8Array;
   readonly #createImageCodec: (() => ReleasableImageCodec) | undefined;
+  readonly #imageEncodeFormat: ImageEncodeFormat | undefined;
+  readonly #localSettings: LocalSettingsRepository;
 
   private constructor(deps: {
     signer: MlDsaV2TxSigner;
@@ -125,6 +130,8 @@ export class MessagingService {
     messageType: CempMessageTypeRef;
     senderDeviceId: Uint8Array;
     createImageCodec: (() => ReleasableImageCodec) | undefined;
+    imageEncodeFormat: ImageEncodeFormat | undefined;
+    localSettings: LocalSettingsRepository;
   }) {
     this.#signer = deps.signer;
     this.#client = deps.client;
@@ -141,6 +148,8 @@ export class MessagingService {
     this.#messageType = deps.messageType;
     this.#senderDeviceId = deps.senderDeviceId;
     this.#createImageCodec = deps.createImageCodec;
+    this.#imageEncodeFormat = deps.imageEncodeFormat;
+    this.#localSettings = deps.localSettings;
   }
 
   /** Build the service from the unlocked vault + opened DB. */
@@ -158,6 +167,12 @@ export class MessagingService {
      * guard): `publishImage` throws a clear error if called without one.
      */
     createImageCodec?: () => ReleasableImageCodec;
+    /**
+     * The format this platform can ENCODE (seams-core imageEncodeFormatFor):
+     * iOS ImageIO cannot write WebP. Used when a send names no format;
+     * omitted, prepareImage's WebP default applies.
+     */
+    imageEncodeFormat?: ImageEncodeFormat;
   }): Promise<MessagingService> {
     const { vault, db, notifier, scheduler } = deps;
     const bundle = await vault.withUnlockedSeed((seed) => deriveIdentityKeys(seed));
@@ -168,6 +183,7 @@ export class MessagingService {
     }
 
     await migrate(db);
+    const localSettings = new LocalSettingsRepository(db);
     const balances = new BalanceRepository(db);
     const walletId = await balances.ensureWallet("main");
     const accountId = await ensureAccount(db, walletId);
@@ -258,7 +274,7 @@ export class MessagingService {
         // gateway URL from settings fresh per tick (default OFF, rule 10);
         // the network config supplies only the fallback URL (null on stock
         // builds).
-        localSettings: new LocalSettingsRepository(db),
+        localSettings,
         loraNetworkBaseUrl: CKB_TESTNET.lora.baseUrl,
         // T17 finding F-2: the batch reclaim only spends message cells — this
         // injected closure reclaims each group's chunk cells (spec §9.5).
@@ -305,6 +321,8 @@ export class MessagingService {
       messageType,
       senderDeviceId: deviceId,
       createImageCodec: deps.createImageCodec,
+      imageEncodeFormat: deps.imageEncodeFormat,
+      localSettings,
     });
   }
 
@@ -500,6 +518,7 @@ export class MessagingService {
       throw new Error("publishImage: no image codec configured for this platform");
     }
     const tracker = new HandleTracker(this.#createImageCodec());
+    const format = input.format ?? this.#imageEncodeFormat;
     try {
       const resolved = await resolveLiveProfile(this.#client, input.recipientProfileIdHex);
       checkResolvedProfileBinding(resolved, input.recipientProfileIdHex);
@@ -512,9 +531,12 @@ export class MessagingService {
       const balance = await this.#balances.getBalance(this.#walletId);
       // Resolved fresh (never cached) — same fix as the text-message path.
       const senderProfileId = await this.#requireSenderProfileId();
+      // Read fresh per send so a Settings change applies to the next photo.
+      const quality = parseImageQuality(await this.#localSettings.get(IMAGE_QUALITY_SETTING_KEY));
       const result = await runImageSend(
         {
           codec: tracker,
+          limits: limitsForQuality(quality),
           availableShannon: balance.availableShannon,
           perChunkShannon: CONSERVATIVE_PER_CHUNK_SHANNON,
           messageCellShannon: CONSERVATIVE_MESSAGE_CELL_SHANNON,
@@ -544,7 +566,7 @@ export class MessagingService {
           recipientProfileId,
           sourceBytes: input.sourceBytes,
           ...(input.caption === undefined ? {} : { caption: input.caption }),
-          ...(input.format === undefined ? {} : { format: input.format }),
+          ...(format === undefined ? {} : { format }),
           ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
         },
       );

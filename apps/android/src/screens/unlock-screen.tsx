@@ -4,7 +4,8 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { Button, StyleSheet, Text, TextInput, View } from "react-native";
+import { Button, StyleSheet, View } from "react-native";
+import { Text, TextInput } from "../components/text";
 import { useAppContainer } from "../navigation";
 
 export function UnlockScreen(): React.JSX.Element {

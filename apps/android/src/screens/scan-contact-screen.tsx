@@ -19,7 +19,8 @@
  */
 
 import React, { useCallback, useRef, useState } from "react";
-import { Button, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Button, ScrollView, StyleSheet, View } from "react-native";
+import { Text, TextInput } from "../components/text";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { classifyScannedCard, normalizeProfileId, type ScanOutcome } from "@cemp/core";

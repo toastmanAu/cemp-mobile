@@ -11,6 +11,7 @@
 import type { Scheduler } from "@cemp/sync";
 import type { KdfEngine, PlatformKeyStore } from "@cemp/secure-vault";
 import type { Notifier } from "@cemp/ui";
+import type { ImageEncodeFormat } from "@cemp/images";
 import type { ReleasableImageCodec } from "./handle-tracker";
 
 /**
@@ -47,4 +48,14 @@ export interface PlatformSeams {
  */
 export function selectSeams(os: string, android: PlatformSeams, ios: PlatformSeams): PlatformSeams {
   return os === "ios" ? ios : android;
+}
+
+/**
+ * The format image sends are re-encoded to on this platform. WebP is the spec
+ * preference, but iOS ImageIO can only READ WebP — CGImageDestination cannot
+ * write it (CI XCTest: "WEBP-ENCODE: unsupported-fallback") — so iOS sends
+ * JPEG. Receivers accept both: Android decodes JPEG, iOS 14+ decodes WebP.
+ */
+export function imageEncodeFormatFor(os: string): ImageEncodeFormat {
+  return os === "ios" ? "jpeg" : "webp";
 }

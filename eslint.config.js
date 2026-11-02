@@ -41,6 +41,27 @@ export default tseslint.config(
     },
   },
   {
+    // Android Bold text: react-native's Text/TextInput are measured without
+    // the system font-weight adjustment and get their last word clipped. The
+    // app's wrappers apply it as a measured style (components/text.tsx).
+    files: ["apps/android/src/**/*.{ts,tsx}"],
+    ignores: ["apps/android/src/components/text.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "react-native",
+              importNames: ["Text", "TextInput"],
+              message: "Import Text/TextInput from components/text (Android Bold text support).",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // Node CLI tooling (CI gates): ESM with Node + fetch globals.
     files: ["tools/**/*.mjs"],
     languageOptions: {

@@ -7,7 +7,8 @@
  */
 
 import React, { useCallback, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, View } from "react-native";
+import { Text } from "../components/text";
 import { useFocusEffect } from "@react-navigation/native";
 import type { WalletBalance } from "@cemp/database";
 import { faucetClaimInstructions } from "@cemp/ckb";

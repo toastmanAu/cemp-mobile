@@ -5,7 +5,8 @@
  */
 
 import React, { useEffect, useState } from "react";
-import { Button, ScrollView, StyleSheet, Text, TextInput } from "react-native";
+import { Button, ScrollView, StyleSheet } from "react-native";
+import { Text, TextInput } from "../components/text";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { ContactEditModel, type ContactEditError } from "@cemp/ui";
 import { useAppContainer, type RootStackParamList } from "../navigation";

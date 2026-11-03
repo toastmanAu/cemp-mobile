@@ -7,6 +7,7 @@ export * from "./bip39.js";
 export * from "./identity.js";
 export * from "./aead.js";
 export * from "./envelope.js";
+export * from "./envelope-v3.js";
 export * from "./receipt.js";
 export * from "./mldsa-v2.js";
 export * from "./provider.js";

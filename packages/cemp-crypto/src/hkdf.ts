@@ -1,6 +1,6 @@
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import type { KdfDomain, MessageKeyDomain } from "./domains.js";
+import type { KdfDomain, MessageKeyDomain, MessageKeyDomainV3 } from "./domains.js";
 
 const textEncoder = new TextEncoder();
 
@@ -48,6 +48,22 @@ export function deriveMessageKey(
   domain: MessageKeyDomain = "CEMP-MESSAGE-KEY-V1",
 ): Uint8Array {
   const info = concatBytes(textEncoder.encode(domain), senderProfileId, recipientProfileId);
+  return hkdfSha256(mlKemSharedSecret, envelopeNonce, info);
+}
+
+/**
+ * Protocol version 3 key schedule (ADR 0007; see `MESSAGE_KEY_DOMAIN_V3`):
+ *
+ *   PRK = HKDF-Extract(salt = envelope_nonce, IKM = ml_kem_shared_secret)
+ *   key = HKDF-Expand(PRK, domain || recipient_id, 32)
+ */
+export function deriveMessageKeyV3(
+  mlKemSharedSecret: Uint8Array,
+  envelopeNonce: Uint8Array,
+  recipientProfileId: Uint8Array,
+  domain: MessageKeyDomainV3,
+): Uint8Array {
+  const info = concatBytes(textEncoder.encode(domain), recipientProfileId);
   return hkdfSha256(mlKemSharedSecret, envelopeNonce, info);
 }
 

@@ -257,10 +257,15 @@ export function decryptEnvelope(params: DecryptEnvelopeParams): DecryptEnvelopeR
   if (!validation.ok) {
     throw new CempCryptoError(`envelope rejected by pre-decrypt validation: ${validation.reason}`);
   }
-  // Cannot fail after validateEnvelope passed (it strict-decoded the same
-  // bytes); decoded again here simply because validateEnvelope is key-free
-  // and returns no value.
-  const envelope = codec.decodeCempEnvelopeV1(envelopeBytes);
+  // One schema per version (ADR 0007 §4): this function opens the v1 layout
+  // (protocol versions 1 and 2) only; v3 goes through openEnvelopeV3.
+  const dispatched = codec.decodeCempEnvelope(envelopeBytes);
+  if (dispatched.version === 3) {
+    throw new CempCryptoError(
+      "decryptEnvelope handles protocol_version 1 and 2 only; got protocol_version 3",
+    );
+  }
+  const envelope = dispatched.envelope;
 
   requireLength("recipientKemSecretKey", recipientKemSecretKey, ML_KEM_768_SIZES.secretKey);
   requireLength("ownProfileId", ownProfileId, PROFILE_ID_BYTES);

@@ -42,6 +42,21 @@ export const MESSAGE_KEY_DOMAIN = {
 export type MessageKeyDomain = (typeof MESSAGE_KEY_DOMAIN)[keyof typeof MESSAGE_KEY_DOMAIN];
 
 /**
+ * Protocol version 3 key schedule (ADR 0007). The sender id is no longer in
+ * the clear header, so a receiver cannot know it before decryption; the v3
+ * Expand info is `domain ‖ recipient_id` only. The sender is bound instead by
+ * the ML-DSA signature inside the plaintext, which covers the KEM ciphertext
+ * and the recipient id. Distinct domain strings keep v3 keys separate from
+ * every v1/v2 key even for identical inputs.
+ */
+export const MESSAGE_KEY_DOMAIN_V3 = {
+  MessageKey: "CEMP-MESSAGE-KEY-V3",
+  AttachmentKey: "CEMP-ATTACHMENT-KEY-V3",
+  ReceiptKey: "CEMP-RECEIPT-KEY-V3",
+} as const;
+export type MessageKeyDomainV3 = (typeof MESSAGE_KEY_DOMAIN_V3)[keyof typeof MESSAGE_KEY_DOMAIN_V3];
+
+/**
  * HMAC domain of the receipt proof (ADR 0006):
  * proof = HMAC-SHA256(receipt_key, "CEMP-RECEIPT-PROOF-V1" ‖ message_id[16] ‖ status[1]).
  */

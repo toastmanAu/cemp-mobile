@@ -6,8 +6,9 @@
  *   pnpm --filter @cemp/core exec tsx src/codec/vectors-generate.ts
  *
  * Writes `packages/cemp-test-vectors/vectors/cemp-v1-serialization.json` and,
- * for protocol version 2 (ADR 0006), `cemp-v2-serialization.json`. The v1
- * file is historical and MUST stay byte-identical.
+ * for protocol version 2 (ADR 0006), `cemp-v2-serialization.json`, and for
+ * protocol version 3 (ADR 0007), `cemp-v3-serialization.json`. The v1 and v2
+ * files are historical and MUST stay byte-identical.
  * Fully deterministic: regenerating MUST produce byte-identical output
  * (AGENTS.md rule 1 — any drift means the codec or the schema changed, and
  * the spec, schema, vectors and serialization version must move together).
@@ -19,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { bytesToHex } from "./codecs.js";
 import { CODEC_FIXTURES, type FixtureEntry } from "./fixtures.js";
 import { CODEC_FIXTURES_V2 } from "./fixtures-v2.js";
+import { CODEC_FIXTURES_V3 } from "./fixtures-v3.js";
 
 interface VectorCase {
   name: string;
@@ -77,3 +79,17 @@ const documentV2 = {
 const outPathV2 = resolve(here, "../../../cemp-test-vectors/vectors/cemp-v2-serialization.json");
 writeFileSync(outPathV2, `${JSON.stringify(documentV2, null, 2)}\n`);
 console.log(`wrote ${casesV2.length} cases to ${outPathV2}`);
+
+const casesV3 = toCases(CODEC_FIXTURES_V3);
+const documentV3 = {
+  vectorFormatVersion: 1,
+  suite: "cemp-v3-serialization",
+  source:
+    "packages/cemp-core/src/codec/vectors-generate.ts (deterministic fixtures-v3; " +
+    "@ckb-ccc/core 1.12.5 Molecule codecs; schema packages/cemp-core/schemas/cemp-v3.mol " +
+    "over cemp-v2.mol and cemp-v1.mol; ADR 0007; signatures are fill bytes, see cemp-v3-envelope.json)",
+  cases: casesV3,
+};
+const outPathV3 = resolve(here, "../../../cemp-test-vectors/vectors/cemp-v3-serialization.json");
+writeFileSync(outPathV3, `${JSON.stringify(documentV3, null, 2)}\n`);
+console.log(`wrote ${casesV3.length} cases to ${outPathV3}`);

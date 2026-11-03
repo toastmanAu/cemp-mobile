@@ -13,3 +13,4 @@ export * from "./codecs.js";
 export * from "./validate.js";
 export * from "./fixtures.js";
 export * from "./fixtures-v2.js";
+export * from "./fixtures-v3.js";

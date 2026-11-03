@@ -99,3 +99,15 @@ stream, digest, finalMessage }`. `tx` is the molecule-packed transaction;
 - `sign` — 1 case: seed `0x07*32` over the first scenario's stream:
   `{ name, seed, stream, finalMessage, pubkey, signature, witnessLock }`,
   where `witnessLock = [0x7B, pubkey, signature]` (5262 bytes).
+
+## `envelope-v3` (CEMP protocol v3, ADR 0007)
+
+`cargo run -- envelope-v3 --vectors ../../packages/cemp-test-vectors/vectors/cemp-v3-envelope.json`
+
+An independent oracle for the TypeScript-generated v3 envelope vectors. For
+each signature case it verifies with `fips204` (ctx = the case's context,
+FIPS 204 pure mode), re-derives the key from the 32-byte seed and re-signs
+with rnd = 0x00*32 to reproduce known answers byte for byte; for each accepted
+envelope it rebuilds `CempSigningTranscriptV3` from the envelope and inner
+bytes with its own Molecule table code (`src/envelope_v3.rs`). The vitest
+`packages/cemp-crypto/src/envelope-v3.interop.test.ts` runs it.

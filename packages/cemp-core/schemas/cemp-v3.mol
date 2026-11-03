@@ -1,0 +1,58 @@
+// CEMP protocol version 3 — Molecule schema additions (normative; ADR 0007,
+// docs/adr/0007-signed-envelope-v3.md; docs/protocol/CEMP-ENVELOPE-V3.md).
+//
+// Read together with cemp-v1.mol and cemp-v2.mol: every type used here and
+// not declared here (Byte32, Bytes, Uint64, AlgorithmIdV1, MlKem768Ciphertext,
+// AesGcmNonce, CempPayloadV2) is the earlier declaration, unchanged.
+//
+// Version dispatch: in CempEnvelopeV1 and CempEnvelopeV3 alike, field 0 is the
+// header table and the header's field 0 is `protocol_version`. A receiver
+// reads that byte, then strict-parses with exactly one schema:
+// 1 → CempEnvelopeV1 + CempPayloadV1, 2 → CempEnvelopeV1 + CempPayloadV2,
+// 3 → CempEnvelopeV3 + CempInnerV3. Any other value is rejected; there is no
+// fallback between layouts.
+//
+// Serialization changes require updating this schema, the protocol spec, the
+// golden vectors, and the serialization version together (AGENTS.md rule 1).
+
+array MlDsa65Signature [byte; 3309];
+
+// The clear header: only what a reader needs before decryption.
+table CempEnvelopeHeaderV3 {
+  protocol_version: byte,       // = 3
+  network: byte,                // 0x01 ckb_testnet
+  expiry_hint: Uint64,
+}
+
+table CempEnvelopeV3 {
+  header: CempEnvelopeHeaderV3,
+  kem_ciphertext: MlKem768Ciphertext,
+  nonce: AesGcmNonce,
+  encrypted_payload: Bytes,     // AES-256-GCM(molecule(CempInnerV3)) || 16-byte tag; AAD = header bytes
+}
+
+// The AES-GCM plaintext. The sender identity, conversation and message ids
+// travel only here.
+table CempInnerV3 {
+  sender_profile_id: Byte32,
+  conversation_id: Byte32,
+  content_type: byte,
+  created_at_client: Uint64,
+  payload: CempPayloadV2,
+  sig_algorithm: AlgorithmIdV1, // must be {0x01, 61} (ML-DSA-65)
+  signature: MlDsa65Signature,
+}
+
+// Never on the wire; rebuilt by both sides.
+// signature = ML-DSA-65.Sign(sk, molecule(CempSigningTranscriptV3),
+//                            ctx = "CEMP-ENVELOPE-V3")   // FIPS 204 pure mode
+table CempSigningTranscriptV3 {
+  header: CempEnvelopeHeaderV3, // exact clear header bytes
+  kem_ciphertext: MlKem768Ciphertext,
+  nonce: AesGcmNonce,
+  sender_profile_id: Byte32,
+  conversation_id: Byte32,
+  content_type: byte,
+  created_at_client: Uint64,
+  payload: CempPayloadV2,
+}

@@ -413,6 +413,79 @@ export const CempPayloadV2Codec = typed(
 export type CempPayloadV2 = mol.DecodedType<typeof CempPayloadV2Codec>;
 export type CempPayloadV2Encodable = mol.EncodableType<typeof CempPayloadV2Codec>;
 
+// ── envelope, protocol version 3 (ADR 0007; schema schemas/cemp-v3.mol) ────
+
+/** ML-DSA-65 signature width (FIPS 204 Table 2). */
+export const MLDSA65_SIGNATURE_BYTES = 3309;
+export const MlDsa65SignatureMol = fixedBytes(MLDSA65_SIGNATURE_BYTES);
+
+/** The v3 clear header: only what a reader needs before decryption. */
+export const CempEnvelopeHeaderV3Codec = typed(
+  mol.table({
+    protocol_version: byteMol,
+    network: byteMol,
+    expiry_hint: Uint64Mol,
+  }),
+);
+export type CempEnvelopeHeaderV3 = mol.DecodedType<typeof CempEnvelopeHeaderV3Codec>;
+export type CempEnvelopeHeaderV3Encodable = mol.EncodableType<typeof CempEnvelopeHeaderV3Codec>;
+
+export const CempEnvelopeV3Codec = typed(
+  mol.table({
+    header: CempEnvelopeHeaderV3Codec,
+    kem_ciphertext: MlKem768CiphertextMol,
+    nonce: AesGcmNonceMol,
+    encrypted_payload: BytesMol,
+  }),
+);
+export type CempEnvelopeV3 = mol.DecodedType<typeof CempEnvelopeV3Codec>;
+export type CempEnvelopeV3Encodable = mol.EncodableType<typeof CempEnvelopeV3Codec>;
+
+/** The v3 AES-GCM plaintext: sender identity, ids, payload and signature. */
+export const CempInnerV3Codec = typed(
+  mol.table({
+    sender_profile_id: Byte32Mol,
+    conversation_id: Byte32Mol,
+    content_type: byteMol,
+    created_at_client: Uint64Mol,
+    payload: CempPayloadV2Codec,
+    sig_algorithm: AlgorithmIdV1Codec,
+    signature: MlDsa65SignatureMol,
+  }),
+);
+export type CempInnerV3 = mol.DecodedType<typeof CempInnerV3Codec>;
+export type CempInnerV3Encodable = mol.EncodableType<typeof CempInnerV3Codec>;
+
+/** Never on the wire: the bytes ML-DSA-65 signs (ctx "CEMP-ENVELOPE-V3"). */
+export const CempSigningTranscriptV3Codec = typed(
+  mol.table({
+    header: CempEnvelopeHeaderV3Codec,
+    kem_ciphertext: MlKem768CiphertextMol,
+    nonce: AesGcmNonceMol,
+    sender_profile_id: Byte32Mol,
+    conversation_id: Byte32Mol,
+    content_type: byteMol,
+    created_at_client: Uint64Mol,
+    payload: CempPayloadV2Codec,
+  }),
+);
+export type CempSigningTranscriptV3 = mol.DecodedType<typeof CempSigningTranscriptV3Codec>;
+export type CempSigningTranscriptV3Encodable = mol.EncodableType<
+  typeof CempSigningTranscriptV3Codec
+>;
+
+/**
+ * Lenient probe for the version byte only: envelope field 0 is the header
+ * table and header field 0 is `protocol_version` in every version (ADR 0007
+ * §4). Extra fields are ignored so one probe reads v1, v2 and v3 alike; it
+ * selects a schema and is never used as a decode result.
+ */
+const EnvelopeVersionProbeCodec = typed(
+  mol.table({
+    header: typed(mol.table({ protocol_version: byteMol })),
+  }),
+);
+
 // ── reclaim journal (spec §10, local only) ──────────────────────────────────
 
 export const ReclaimGroupV1Codec = typed(
@@ -623,4 +696,99 @@ export function decodeCempPayload(protocolVersion: number, data: BytesLike): Dec
     return { version: 2, payload: decodeCempPayloadV2(data) };
   }
   throw new CempCodecError("CempPayload", `unknown protocol_version ${String(protocolVersion)}`);
+}
+
+// ── protocol version 3 strict pairs (ADR 0007) ──────────────────────────────
+
+const mlDsa65SignaturePair = strictPair("MlDsa65Signature", MlDsa65SignatureMol);
+export const encodeMlDsa65Signature = mlDsa65SignaturePair.encode;
+export const decodeMlDsa65Signature = mlDsa65SignaturePair.decode;
+
+const envelopeHeaderV3Pair = strictPair("CempEnvelopeHeaderV3", CempEnvelopeHeaderV3Codec);
+export const encodeCempEnvelopeHeaderV3 = envelopeHeaderV3Pair.encode;
+export const decodeCempEnvelopeHeaderV3 = envelopeHeaderV3Pair.decode;
+
+const envelopeV3Pair = strictPair("CempEnvelopeV3", CempEnvelopeV3Codec);
+export const encodeCempEnvelopeV3 = envelopeV3Pair.encode;
+export const decodeCempEnvelopeV3 = envelopeV3Pair.decode;
+
+const innerV3Pair = strictPair("CempInnerV3", CempInnerV3Codec);
+export const encodeCempInnerV3 = innerV3Pair.encode;
+export const decodeCempInnerV3 = innerV3Pair.decode;
+
+const transcriptV3Pair = strictPair("CempSigningTranscriptV3", CempSigningTranscriptV3Codec);
+export const encodeCempSigningTranscriptV3 = transcriptV3Pair.encode;
+export const decodeCempSigningTranscriptV3 = transcriptV3Pair.decode;
+
+/**
+ * Rebuild the ML-DSA signing transcript of a v3 message from its decoded
+ * envelope and inner plaintext (ADR 0007 §3). Sender and receiver both call
+ * this; the header is re-encoded canonically, which equals the wire bytes
+ * because the strict decoder only accepts canonical input.
+ */
+export function signingTranscriptV3(
+  envelope: Pick<CempEnvelopeV3Encodable, "header" | "kem_ciphertext" | "nonce">,
+  inner: Pick<
+    CempInnerV3Encodable,
+    "sender_profile_id" | "conversation_id" | "content_type" | "created_at_client" | "payload"
+  >,
+): Uint8Array {
+  return encodeCempSigningTranscriptV3({
+    header: envelope.header,
+    kem_ciphertext: envelope.kem_ciphertext,
+    nonce: envelope.nonce,
+    sender_profile_id: inner.sender_profile_id,
+    conversation_id: inner.conversation_id,
+    content_type: inner.content_type,
+    created_at_client: inner.created_at_client,
+    payload: inner.payload,
+  });
+}
+
+// ── envelope version dispatch (ADR 0006 + ADR 0007 §4) ──────────────────────
+
+/** Envelope header `protocol_version` values and the layout each selects. */
+export const ENVELOPE_PROTOCOL_VERSION = { V1: 1, V2: 2, V3: 3 } as const;
+
+/**
+ * Read the header's `protocol_version` through the Molecule offset tables,
+ * without committing to any layout. Throws {@link CempCodecError} on bytes
+ * that are not table-shaped. The result only SELECTS a schema; the caller
+ * must still strict-decode with that schema.
+ */
+export function peekEnvelopeProtocolVersion(data: BytesLike): number {
+  let bytes: Uint8Array;
+  try {
+    bytes = toPlainBytes(data);
+  } catch (e) {
+    throw new CempCodecError("CempEnvelope", `input is not byte-like: ${errorDetail(e)}`);
+  }
+  try {
+    return EnvelopeVersionProbeCodec.decode(bytes, { isExtraFieldIgnored: true }).header
+      .protocol_version;
+  } catch (e) {
+    throw new CempCodecError("CempEnvelope", `cannot read protocol_version: ${errorDetail(e)}`);
+  }
+}
+
+/** A decoded envelope tagged with the layout its version byte selected. */
+export type DecodedCempEnvelope =
+  | { readonly version: 1 | 2; readonly envelope: CempEnvelopeV1 }
+  | { readonly version: 3; readonly envelope: CempEnvelopeV3 };
+
+/**
+ * Strict-decode an envelope with exactly the schema its version byte names:
+ * 1 and 2 → `CempEnvelopeV1`, 3 → `CempEnvelopeV3`. A layout that does not
+ * match its declared version is rejected, never re-tried as another, and any
+ * other version is rejected.
+ */
+export function decodeCempEnvelope(data: BytesLike): DecodedCempEnvelope {
+  const version = peekEnvelopeProtocolVersion(data);
+  if (version === ENVELOPE_PROTOCOL_VERSION.V1 || version === ENVELOPE_PROTOCOL_VERSION.V2) {
+    return { version, envelope: decodeCempEnvelopeV1(data) };
+  }
+  if (version === ENVELOPE_PROTOCOL_VERSION.V3) {
+    return { version, envelope: decodeCempEnvelopeV3(data) };
+  }
+  throw new CempCodecError("CempEnvelope", `unknown protocol_version ${String(version)}`);
 }

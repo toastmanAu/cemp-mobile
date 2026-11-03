@@ -126,10 +126,11 @@ describe("validateEnvelope (spec §7, §11, §12)", () => {
   it("rejects an unknown protocol_version", () => {
     const data = encodeCempEnvelopeV1({
       ...buildEnvelope(false),
-      // 1 and 2 are valid (ADR 0006); 3 is the first unknown version.
-      header: { ...buildEnvelopeHeader(false), protocol_version: 3 },
+      // 1 and 2 are valid (ADR 0006), 3 is the v3 layout (ADR 0007); 4 is
+      // the first unknown version.
+      header: { ...buildEnvelopeHeader(false), protocol_version: 4 },
     });
-    expectFail(validateEnvelope(data), /unknown protocol_version 3/);
+    expectFail(validateEnvelope(data), /unknown protocol_version 4/);
   });
 
   it("rejects an unknown network byte", () => {

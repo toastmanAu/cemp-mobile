@@ -36,6 +36,18 @@ export const VECTOR_SUITES: readonly VectorSuiteHeader[] = [
     description: "Protocol v2 Molecule round-trips (ReceiptEntryV2, CempPayloadV2; ADR 0006)",
   },
   {
+    id: "cemp-v3-serialization",
+    file: "cemp-v3-serialization.json",
+    description:
+      "Protocol v3 Molecule round-trips (CempEnvelopeV3, CempInnerV3, signing transcript; ADR 0007)",
+  },
+  {
+    id: "cemp-v3-envelope",
+    file: "cemp-v3-envelope.json",
+    description:
+      "Protocol v3 sender-signed envelopes: ML-DSA-65 known answers + ADR 0007 negatives (Rust fips204 cross-check)",
+  },
+  {
     id: "cemp-v2-receipt",
     file: "cemp-v2-receipt.json",
     description: "Receipt key + receipt proof known answers (ADR 0006; independent Python oracle)",
@@ -117,14 +129,14 @@ export function loadVectorSuite(
     fail(`${header.file}: missing provenance string`);
   }
   // Every suite carries its cases under at least one known key (mldsa-v2
-  // splits keygen/sign instead of a single `cases` array).
-  const caseKeys = ["cases", "keygen", "sign"] as const;
+  // splits keygen/sign, cemp-v3-envelope splits signature/envelope).
+  const caseKeys = ["cases", "keygen", "sign", "signature", "envelope"] as const;
   const total = caseKeys.reduce((sum, key) => {
     const value = json[key];
     return sum + (Array.isArray(value) ? value.length : 0);
   }, 0);
   if (total === 0) {
-    fail(`${header.file}: no vector cases found under cases/keygen/sign`);
+    fail(`${header.file}: no vector cases found under ${caseKeys.join("/")}`);
   }
   return {
     id: header.id,

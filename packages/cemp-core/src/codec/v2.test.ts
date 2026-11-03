@@ -140,7 +140,7 @@ describe("validateEnvelope header protocol_version (ADR 0006)", () => {
       expect(validateEnvelope(data)).toEqual({ ok: true });
     });
   }
-  for (const version of [0, 3]) {
+  for (const version of [0, 4]) {
     it(`rejects protocol_version ${version}`, () => {
       const data = encodeCempEnvelopeV1({
         ...buildEnvelope(false),
@@ -149,6 +149,15 @@ describe("validateEnvelope header protocol_version (ADR 0006)", () => {
       expectFail(validateEnvelope(data), new RegExp(`unknown protocol_version ${version}`));
     });
   }
+  // ADR 0007: 3 now exists but names the v3 layout, so a v1-layout envelope
+  // declaring 3 is still rejected — by the v3 strict decoder, not re-tried.
+  it("rejects a v1-layout envelope declaring protocol_version 3", () => {
+    const data = encodeCempEnvelopeV1({
+      ...buildEnvelope(false),
+      header: { ...buildEnvelopeHeader(false), protocol_version: 3 },
+    });
+    expectFail(validateEnvelope(data), /CempEnvelopeV3/);
+  });
 });
 
 describe("validatePayloadV2 (same limits as v1)", () => {

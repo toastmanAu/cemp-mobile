@@ -15,19 +15,25 @@
 
 import { CEMP_ENVELOPE_PROTOCOL_VERSIONS, CEMP_PROTOCOL_VERSION } from "../protocol.js";
 import { CONTENT_TYPE } from "../envelope.js";
+import { deriveConversationId } from "../identity.js";
 import {
   bytesEqual,
   CempCodecError,
-  decodeCempEnvelopeV1,
+  decodeCempEnvelope,
+  decodeCempInnerV3,
   decodeCempPayloadV1,
   decodeCempPayloadV2,
   decodeCempProfileV1,
+  encodeCempPayloadV2,
+  MLDSA65_SIGNATURE_BYTES,
   PAYLOAD_PROTOCOL_VERSION,
 } from "./codecs.js";
 import type {
   AlgorithmIdV1,
   CempEnvelopeHeaderV1,
   CempEnvelopeV1,
+  CempEnvelopeV3,
+  CempInnerV3,
   CempPayloadV1,
   CempPayloadV2,
   CempProfileV1,
@@ -65,6 +71,18 @@ export const V1_LIMITS = {
 export const V2_LIMITS = {
   ...V1_LIMITS,
   receiptProofBytes: 32,
+} as const;
+
+/**
+ * Protocol version 3 limits (ADR 0007). The payload limits are v2's; the
+ * inner plaintext adds the 3,309-byte signature and the moved header fields,
+ * so it may exceed the payload limit by a fixed 4 KiB allowance. The envelope
+ * limit is unchanged (a maximum v3 envelope stays below 82,000 bytes).
+ */
+export const V3_LIMITS = {
+  ...V2_LIMITS,
+  signatureBytes: MLDSA65_SIGNATURE_BYTES,
+  maxInnerBytes: V1_LIMITS.maxPayloadBytes + 4_096,
 } as const;
 
 // ── known identifier bytes (spec §3, §7) ────────────────────────────────────
@@ -181,28 +199,21 @@ export function validateProfile(data: Uint8Array): ValidationResult {
 
 // ── envelope (spec §7, §12) ─────────────────────────────────────────────────
 
-/**
- * Field-level envelope checks on an already-decoded envelope. Key-free by
- * design (spec §7.2): every check here runs before decapsulation.
- */
-export function validateEnvelopeFields(envelope: CempEnvelopeV1): ValidationResult {
-  const { header } = envelope;
-  // ADR 0006: the header version selects the payload layout; only 1 and 2 exist.
-  if (!CEMP_ENVELOPE_PROTOCOL_VERSIONS.includes(header.protocol_version)) {
-    return fail(
-      `unknown protocol_version ${header.protocol_version} ` +
-        `(expected one of ${CEMP_ENVELOPE_PROTOCOL_VERSIONS.join(", ")})`,
-    );
-  }
-  if (header.network !== NETWORK_CKB_TESTNET) {
-    if (header.network === NETWORK_RESERVED_MAINNET) {
+/** Network-byte check shared by every envelope version (spec §7). */
+function validateNetwork(network: number): ValidationResult {
+  if (network !== NETWORK_CKB_TESTNET) {
+    if (network === NETWORK_RESERVED_MAINNET) {
       return fail("network 0x00 is reserved for mainnet and not enabled (AGENTS.md rule 12)");
     }
-    return fail(`unknown network byte ${hexByte(header.network)}`);
+    return fail(`unknown network byte ${hexByte(network)}`);
   }
-  if (!isKnownContentType(header.content_type)) {
-    return fail(`unknown content_type ${hexByte(header.content_type)}`);
-  }
+  return OK;
+}
+
+/** Fixed-width and GCM-tag checks shared by every envelope version. */
+function validateCiphertextFields(
+  envelope: Pick<CempEnvelopeV1, "kem_ciphertext" | "nonce" | "encrypted_payload">,
+): ValidationResult {
   // Guaranteed by the fixed Molecule arrays; asserted anyway (defense in depth).
   if (envelope.kem_ciphertext.byteLength !== 1088) {
     return fail(
@@ -222,9 +233,42 @@ export function validateEnvelopeFields(envelope: CempEnvelopeV1): ValidationResu
 }
 
 /**
+ * Field-level envelope checks on an already-decoded v1/v2 envelope. Key-free
+ * by design (spec §7.2): every check here runs before decapsulation.
+ */
+export function validateEnvelopeFields(envelope: CempEnvelopeV1): ValidationResult {
+  const { header } = envelope;
+  // ADR 0006: the header version selects the payload layout; this layout is
+  // used by versions 1 and 2 only.
+  if (header.protocol_version !== 1 && header.protocol_version !== 2) {
+    return fail(
+      `unknown protocol_version ${header.protocol_version} for the v1 envelope layout ` +
+        `(expected one of ${CEMP_ENVELOPE_PROTOCOL_VERSIONS.join(", ")})`,
+    );
+  }
+  const network = validateNetwork(header.network);
+  if (!network.ok) return network;
+  if (!isKnownContentType(header.content_type)) {
+    return fail(`unknown content_type ${hexByte(header.content_type)}`);
+  }
+  return validateCiphertextFields(envelope);
+}
+
+/** Field-level checks on a decoded v3 envelope (ADR 0007). Key-free. */
+export function validateEnvelopeV3Fields(envelope: CempEnvelopeV3): ValidationResult {
+  if (envelope.header.protocol_version !== 3) {
+    return fail(`unknown protocol_version ${envelope.header.protocol_version} for the v3 layout`);
+  }
+  const network = validateNetwork(envelope.header.network);
+  if (!network.ok) return network;
+  return validateCiphertextFields(envelope);
+}
+
+/**
  * Full envelope pipeline: hard size pre-check (≤ 82,000 B, spec §11) BEFORE
- * decoding, then strict decode and field checks. Requires no keys, so it can
- * — and must — run before any decapsulation attempt (spec §7.2).
+ * decoding, then the version byte (ADR 0007 §4) selects exactly one strict
+ * schema, then field checks. Requires no keys, so it can — and must — run
+ * before any decapsulation attempt (spec §7.2).
  */
 export function validateEnvelope(data: Uint8Array): ValidationResult {
   try {
@@ -234,9 +278,14 @@ export function validateEnvelope(data: Uint8Array): ValidationResult {
           `${V1_LIMITS.maxEnvelopeBytes}-byte limit (spec §11)`,
       );
     }
-    const decoded = tryDecode("CempEnvelopeV1", decodeCempEnvelopeV1, data);
+    const decoded = tryDecode("CempEnvelope", decodeCempEnvelope, data);
     if (!decoded.ok) return decoded;
-    return validateEnvelopeFields(decoded.value);
+    if (!CEMP_ENVELOPE_PROTOCOL_VERSIONS.includes(decoded.value.version)) {
+      return fail(`protocol_version ${decoded.value.version} is not accepted by this build`);
+    }
+    return decoded.value.version === 3
+      ? validateEnvelopeV3Fields(decoded.value.envelope)
+      : validateEnvelopeFields(decoded.value.envelope);
   } catch (e) {
     return fail(`envelope validation error: ${errorMessage(e)}`);
   }
@@ -375,5 +424,77 @@ export function validateSemanticConsistency(
     return OK;
   } catch (e) {
     return fail(`semantic validation error: ${errorMessage(e)}`);
+  }
+}
+
+// ── protocol version 3 inner plaintext (ADR 0007 §3, §6) ─────────────────────
+
+/**
+ * Checks on a decoded `CempInnerV3`, run after AES-GCM and BEFORE signature
+ * verification: algorithm id, content type, payload limits, recipient and
+ * conversation binding. Signature validity is NOT checked here (it needs the
+ * sender's key; see `AuthenticatedSenderResolver` in @cemp/ckb).
+ */
+export function validateInnerV3Fields(
+  inner: CempInnerV3,
+  ownProfileId: Uint8Array,
+): ValidationResult {
+  try {
+    if (!algorithmEquals(inner.sig_algorithm, ALGORITHM_ID_BYTES.MlDsa65)) {
+      return fail(
+        `unknown sig_algorithm (family ${hexByte(inner.sig_algorithm.family)}, ` +
+          `parameter ${inner.sig_algorithm.parameter}); v3 requires ML-DSA-65`,
+      );
+    }
+    if (inner.signature.byteLength !== V3_LIMITS.signatureBytes) {
+      return fail(`internal: signature is ${inner.signature.byteLength} bytes`);
+    }
+    if (!isKnownContentType(inner.content_type)) {
+      return fail(`unknown content_type ${hexByte(inner.content_type)}`);
+    }
+    if (inner.content_type !== inner.payload.body_type) {
+      return fail(
+        `content_type ${hexByte(inner.content_type)} does not match payload body_type ` +
+          `${hexByte(inner.payload.body_type)}`,
+      );
+    }
+    const payloadCheck = validatePayloadFields(
+      inner.payload,
+      encodeCempPayloadV2(inner.payload).byteLength,
+    );
+    if (!payloadCheck.ok) return payloadCheck;
+    if (ownProfileId.byteLength !== 32) {
+      return fail(`own profile id is ${ownProfileId.byteLength} bytes, expected 32`);
+    }
+    if (!bytesEqual(inner.payload.recipient_profile_id, ownProfileId)) {
+      return fail("payload recipient_profile_id does not match own profile id");
+    }
+    if (
+      !bytesEqual(
+        inner.conversation_id,
+        deriveConversationId(inner.sender_profile_id, ownProfileId),
+      )
+    ) {
+      return fail("conversation_id is not H(sender_profile_id, own profile id)");
+    }
+    return OK;
+  } catch (e) {
+    return fail(`inner validation error: ${errorMessage(e)}`);
+  }
+}
+
+/** Full v3 inner pipeline on the AES-GCM plaintext: size gate → strict decode → fields. */
+export function validateInnerV3(bytes: Uint8Array, ownProfileId: Uint8Array): ValidationResult {
+  try {
+    if (bytes.byteLength > V3_LIMITS.maxInnerBytes) {
+      return fail(
+        `inner plaintext is ${bytes.byteLength} bytes, exceeds the ${V3_LIMITS.maxInnerBytes}-byte limit`,
+      );
+    }
+    const decoded = tryDecode("CempInnerV3", decodeCempInnerV3, bytes);
+    if (!decoded.ok) return decoded;
+    return validateInnerV3Fields(decoded.value, ownProfileId);
+  } catch (e) {
+    return fail(`inner validation error: ${errorMessage(e)}`);
   }
 }

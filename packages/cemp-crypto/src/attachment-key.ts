@@ -14,7 +14,8 @@
 import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
 import { AES_256_GCM_NONCE_BYTES } from "./aead.js";
 import { CempCryptoError } from "./errors.js";
-import { deriveMessageKey } from "./hkdf.js";
+import { MESSAGE_KEY_DOMAIN_V3 } from "./domains.js";
+import { deriveMessageKey, deriveMessageKeyV3 } from "./hkdf.js";
 import { ML_KEM_768_SIZES } from "./identity.js";
 
 export interface DeriveSendAttachmentKeyParams {
@@ -53,6 +54,43 @@ export function deriveSendAttachmentKey(params: DeriveSendAttachmentKeyParams): 
       params.senderProfileId,
       params.recipientProfileId,
       "CEMP-ATTACHMENT-KEY-V1",
+    );
+  } finally {
+    sharedSecret.fill(0);
+  }
+}
+
+export interface DeriveSendAttachmentKeyV3Params {
+  readonly recipientKemPublicKey: Uint8Array;
+  /** 32-byte FIPS-203 encapsulation message — fresh CSPRNG per message. */
+  readonly kemMessage: Uint8Array;
+  /** 12-byte envelope nonce — fresh CSPRNG per message. */
+  readonly nonce: Uint8Array;
+  readonly recipientProfileId: Uint8Array;
+}
+
+/**
+ * Protocol v3 counterpart of {@link deriveSendAttachmentKey} (ADR 0007): the
+ * v3 key schedule has no sender id in its Expand info. Same safety rule:
+ * `kemMessage`+`nonce` are fresh per message and used by ONE envelope.
+ */
+export function deriveSendAttachmentKeyV3(params: DeriveSendAttachmentKeyV3Params): Uint8Array {
+  requireLength("recipientKemPublicKey", params.recipientKemPublicKey, ML_KEM_768_SIZES.publicKey);
+  requireLength("kemMessage", params.kemMessage, ML_KEM_768_SIZES.sharedSecret);
+  requireLength("nonce", params.nonce, AES_256_GCM_NONCE_BYTES);
+  requireLength("recipientProfileId", params.recipientProfileId, 32);
+  let sharedSecret: Uint8Array;
+  try {
+    ({ sharedSecret } = ml_kem768.encapsulate(params.recipientKemPublicKey, params.kemMessage));
+  } catch (e) {
+    throw new CempCryptoError("ML-KEM-768 encapsulation failed", e);
+  }
+  try {
+    return deriveMessageKeyV3(
+      sharedSecret,
+      params.nonce,
+      params.recipientProfileId,
+      MESSAGE_KEY_DOMAIN_V3.AttachmentKey,
     );
   } finally {
     sharedSecret.fill(0);

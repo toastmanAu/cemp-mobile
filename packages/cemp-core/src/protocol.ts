@@ -10,10 +10,22 @@
 export const CEMP_PROTOCOL_VERSION = 1;
 
 /**
- * Envelope header `protocol_version` values a receiver accepts (ADR 0006):
- * 1 decodes the payload as `CempPayloadV1`, 2 as `CempPayloadV2`.
+ * Envelope header `protocol_version` values a receiver accepts: 1 decodes the
+ * payload as `CempPayloadV1`, 2 as `CempPayloadV2` (ADR 0006), 3 as the
+ * sender-signed `CempEnvelopeV3` / `CempInnerV3` (ADR 0007).
  */
-export const CEMP_ENVELOPE_PROTOCOL_VERSIONS: readonly number[] = [1, 2];
+export const CEMP_ENVELOPE_PROTOCOL_VERSIONS: readonly number[] = [1, 2, 3];
+
+/**
+ * ADR 0007 §8 flag day: while true, a v1/v2 CONTENT cell is still accepted
+ * and stored with the "Unverified (legacy)" label (never notified as a
+ * contact's message, never auto-acked). Set to false once all devices send
+ * v3; v2 receipts with valid ADR 0006 proofs stay accepted either way.
+ */
+export const ACCEPT_LEGACY_UNVERIFIED_CONTENT = true;
+
+/** ML-DSA context of the v3 envelope signature (ADR 0007 §3). */
+export const ENVELOPE_SIGNATURE_CONTEXT_V3 = "CEMP-ENVELOPE-V3";
 
 /**
  * The envelope protocol version every outgoing message is sent as (ADR

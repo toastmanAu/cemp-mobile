@@ -26,7 +26,7 @@ import {
   processIncomingText,
   type CempClient,
   type CempMessageTypeRef,
-  type IncomingTextMessage,
+  type LegacyIncoming,
   type MessagePublisher,
   type OutPoint,
   type RateLimiter,
@@ -304,7 +304,7 @@ export async function ingestIncomingCellData(
 
 async function ingestDecrypted(
   deps: SyncWorkerDeps,
-  incoming: IncomingTextMessage,
+  incoming: LegacyIncoming,
   source: { txHash: string; outpointIndex: number } | null,
 ): Promise<void> {
   const senderProfileIdHex = bytesToHex(incoming.senderProfileId);

@@ -24,7 +24,12 @@ import { buildReclaimTx, type CempMessageTypeRef } from "./builders.js";
 import type { TransactionLike } from "@ckb-ccc/core";
 import { CempCkbError, type CempClient } from "./client.js";
 import { verifyReceiptProof } from "@cemp/crypto";
-import type { IncomingReceipt, IncomingTextMessage } from "./incoming.js";
+import {
+  isAuthenticatedIncoming,
+  isLegacyIncoming,
+  type ReceiptSource,
+} from "./authenticated-incoming.js";
+import type { IncomingReceipt } from "./incoming.js";
 import {
   JournaledAbandonedError,
   resumeJournaledBroadcast,
@@ -188,8 +193,16 @@ export class ResponseLifecycle {
    * Every receipt must pass the ADR 0006 acceptance rules
    * ({@link #findReceiptTarget}); one that does not has NO side effect, and
    * the remaining receipts are still processed.
+   *
+   * ADR 0007 §6: the input must be verifier-made — an `AuthenticatedIncoming`
+   * (v3, sender signature verified) or a `LegacyIncoming` (v1/v2, receipts
+   * proven per entry). Anything else, including a structural copy of either,
+   * has no effect.
    */
-  async processAcknowledgements(incoming: IncomingTextMessage): Promise<number[]> {
+  async processAcknowledgements(incoming: ReceiptSource): Promise<number[]> {
+    if (!isAuthenticatedIncoming(incoming) && !isLegacyIncoming(incoming)) {
+      return [];
+    }
     const acked: number[] = [];
     for (const receipt of incoming.receipts) {
       if (receipt.status === 0x05) {
@@ -227,7 +240,8 @@ export class ResponseLifecycle {
   /**
    * ADR 0006 receipt acceptance. A receipt names a target only when ALL hold:
    *
-   * 1. it arrived in a version-2 payload (v1 receipts carry no proof);
+   * 1. it arrived in a version-2 or version-3 payload (v1 receipts carry no
+   *    proof);
    * 2. its message id names an OUTGOING row whose conversation contact is
    *    the receipt's claimed sender (the recipient binding from `dbae853`,
    *    kept as defence in depth; fails closed with no contact profile id);
@@ -240,10 +254,10 @@ export class ResponseLifecycle {
    * produce rule 4, and a genuine proof cannot be relabelled or moved.
    */
   async #findReceiptTarget(
-    incoming: IncomingTextMessage,
+    incoming: ReceiptSource,
     receipt: IncomingReceipt,
   ): Promise<{ rowId: number; state: string } | undefined> {
-    if (incoming.protocolVersion !== 2 || receipt.proof === null) {
+    if (incoming.protocolVersion === 1 || receipt.proof === null) {
       return undefined;
     }
     const found = await this.#deps.store.findOutgoingByEnvelopeMessageId(

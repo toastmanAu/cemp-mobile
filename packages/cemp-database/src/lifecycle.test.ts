@@ -2,6 +2,7 @@ import { Cell, CellOutput, Script, fixedPointFrom, hexFrom } from "@ckb-ccc/core
 import { CKB_TESTNET } from "@cemp/core";
 import { computeReceiptProof, mldsaV2KeygenFromSeed } from "@cemp/crypto";
 import { buildMessageTypeArgs, type CempMessageTypeRef } from "@cemp/ckb";
+import { legacyIncomingForTests } from "@cemp/ckb/testing";
 import { CempClient, type JsonRpcTransport } from "@cemp/ckb";
 import type { IncomingTextMessage } from "@cemp/ckb";
 import { ResponseLifecycle, parseReclaimPurpose } from "@cemp/ckb";
@@ -264,7 +265,7 @@ describe("ResponseLifecycle.processAcknowledgements (tasks 4–5)", () => {
         clientTimestamp: 0n,
         senderDeviceId: hexToBytes("77".repeat(16)),
       };
-      const acked = await lifecycle.processAcknowledgements(reply);
+      const acked = await lifecycle.processAcknowledgements(legacyIncomingForTests(reply));
       expect(acked).toEqual([message.id]);
       expect((await stack.messages.getById(message.id))?.state).toBe("reclaim_queued");
     } finally {
@@ -319,7 +320,7 @@ describe("ResponseLifecycle.processAcknowledgements (tasks 4–5)", () => {
         clientTimestamp: 0n,
         senderDeviceId: hexToBytes("77".repeat(16)),
       };
-      const acked = await lifecycle.processAcknowledgements(reply);
+      const acked = await lifecycle.processAcknowledgements(legacyIncomingForTests(reply));
 
       // A 0x05 confirms the BYTES were fetched — it releases the chunk cells
       // and nothing else. It is not an envelope ack, so it must not walk the
@@ -402,9 +403,11 @@ describe("ResponseLifecycle.processAcknowledgements binds receipts to the recipi
     const { stack, lifecycle, message } = await setup(BOB_PROFILE_ID_HEX);
     try {
       const before = await stack.balances.getBalance(stack.walletId);
-      expect(await lifecycle.processAcknowledgements(receiptFrom("c4".repeat(32), 0x01))).toEqual(
-        [],
-      );
+      expect(
+        await lifecycle.processAcknowledgements(
+          legacyIncomingForTests(receiptFrom("c4".repeat(32), 0x01)),
+        ),
+      ).toEqual([]);
       expect((await stack.messages.getById(message.id))?.state).toBe("available_on_chain");
       expect(await stack.balances.getBalance(stack.walletId)).toEqual(before);
     } finally {
@@ -415,7 +418,9 @@ describe("ResponseLifecycle.processAcknowledgements binds receipts to the recipi
   it("ignores a 0x05 from anyone but the recipient: attachment not marked downloaded", async () => {
     const { stack, lifecycle, message } = await setup(BOB_PROFILE_ID_HEX);
     try {
-      await lifecycle.processAcknowledgements(receiptFrom("c4".repeat(32), 0x05));
+      await lifecycle.processAcknowledgements(
+        legacyIncomingForTests(receiptFrom("c4".repeat(32), 0x05)),
+      );
       expect((await stack.attachments.listForMessage(message.id))[0]?.remoteDownloaded).toBe(false);
     } finally {
       await stack.db.close();
@@ -425,9 +430,13 @@ describe("ResponseLifecycle.processAcknowledgements binds receipts to the recipi
   it("matches the recipient case-insensitively and accepts their 0x01 and 0x05", async () => {
     const { stack, lifecycle, message } = await setup(BOB_PROFILE_ID_HEX.toUpperCase());
     try {
-      await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x05));
+      await lifecycle.processAcknowledgements(
+        legacyIncomingForTests(receiptFrom(BOB_PROFILE_ID_HEX, 0x05)),
+      );
       expect(
-        await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x01)),
+        await lifecycle.processAcknowledgements(
+          legacyIncomingForTests(receiptFrom(BOB_PROFILE_ID_HEX, 0x01)),
+        ),
       ).toEqual([message.id]);
       expect((await stack.attachments.listForMessage(message.id))[0]?.remoteDownloaded).toBe(true);
     } finally {
@@ -439,9 +448,13 @@ describe("ResponseLifecycle.processAcknowledgements binds receipts to the recipi
     const { stack, lifecycle, message } = await setup(null);
     try {
       expect(
-        await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x01)),
+        await lifecycle.processAcknowledgements(
+          legacyIncomingForTests(receiptFrom(BOB_PROFILE_ID_HEX, 0x01)),
+        ),
       ).toEqual([]);
-      await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x05));
+      await lifecycle.processAcknowledgements(
+        legacyIncomingForTests(receiptFrom(BOB_PROFILE_ID_HEX, 0x05)),
+      );
       expect((await stack.messages.getById(message.id))?.state).toBe("available_on_chain");
       expect((await stack.attachments.listForMessage(message.id))[0]?.remoteDownloaded).toBe(false);
     } finally {
@@ -452,7 +465,9 @@ describe("ResponseLifecycle.processAcknowledgements binds receipts to the recipi
   it("never matches an INCOMING message, even for its own sender", async () => {
     const { stack, lifecycle, message } = await setup(BOB_PROFILE_ID_HEX, "incoming");
     try {
-      await lifecycle.processAcknowledgements(receiptFrom(BOB_PROFILE_ID_HEX, 0x05));
+      await lifecycle.processAcknowledgements(
+        legacyIncomingForTests(receiptFrom(BOB_PROFILE_ID_HEX, 0x05)),
+      );
       expect((await stack.attachments.listForMessage(message.id))[0]?.remoteDownloaded).toBe(false);
     } finally {
       await stack.db.close();

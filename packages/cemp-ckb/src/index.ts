@@ -13,6 +13,17 @@ export * from "./monitor.js";
 export * from "./profiles.js";
 export * from "./publisher.js";
 export * from "./incoming.js";
+export {
+  authenticateIncomingV3,
+  isAuthenticatedIncoming,
+  isLegacyIncoming,
+  type AuthenticatedIncoming,
+  type AuthenticatedVerdict,
+  type AuthenticationOutcome,
+  type LegacyIncoming,
+  type ReceiptSource,
+} from "./authenticated-incoming.js";
 export * from "./lifecycle.js";
 export * from "./rate-limit.js";
 export * from "./rotation-verify.js";
+export * from "./sender-resolver.js";

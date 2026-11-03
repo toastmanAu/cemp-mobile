@@ -14,7 +14,8 @@ import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
 import { assembleTextMessage } from "./assemble.js";
 import { buildMessageTypeArgs, type CempMessageTypeRef } from "./builders.js";
 import { CempClient, type JsonRpcTransport } from "./client.js";
-import { parseMessageTypeArgs, processIncomingText, type IncomingTextMessage } from "./incoming.js";
+import type { LegacyIncoming } from "./authenticated-incoming.js";
+import { parseMessageTypeArgs, processIncomingText } from "./incoming.js";
 import {
   ResponseLifecycle,
   type LifecycleMessage,
@@ -409,7 +410,7 @@ function malloryForgesReceipt(input: {
 }
 
 /** Alice's device runs the normal incoming pipeline on whatever arrives. */
-function aliceProcesses(cellData: Uint8Array): IncomingTextMessage {
+function aliceProcesses(cellData: Uint8Array): LegacyIncoming {
   return processIncomingText({
     cellData,
     ownKemSecretKey: ALICE.mlKem.secretKey,
@@ -432,7 +433,7 @@ function makeLifecycle(liveCells: Map<string, Cell> = new Map()) {
 }
 
 /** What Bob's device holds after genuinely decrypting Alice's message. */
-function bobDecrypts(cellData: Uint8Array): IncomingTextMessage {
+function bobDecrypts(cellData: Uint8Array): LegacyIncoming {
   return processIncomingText({
     cellData,
     ownKemSecretKey: BOB.mlKem.secretKey,

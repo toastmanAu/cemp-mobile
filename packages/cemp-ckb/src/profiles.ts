@@ -27,14 +27,14 @@ function bareProfileId(profileIdHex: string): string {
 }
 
 /**
- * Resolve the unique live profile cell for `profileIdHex` (with or without
- * the 0x prefix). Throws unless EXACTLY one well-formed live cell exists —
- * Type ID uniqueness makes anything else an indexer/protocol violation.
+ * FETCH half of {@link resolveLiveProfile}: one indexer query, no judgement.
+ * Throws only on transport/RPC failure — which the sender resolver treats as
+ * `deferred`, never as a negative answer (ADR 0007 §5).
  */
-export async function resolveLiveProfile(
-  client: CempClient,
+export async function fetchProfileCells(
+  client: Pick<CempClient, "findCells">,
   profileIdHex: string,
-): Promise<ResolvedProfile> {
+): Promise<readonly Cell[]> {
   const bare = bareProfileId(profileIdHex);
   const page = await client.findCells({
     script: { codeHash: TYPE_ID_CODE_HASH, hashType: "type", args: `0x${bare}` },
@@ -42,19 +42,30 @@ export async function resolveLiveProfile(
     argsSearchMode: "exact",
     limit: 8,
   });
-  if (page.cells.length === 0) {
+  return page.cells;
+}
+
+/**
+ * VALIDATE half of {@link resolveLiveProfile}: a definitive judgement on the
+ * fetched cells. Throws {@link CempCkbError} unless EXACTLY one well-formed
+ * live cell exists — Type ID uniqueness makes anything else an
+ * indexer/protocol violation.
+ */
+export function selectLiveProfile(cells: readonly Cell[], profileIdHex: string): ResolvedProfile {
+  const bare = bareProfileId(profileIdHex);
+  if (cells.length === 0) {
     throw new CempCkbError(
       "resolveLiveProfile",
       `no live profile cell for profile id ${bare.slice(0, 12)}…`,
     );
   }
-  if (page.cells.length > 1) {
+  if (cells.length > 1) {
     throw new CempCkbError(
       "resolveLiveProfile",
-      `impossible: ${String(page.cells.length)} live cells share one profile id (Type ID uniqueness)`,
+      `impossible: ${String(cells.length)} live cells share one profile id (Type ID uniqueness)`,
     );
   }
-  const cell = page.cells[0]!;
+  const cell = cells[0]!;
   const data = hexToBytes(cell.data);
   const validation = codec.validateProfile(data);
   if (!validation.ok) {
@@ -64,6 +75,18 @@ export async function resolveLiveProfile(
     );
   }
   return { cell, profile: codec.decodeCempProfileV1(data) };
+}
+
+/**
+ * Resolve the unique live profile cell for `profileIdHex` (with or without
+ * the 0x prefix). Throws unless EXACTLY one well-formed live cell exists —
+ * Type ID uniqueness makes anything else an indexer/protocol violation.
+ */
+export async function resolveLiveProfile(
+  client: CempClient,
+  profileIdHex: string,
+): Promise<ResolvedProfile> {
+  return selectLiveProfile(await fetchProfileCells(client, profileIdHex), profileIdHex);
 }
 
 /**
@@ -96,6 +119,10 @@ export function checkResolvedProfileBinding(resolved: ResolvedProfile, profileId
 
 function hexToBytes(hex: string): Uint8Array {
   const bare = hex.startsWith("0x") ? hex.slice(2) : hex;
+  // Indexer output is hostile (rule 4): odd length or non-hex is refused.
+  if (bare.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(bare)) {
+    throw new CempCkbError("resolveLiveProfile", "profile cell data is not hex");
+  }
   const out = new Uint8Array(bare.length / 2);
   for (let i = 0; i < out.length; i++) {
     out[i] = Number.parseInt(bare.slice(2 * i, 2 * i + 2), 16);

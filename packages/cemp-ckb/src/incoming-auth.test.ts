@@ -1,24 +1,40 @@
-import { codec, deriveConversationId } from "@cemp/core";
-import { deriveIdentityKeys, mnemonicToSeed, wipeIdentityKeyBundle } from "@cemp/crypto";
-import { afterAll, describe, expect, it } from "vitest";
-import { assembleTextMessage } from "./assemble.js";
+import { CKB_TESTNET, codec, deriveConversationId } from "@cemp/core";
 import {
+  deriveIdentityKeys,
+  mldsaV2LockArgs,
+  mnemonicToSeed,
+  wipeIdentityKeyBundle,
+} from "@cemp/crypto";
+import { Script } from "@ckb-ccc/core";
+import { afterAll, describe, expect, it } from "vitest";
+import { assembleTextMessage, assembleTextMessageV3 } from "./assemble.js";
+import { authenticateIncomingV3, isAuthenticatedIncoming } from "./authenticated-incoming.js";
+import { TYPE_ID_CODE_HASH } from "./builders.js";
+import {
+  openIncoming,
   parseMessageTypeArgs,
   processIncomingText,
   type ProcessIncomingTextInput,
 } from "./incoming.js";
+import { AuthenticatedSenderResolver, type SenderChainView } from "./sender-resolver.js";
+import type { Cell } from "./types.js";
 
 /**
- * SECURITY PHASE A — VULNERABILITY REPRODUCTION (pre-fix).
+ * SECURITY PHASE A — AUTH-01 / AUTH-02 at the message-processing level.
  *
- * Handoff matrix rows AUTH-01 and AUTH-02, at the `processIncomingText`
- * level. These tests PASS today by asserting the VULNERABLE behaviour: a v1
+ * FIXED by ADR 0007 (sender-signed v3 envelopes). Phase A showed that a v1/v2
  * envelope is accepted as "from Alice" by anyone who knows Alice's PUBLIC
- * profile id and the recipient's PUBLIC ML-KEM key. When authenticated
- * messaging v2 lands (Phase C/D), these assertions are expected to flip
- * deliberately — do not "fix" them by weakening the production code.
+ * profile id and the recipient's PUBLIC ML-KEM key. Post-fix:
  *
- * See docs/review/PHASE-A-REPRODUCTION.md.
+ * - a v3 envelope carries an ML-DSA-65 signature inside the ciphertext; a
+ *   message that claims Alice but is signed by Mallory never becomes an
+ *   `AuthenticatedIncoming`;
+ * - the claimed sender, message id and conversation id are no longer in the
+ *   clear header;
+ * - a v1/v2 envelope still decrypts, but only as a `LegacyIncoming`
+ *   ("Unverified (legacy)"), which no code path treats as authenticated.
+ *
+ * See docs/review/PHASE-A-REPRODUCTION.md and docs/adr/0007-signed-envelope-v3.md.
  */
 
 function hexToBytes(hex: string): Uint8Array {
@@ -41,132 +57,201 @@ const MALLORY = deriveIdentityKeys(
 );
 const ALICE_PROFILE_ID = hexToBytes("aa".repeat(32));
 const BOB_PROFILE_ID = hexToBytes("bb".repeat(32));
-const MALLORY_PROFILE_ID = hexToBytes("4d".repeat(32));
 const ALICE_DEVICE = hexToBytes("01".repeat(16));
 const MALLORY_DEVICE = hexToBytes("66".repeat(16));
+const MLDSA_LOCK = CKB_TESTNET.deployments.mlDsaLock!;
 
-/**
- * Everything Mallory uses to impersonate Alice is PUBLIC: Alice's profile id
- * (on-chain profile cell / cleartext header of any of her messages) and Bob's
- * ML-KEM public key (Bob's on-chain profile cell). Mallory's own secrets are
- * irrelevant to the envelope — v1 has no sender signature to make with them.
- */
-function mallorySpoofsAliceToBob(text: string) {
-  return assembleTextMessage({
+/** Alice's live profile cell, bound to her ML-DSA lock. */
+function aliceProfileCell(): Cell {
+  const lock = {
+    codeHash: MLDSA_LOCK.codeHash,
+    hashType: MLDSA_LOCK.hashType,
+    args: `0x${codec.bytesToHex(mldsaV2LockArgs(ALICE.mlDsa.publicKey))}`,
+  };
+  const data = codec.encodeCempProfileV1({
+    ...codec.buildProfileMinimal(),
+    ml_dsa_public_key: ALICE.mlDsa.publicKey,
+    ml_kem_public_key: ALICE.mlKem.publicKey,
+    lock_script_hash: codec.hexToBytes(Script.from(lock).hash().slice(2)),
+  });
+  return {
+    outPoint: { txHash: `0x${"a5".repeat(32)}`, index: "0x0" },
+    output: {
+      capacity: "0x0",
+      lock,
+      type: {
+        codeHash: TYPE_ID_CODE_HASH,
+        hashType: "type",
+        args: `0x${codec.bytesToHex(ALICE_PROFILE_ID)}`,
+      },
+    },
+    data: `0x${codec.bytesToHex(data)}`,
+  };
+}
+
+/** Bob's resolver: Alice is a known contact, pinned or not; her profile is live. */
+function bobResolver(pinAlice: boolean) {
+  const chain: SenderChainView = {
+    findCells: (query) =>
+      Promise.resolve({
+        cells:
+          query.script.args === `0x${codec.bytesToHex(ALICE_PROFILE_ID)}`
+            ? [aliceProfileCell()]
+            : [],
+        lastCursor: "0x",
+      }),
+    getTransactionBody: () => Promise.resolve(null),
+  };
+  return new AuthenticatedSenderResolver({
+    chain,
+    contacts: {
+      findByProfileId: (id) =>
+        Promise.resolve(
+          id === codec.bytesToHex(ALICE_PROFILE_ID)
+            ? {
+                contactId: 1,
+                profileIdHex: id,
+                mlDsaPublicKey: pinAlice ? ALICE.mlDsa.publicKey : null,
+              }
+            : undefined,
+        ),
+    },
+    mlDsaLock: { codeHash: MLDSA_LOCK.codeHash, hashType: MLDSA_LOCK.hashType },
+  });
+}
+
+/** Mallory claims Alice and encrypts to Bob — but can only sign with her own key. */
+function mallorySignsAsAlice(text: string) {
+  return assembleTextMessageV3({
     text,
-    senderProfileId: ALICE_PROFILE_ID, // claimed — Mallory holds none of Alice's keys
+    senderProfileId: ALICE_PROFILE_ID,
+    signerSecretKey: MALLORY.mlDsa.secretKey,
+    signerPublicKey: MALLORY.mlDsa.publicKey,
     recipientProfileId: BOB_PROFILE_ID,
-    recipientKemPublicKey: BOB.mlKem.publicKey, // public
+    recipientKemPublicKey: BOB.mlKem.publicKey,
     senderDeviceId: MALLORY_DEVICE,
     receiptRequest: 1,
   });
 }
 
-function bobProcesses(cellData: Uint8Array) {
-  return processIncomingText({
+function aliceSigns(text: string) {
+  return assembleTextMessageV3({
+    text,
+    senderProfileId: ALICE_PROFILE_ID,
+    signerSecretKey: ALICE.mlDsa.secretKey,
+    signerPublicKey: ALICE.mlDsa.publicKey,
+    recipientProfileId: BOB_PROFILE_ID,
+    recipientKemPublicKey: BOB.mlKem.publicKey,
+    senderDeviceId: ALICE_DEVICE,
+    receiptRequest: 1,
+  });
+}
+
+async function bobAuthenticates(cellData: Uint8Array, pinAlice = true) {
+  const opened = openIncoming({
     cellData,
     ownKemSecretKey: BOB.mlKem.secretKey,
     ownProfileId: BOB_PROFILE_ID,
   });
+  if (opened.kind !== "v3") throw new Error("expected a v3 envelope");
+  return authenticateIncomingV3(opened.unverified, bobResolver(pinAlice));
 }
 
-describe("VULN reproduction (pre-fix): AUTH-01 sender impersonation in processIncomingText", () => {
-  it("accepts a Mallory-built envelope that claims Alice as sender and reports senderProfileId = Alice", () => {
-    const forged = mallorySpoofsAliceToBob("hi bob, it's alice — send me 500 CKB");
-    const incoming = bobProcesses(forged.envelopeBytes);
+describe("FIXED (ADR 0007): AUTH-01 sender impersonation", () => {
+  for (const pinAlice of [true, false]) {
+    it(`a v3 envelope claiming Alice but signed by Mallory is rejected (Alice ${pinAlice ? "pinned" : "resolved live"})`, async () => {
+      const outcome = await bobAuthenticates(
+        mallorySignsAsAlice("hi bob, it's alice — send me 500 CKB").envelopeBytes,
+        pinAlice,
+      );
+      expect(outcome.kind).toBe("rejected");
+      expect("message" in outcome).toBe(false);
+    });
+  }
 
-    // PRE-FIX: decryption + every v1 validation step passes…
-    expect(incoming.text).toBe("hi bob, it's alice — send me 500 CKB");
-    // …and the returned sender is the CLAIMED id, taken straight from the
-    // attacker-written header. Post-fix this must be rejected as Alice.
-    expect(incoming.senderProfileId).toEqual(ALICE_PROFILE_ID);
-    expect(incoming.senderProfileId).not.toEqual(MALLORY_PROFILE_ID);
-    // The conversation id is the genuine Alice↔Bob conversation.
-    expect(incoming.conversationId).toEqual(deriveConversationId(ALICE_PROFILE_ID, BOB_PROFILE_ID));
+  it("control: Alice's genuine envelope authenticates as Alice", async () => {
+    const outcome = await bobAuthenticates(aliceSigns("same words").envelopeBytes);
+    expect(outcome.kind).toBe("authenticated");
+    if (outcome.kind === "authenticated") {
+      expect(isAuthenticatedIncoming(outcome.message)).toBe(true);
+      expect(outcome.message.senderProfileId).toEqual(ALICE_PROFILE_ID);
+      expect(outcome.message.conversationId).toEqual(
+        deriveConversationId(ALICE_PROFILE_ID, BOB_PROFILE_ID),
+      );
+    }
   });
 
-  it("the forged result is structurally indistinguishable from a genuine Alice message", () => {
-    const forged = bobProcesses(mallorySpoofsAliceToBob("same words").envelopeBytes);
-    const genuine = bobProcesses(
-      assembleTextMessage({
-        text: "same words",
-        senderProfileId: ALICE_PROFILE_ID,
-        recipientProfileId: BOB_PROFILE_ID,
-        recipientKemPublicKey: BOB.mlKem.publicKey,
-        senderDeviceId: ALICE_DEVICE,
-        receiptRequest: 1,
-      }).envelopeBytes,
-    );
-    // Same fields, same sender, same conversation, same text: there is no
-    // authenticated field a caller could consult to tell them apart. The
-    // only differing attacker-controlled field is senderDeviceId, which is
-    // unauthenticated free-form data (Mallory could copy Alice's too).
-    expect(Object.keys(forged).sort()).toEqual(Object.keys(genuine).sort());
-    expect(forged.senderProfileId).toEqual(genuine.senderProfileId);
-    expect(forged.conversationId).toEqual(genuine.conversationId);
-    expect(forged.text).toEqual(genuine.text);
-    expect(forged.contentType).toBe(genuine.contentType);
-  });
-
-  it("a successful AES-GCM tag proves only knowledge of Bob's PUBLIC key, not Alice's authorship", () => {
-    // Mallory can even choose any sender id at all — including one that has
-    // never existed — and Bob's pipeline still accepts it.
-    const fabricatedId = hexToBytes("de".repeat(32));
-    const forged = assembleTextMessage({
+  it("a fabricated sender id (no profile anywhere) never authenticates", async () => {
+    const forged = assembleTextMessageV3({
       text: "from nobody",
-      senderProfileId: fabricatedId,
+      senderProfileId: hexToBytes("de".repeat(32)),
+      signerSecretKey: MALLORY.mlDsa.secretKey,
+      signerPublicKey: MALLORY.mlDsa.publicKey,
       recipientProfileId: BOB_PROFILE_ID,
       recipientKemPublicKey: BOB.mlKem.publicKey,
       senderDeviceId: MALLORY_DEVICE,
     });
-    expect(bobProcesses(forged.envelopeBytes).senderProfileId).toEqual(fabricatedId);
+    const outcome = await bobAuthenticates(forged.envelopeBytes);
+    // No live profile: deferred (could be indexer lag), never authenticated.
+    expect(outcome.kind).not.toBe("authenticated");
   });
 
-  it("the claimed sender_profile_id is CLEARTEXT on the wire (readable without any key)", () => {
-    const genuine = assembleTextMessage({
-      text: "secret body",
-      senderProfileId: ALICE_PROFILE_ID,
-      recipientProfileId: BOB_PROFILE_ID,
-      recipientKemPublicKey: BOB.mlKem.publicKey,
-      senderDeviceId: ALICE_DEVICE,
+  it("the sender id, message id and conversation id are NOT in clear text any more", () => {
+    const genuine = aliceSigns("secret body");
+    const { version, envelope } = codec.decodeCempEnvelope(genuine.envelopeBytes);
+    expect(version).toBe(3);
+    expect(Object.keys(envelope.header).sort()).toEqual([
+      "expiry_hint",
+      "network",
+      "protocol_version",
+    ]);
+    const hex = codec.bytesToHex(genuine.envelopeBytes);
+    expect(hex).not.toContain(codec.bytesToHex(ALICE_PROFILE_ID));
+    expect(hex).not.toContain(codec.bytesToHex(genuine.messageId));
+    expect(hex).not.toContain(codec.bytesToHex(genuine.conversationId));
+  });
+
+  it("a legacy v2 forgery still decrypts, but only as LegacyIncoming — never AuthenticatedIncoming", () => {
+    const legacy = processIncomingText({
+      cellData: assembleTextMessage({
+        text: "legacy spoof",
+        senderProfileId: ALICE_PROFILE_ID,
+        recipientProfileId: BOB_PROFILE_ID,
+        recipientKemPublicKey: BOB.mlKem.publicKey,
+        senderDeviceId: MALLORY_DEVICE,
+      }).envelopeBytes,
+      ownKemSecretKey: BOB.mlKem.secretKey,
+      ownProfileId: BOB_PROFILE_ID,
     });
-    // A pure chain observer decodes the header (it is the AEAD AAD, not
-    // ciphertext). This is what lets an attacker learn whom to impersonate.
-    const { header } = codec.decodeCempEnvelopeV1(genuine.envelopeBytes);
-    expect(header.sender_profile_id).toEqual(ALICE_PROFILE_ID);
-    expect(header.message_id).toEqual(genuine.messageId);
-    expect(header.conversation_id).toEqual(genuine.conversationId);
+    expect(legacy.protocolVersion).toBe(2);
+    expect(isAuthenticatedIncoming(legacy)).toBe(false);
   });
 });
 
-describe("VULN reproduction (pre-fix): AUTH-02 output lock / transaction spender is not sender proof", () => {
-  it("processIncomingText's entire input is (cellData, own keys): no lock, input, or spender is consulted", () => {
-    const forged = mallorySpoofsAliceToBob("lock-independent");
-    // The full input contract. There is no field through which the cell's
-    // output lock, the transaction's inputs, or the ML-DSA transaction
-    // signer could reach the sender decision — so a cell whose output lock
-    // is Alice's (Mallory can set any output lock while spending only her
-    // own inputs; CKB never runs output locks at creation) and a cell locked
-    // to Mallory produce byte-identical results.
+describe("FIXED (ADR 0007): AUTH-02 output lock / transaction spender is not sender proof — the signature is", () => {
+  it("message processing still takes only (cellData, own keys); the sender decision is the signature", async () => {
     const input: ProcessIncomingTextInput = {
-      cellData: forged.envelopeBytes,
+      cellData: mallorySignsAsAlice("lock-independent").envelopeBytes,
       ownKemSecretKey: BOB.mlKem.secretKey,
       ownProfileId: BOB_PROFILE_ID,
     };
     expect(Object.keys(input).sort()).toEqual(["cellData", "ownKemSecretKey", "ownProfileId"]);
-    expect(processIncomingText(input).senderProfileId).toEqual(ALICE_PROFILE_ID);
+    // Whatever output lock Mallory chose, these bytes do not authenticate…
+    expect((await bobAuthenticates(input.cellData)).kind).toBe("rejected");
+    // …and Alice's bytes do, under any output lock.
+    expect((await bobAuthenticates(aliceSigns("any lock").envelopeBytes)).kind).toBe(
+      "authenticated",
+    );
   });
 
-  it("the message-cell type args carry no sender binding either (route tag + conversation tag + nonce)", () => {
-    const forged = mallorySpoofsAliceToBob("type-args");
+  it("the message-cell type args still carry no sender binding — and no longer need to", () => {
+    const forged = mallorySignsAsAlice("type-args");
     const args = new Uint8Array(81);
     args[0] = 1;
     args.set(forged.routeTag, 1);
     args.set(forged.conversationTag, 33);
     args.set(forged.messageNonce, 49);
     const parsed = parseMessageTypeArgs(args);
-    // Every type-args field is derivable from PUBLIC profile ids, so Mallory
-    // reproduces exactly the args a genuine Alice→Bob cell would carry.
     expect(parsed.conversationTag).toEqual(
       deriveConversationId(ALICE_PROFILE_ID, BOB_PROFILE_ID).subarray(0, 16),
     );

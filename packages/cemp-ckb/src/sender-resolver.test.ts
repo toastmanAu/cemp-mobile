@@ -199,6 +199,16 @@ describe("known contact, pinned key", () => {
     expect(verdict.kind).toBe("deferred");
   });
 
+  it("same profile id now publishing another key, signature valid under NEITHER → rejected (not blocking)", async () => {
+    const view = chain({
+      profiles: new Map([
+        [`0x${hex(ALICE_ID)}`, [profileCell({ id: ALICE_ID, key: ALICE2.mlDsa.publicKey })]],
+      ]),
+    });
+    const verdict = await resolver(view, [ALICE_PINNED]).resolve(openedFrom(MALLORY, ALICE_ID));
+    expect(verdict.kind).toBe("rejected");
+  });
+
   it("same profile id now publishing another key, signature valid under it → key-changed-blocking", async () => {
     const view = chain({
       profiles: new Map([

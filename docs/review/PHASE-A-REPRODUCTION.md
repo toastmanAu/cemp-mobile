@@ -348,3 +348,53 @@ affected files to green.
 Still to do: outgoing rows created before the upgrade have no receipt key, so
 no receipt can release their capacity. They need the expiry or manual
 reclaim path from the ADR's follow-up.
+
+## Status after ADR 0007 (sender-signed envelopes, protocol v3)
+
+Every send is now a v3 envelope. The sender signs a transcript of the clear
+header, the KEM ciphertext, the nonce, its profile id, the conversation id,
+the content type, the timestamp and the payload with its profile's ML-DSA-65
+key (ctx `"CEMP-ENVELOPE-V3"`), and the signature travels inside the
+AES-GCM plaintext. The receiver resolves the sender's key (pinned contact key,
+or the live profile bound to its own ML-DSA lock) and verifies the signature
+BEFORE the block list, the rate limiter, contact lookup, insert, notification
+or receipts. Spec: `docs/protocol/CEMP-ENVELOPE-V3.md`.
+
+| Finding           | Status    | Why                                                                                                                                                                                                                                      |
+| ----------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AUTH-01           | **FIXED** | Mallory can still claim Alice's id and encrypt to Bob, but she cannot sign with Alice's key. The forgery is rejected: no row, contact, notification or ack, whether Alice is pinned or resolved live. Her id is no longer in clear text. |
+| AUTH-02           | **FIXED** | The output lock stays irrelevant. The proof is the signature, so forgeries under Alice's lock and Mallory's lock are both rejected, and a genuine cell under any lock is accepted.                                                       |
+| TRNS-01 (content) | **FIXED** | The same verifier runs on both transports. A forgery is rejected via chain and via LoRa; a genuine message is verified on both.                                                                                                          |
+| v1/v2 cells       | labelled  | Still decrypt, but only as `LegacyIncoming`: stored as "Unverified (legacy)" and only in an existing contact's conversation, never notified, never acked, never creating a contact.                                                      |
+
+The "seen while reading the code" items are also closed. The incoming rate
+limiter and the block list now key on the AUTHENTICATED sender, so Mallory
+cannot spend Alice's budget, and cannot slip past her own block by claiming
+another id (the forgery is rejected first).
+
+Tests (all assert post-fix behaviour):
+
+- `packages/cemp-ckb/src/incoming-auth.test.ts` (8): AUTH-01 rejected with
+  Alice pinned and resolved live, the genuine control, a fabricated id, no
+  clear-text ids, legacy v2 only as `LegacyIncoming`; AUTH-02 two tests.
+- `packages/cemp-sync/src/authentication.test.ts`: AUTH-01 through the real
+  discovery worker (pinned and unpinned, unknown claimed id, genuine control,
+  legacy spoof labelled, legacy unknown sender dropped, rate budget, block
+  list), AUTH-02, TRNS-01 (forgery and genuine), plus deferral/backoff, both
+  pre-decryption budgets, the key-changed card, the healer, terminal
+  rejection, funding-lock failure, and the contact-upsert brand.
+
+Mutation check (ADR test plan: bypass verification). With the resolver's
+signature check forced true (`signed = () => true`) and `@cemp/ckb` rebuilt,
+11 tests fail: 3 in `incoming-auth.test.ts` (AUTH-01 pinned and live, AUTH-02)
+and 8 in `authentication.test.ts` (AUTH-01 ×3, the rate-budget test, AUTH-02,
+TRNS-01 forgery, the key-changed card, terminal rejection). Restoring the
+check returns all 32 tests in the two files to green.
+
+Per-guard mutation results are in the implementation report. Every guard
+except one has a test that fails when only that guard is disabled. The
+exception is the resolver's "pinned key equals live key → rejected"
+shortcut, which is redundant with the next check (the signature must
+verify under the live key) and cannot be pinned on its own. The
+verifier's length pre-checks and its try/catch mask each other; they are
+pinned jointly.

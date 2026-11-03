@@ -253,3 +253,56 @@ to v1 or v2.
 4. **Pinned-key mismatch without a provable rotation:** show the blocking
    "key changed" card (`key-changed-blocking`); the message body is never
    shown or acked.
+
+## Implementation notes (2026-11-03)
+
+Commits on `security/authenticated-messaging-v2`: `3a1dff0` (schema, codecs,
+signing, vectors), `eb7a7a5` (resolver, AuthenticatedIncoming), `31a08c9`
+(receive pipeline, schema v11), `bc77b00` (send path), `dcf8a0c` (UI), then
+the Phase A flips and these notes. Normative spec:
+[`docs/protocol/CEMP-ENVELOPE-V3.md`](../protocol/CEMP-ENVELOPE-V3.md).
+
+- **Implementation check (section 2).** Nothing read the moved header fields
+  before decryption: LoRa runs only the key-free `validateEnvelope`,
+  discovery dedups on outpoint leases and the logical message id after
+  decryption, and reclaim uses stored chain refs.
+- **Decision the ADR did not state: the v3 key schedule.** v1/v2 put
+  `sender_id ‖ recipient_id` into the HKDF Expand info, but a v3 receiver
+  cannot know the sender before decryption. v3 uses
+  `"CEMP-{MESSAGE,ATTACHMENT,RECEIPT}-KEY-V3" ‖ recipient_id`. The sender is
+  bound by the signature over `kem_ciphertext` and `recipient_profile_id`.
+  This changes no Molecule layout; it is pinned by the vectors.
+- **Conservative additions.** `conversation_id` must equal
+  `H(sender, me)` (it was unchecked in v1/v2, RCPT-04). A revoked profile is
+  rejected. "No live profile cell" defers instead of rejecting, because it
+  may be indexer lag. An in-place key change under the same profile id is
+  `key-changed-blocking`, since rotations always mint a new profile id. Rotation
+  proof is single-hop; a longer chain blocks. Legacy content from a claimed
+  sender who is not already a contact is dropped (an unverified claim never
+  creates a contact). All legacy content shares one rate bucket.
+- **Rotation proof without a stored predecessor outpoint.** Contacts do not
+  store the predecessor cell's outpoint, so the resolver searches the
+  successor's creating transaction for an input that spent a Type-ID cell
+  with the predecessor id, and requires that cell's lock to be the PINNED
+  key's ML-DSA lock. It then runs the existing `checkRotationLink`
+  (extracted from `verifyRotationLinkOnChain`).
+- **Brand.** `AuthenticatedIncoming` has a compile-time `unique symbol` brand
+  and a module-private `WeakSet` registry. Minted objects are frozen, but
+  their `Uint8Array` fields can still be mutated in place (JavaScript cannot
+  freeze typed-array contents).
+- **Cross-runtime oracle.** `tools/signing-harness envelope-v3` (Rust
+  `fips204` 0.4.6, the crate the harness already uses) verifies every
+  signature case, re-signs every known answer byte-identically from the
+  32-byte seed, and rebuilds each accepted envelope's transcript with its own
+  Molecule table code. The RustCrypto `ml-dsa` crate used by the deployed
+  lock was NOT used as the oracle. Run by
+  `packages/cemp-crypto/src/envelope-v3.interop.test.ts`.
+- **Capacity.** About +3,300 bytes per message cell, measured (spec §10).
+  `CONSERVATIVE_MESSAGE_CELL_SHANNON` rose from 36,864 to 40,960 CKB: the
+  largest v3 manifest cell (~39,917 CKB) would otherwise have passed the image
+  pre-send check and then failed mid-build. Padding is uniform 0–255 bytes;
+  there were no padding buckets to update, and the balance UI shows no
+  per-message estimate.
+- **Still open.** Testnet pool acceptance of a maximum v3 text and image
+  envelope (test plan item) was not run: no broadcasts were made. ML-DSA
+  verify timing on the XR is not measured.

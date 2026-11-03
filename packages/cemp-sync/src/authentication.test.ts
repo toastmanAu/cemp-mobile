@@ -9,7 +9,9 @@ import {
   TYPE_ID_CODE_HASH,
   assembleTextMessage,
   assembleTextMessageV3,
+  authenticateIncomingV3,
   currentRoutingEpoch,
+  openIncoming,
   incomingLogicalMessageId,
   type CempMessageTypeRef,
 } from "@cemp/ckb";
@@ -46,7 +48,13 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
 import { InMemoryScheduler, SyncEngine } from "./engine.js";
 import { BackoffPolicy } from "./retry.js";
-import { makeTestResolver, testSenderFromKeys, withSenderProfiles } from "./test-helpers.js";
+import {
+  makeTestResolver,
+  testSenderFromKeys,
+  withSenderProfiles,
+  type TestSender,
+} from "./test-helpers.js";
+import { upsertAuthenticatedContact } from "./ingest.js";
 import { buildWorkerSpecs, ingestIncomingCellData, type SyncWorkerDeps } from "./workers.js";
 
 /**
@@ -213,6 +221,17 @@ function makeTransport(
   };
 }
 
+function failingTx(inner: JsonRpcTransport, fail: boolean): JsonRpcTransport {
+  return {
+    call(url, method, params) {
+      if (fail && method === "get_transaction") {
+        return Promise.reject(new Error("RPC timed out"));
+      }
+      return inner.call(url, method, params);
+    },
+  };
+}
+
 interface Device {
   profileId: Uint8Array;
   keys: IdentityKeyBundle;
@@ -225,6 +244,10 @@ async function makeStack(
     profileCells?: unknown[];
     fundSigner?: boolean;
     failProfileLookups?: () => boolean;
+    /** Override which profiles are published (default: the real three). */
+    senders?: readonly TestSender[];
+    /** Make every get_transaction fail (funding-lock lookups included). */
+    failTransactions?: boolean;
     preDecryptLimits?: { perSync: number; perFundingLock: number };
   } = {},
 ) {
@@ -250,11 +273,18 @@ async function makeStack(
   });
   const sent: Record<string, unknown>[] = [];
   const client = new CempClient({
-    transport: withSenderProfiles(makeTransport(cells, opts.profileCells ?? [], sent), PUBLISHED, {
-      ...(opts.failProfileLookups === undefined
-        ? {}
-        : { failProfileLookups: opts.failProfileLookups }),
-    }),
+    transport: withSenderProfiles(
+      failingTx(
+        makeTransport(cells, opts.profileCells ?? [], sent),
+        opts.failTransactions === true,
+      ),
+      opts.senders ?? PUBLISHED,
+      {
+        ...(opts.failProfileLookups === undefined
+          ? {}
+          : { failProfileLookups: opts.failProfileLookups }),
+      },
+    ),
   });
   const wallet = new MockCkbClient();
   const signer = new MlDsaV2TxSigner({ keyPair: signerKeyPair, client: wallet });
@@ -607,6 +637,120 @@ describe("FIXED (ADR 0007): TRNS-01 identical bytes via CKB and via LoRa (source
     } finally {
       await chain.db.close();
       await lora.db.close();
+    }
+  });
+});
+
+describe("ADR 0007 receive pipeline: blocking card, healer, dispositions, brand", () => {
+  it("pinned key no longer matches the live profile: a body-less blocking card, never notified or acked", async () => {
+    // Alice's profile id now publishes MALLORY's key (an unprovable in-place
+    // key change); Bob pinned Alice's real key. Mallory signs with hers.
+    const hijacked = testSenderFromKeys(MALLORY, ALICE_PROFILE_ID, 0x5d);
+    const forged = mallorySignsAsAliceToBob("trust me, new key");
+    const stack = await makeStack(BOB_DEVICE, [cellJson(forged, 0x61, MALLORY_LOCK)], {
+      senders: [hijacked, BOB_SENDER],
+    });
+    try {
+      const conversationId = await bobKnowsAlice(stack, true);
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const row = await rowFor(stack, forged.messageId);
+      expect(row?.authStatus).toBe("key-changed-blocking");
+      expect(row?.body).toBeNull();
+      expect(row?.conversationId).toBe(conversationId);
+      expect(stack.notifier.posted).toHaveLength(0);
+      expect(await queuedAcks(stack)).toBe(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("the stranded-row healer never notifies or acks a legacy-unverified row", async () => {
+    const stack = await makeStack(BOB_DEVICE);
+    try {
+      const conversationId = await bobKnowsAlice(stack, true);
+      const row = await stack.messages.insert({
+        conversationId,
+        direction: "incoming",
+        body: "legacy, interrupted",
+        logicalMessageId: "incoming:legacy-stranded",
+      });
+      await stack.messages.setSenderAuthentication(row.id, {
+        authStatus: "legacy-unverified",
+        senderKeyHashHex: null,
+      });
+      await stack.messages.transitionState(row.id, "downloading");
+      await stack.messages.setChainRef(row.id, { txHash: fillHex(0x62, 32), outpointIndex: 0 });
+      expect(await stack.engine.runWorker("pending-transactions")).toBe("success");
+      expect((await stack.messages.getById(row.id))?.state).toBe("received");
+      expect(stack.notifier.posted).toHaveLength(0);
+      expect(await queuedAcks(stack)).toBe(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a rejected cell is terminal: later scans do not decrypt or resolve it again", async () => {
+    const forged = mallorySignsAsAliceToBob("reject me once");
+    const stack = await makeStack(BOB_DEVICE, [cellJson(forged, 0x63, MALLORY_LOCK)]);
+    try {
+      await bobKnowsAlice(stack, true);
+      let resolves = 0;
+      const inner = stack.deps.senderResolver;
+      (stack.deps as { senderResolver: typeof inner }).senderResolver = {
+        resolve: (opened) => {
+          resolves += 1;
+          return inner.resolve(opened);
+        },
+      };
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const afterFirst = resolves;
+      expect(afterFirst).toBe(1);
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(resolves).toBe(afterFirst);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a funding-lock lookup failure defers the cell before any decryption", async () => {
+    const genuine = aliceSignsToBob("arrives while the node is flaky");
+    const stack = await makeStack(BOB_DEVICE, [cellJson(genuine, 0x64, ALICE_LOCK)], {
+      failTransactions: true,
+    });
+    try {
+      await bobKnowsAlice(stack, true);
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await rowFor(stack, genuine.messageId)).toBeUndefined();
+      expect(
+        (await stack.deps.dispositions.get({ txHash: fillHex(0x64, 32), outpointIndex: 0 }))
+          ?.disposition,
+      ).toBe("deferred");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("contact upsert refuses anything but a verifier-made AuthenticatedIncoming", async () => {
+    const stack = await makeStack(BOB_DEVICE);
+    try {
+      const opened = openIncoming({
+        cellData: aliceSignsToBob("brand").envelopeBytes,
+        ownKemSecretKey: BOB.mlKem.secretKey,
+        ownProfileId: BOB_PROFILE_ID,
+      });
+      if (opened.kind !== "v3") throw new Error("expected v3");
+      const outcome = await authenticateIncomingV3(opened.unverified, stack.deps.senderResolver);
+      if (outcome.kind !== "authenticated")
+        throw new Error(`expected authenticated, got ${outcome.kind}`);
+      const copy = { ...outcome.message };
+      await expect(upsertAuthenticatedContact(stack.contacts, copy)).rejects.toThrow(
+        /verifier-made/,
+      );
+      expect(await stack.contacts.list()).toHaveLength(0);
+      const created = await upsertAuthenticatedContact(stack.contacts, outcome.message);
+      expect(created.displayName).toBe(`unknown-${bytesToHex(ALICE_PROFILE_ID).slice(0, 8)}`);
+    } finally {
+      await stack.db.close();
     }
   });
 });

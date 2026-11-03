@@ -310,6 +310,16 @@ proof verifies. v1 receipts are ignored. Limits are the same as v1. Schema:
 `packages/cemp-core/schemas/cemp-v2.mol`. Vectors:
 `cemp-v2-serialization.json` and `cemp-v2-receipt.json`.
 
+### 9.2 Protocol version 3: sender-signed envelopes (ADR 0007)
+
+Version 3 replaces the envelope: a 26-byte clear header (version, network,
+expiry hint), and an ML-DSA-65 signature inside the AES-GCM plaintext
+covering the header, the KEM ciphertext, the nonce, the sender id, the
+conversation id, the content type, the timestamp and the payload. All sends
+are version 3; the header's version byte selects exactly one schema
+(1, 2 → this document's envelope; 3 → `CempEnvelopeV3`). The normative
+specification is [CEMP-ENVELOPE-V3.md](CEMP-ENVELOPE-V3.md).
+
 ## 10. Reclaim group (local journal — not published)
 
 Reclaim groups are a local construct (spec §7.3, §9.5); nothing below is

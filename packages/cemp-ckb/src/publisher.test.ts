@@ -768,12 +768,16 @@ describe("MessagePublisher sends sender-signed v3 (ADR 0007 §7)", () => {
     expect(sent).toBe(hexFrom(prepared!.envelopeBytes));
   });
 
-  it("an image retry with a NEW encapsulation re-seals instead of reusing a stale envelope", async () => {
+  async function imageRetry(
+    first: { kemMessage: Uint8Array; nonce: Uint8Array },
+    second: { kemMessage: Uint8Array; nonce: Uint8Array },
+    rowId: number,
+  ) {
     const { json, profileIdHex } = recipientProfileCellJson();
     const fixture = makeFixture(json, { unfunded: true });
     const base = {
-      messageRowId: 35,
-      logicalMessageId: "lm-v3-image-retry",
+      messageRowId: rowId,
+      logicalMessageId: `lm-v3-image-retry-${String(rowId)}`,
       text: "",
       contentType: 0x03 as const,
       attachmentManifests: [
@@ -782,27 +786,40 @@ describe("MessagePublisher sends sender-signed v3 (ADR 0007 §7)", () => {
       recipientProfileIdHex: profileIdHex,
     };
     await expect(
-      fixture.publisher.publishText({
-        ...base,
-        attachmentEnvelope: {
-          kemMessage: new Uint8Array(32).fill(1),
-          nonce: new Uint8Array(12).fill(1),
-        },
-      }),
+      fixture.publisher.publishText({ ...base, attachmentEnvelope: first }),
     ).rejects.toBeInstanceOf(PublicationError);
-    const first = fixture.store.prepared.get(35)!;
-    fixture.mockChain.addCells(fundingCell(10_000, 0xf3, fixture.signer.lockScript()));
-    await fixture.store.transitionMessage(35, "queued");
-    await fixture.publisher.publishText({
-      ...base,
-      attachmentEnvelope: {
-        kemMessage: new Uint8Array(32).fill(2),
-        nonce: new Uint8Array(12).fill(2),
-      },
-    });
+    const prepared = fixture.store.prepared.get(rowId)!;
+    fixture.mockChain.addCells(fundingCell(50_000, 0xf3, fixture.signer.lockScript()));
+    await fixture.store.transitionMessage(rowId, "queued");
+    await fixture.publisher.publishText({ ...base, attachmentEnvelope: second });
     const sent = (fixture.sentBodies[0] as { outputs_data: string[] }).outputs_data[0]!;
-    expect(sent).not.toBe(hexFrom(first.envelopeBytes));
-    expect(fixture.store.prepared.get(35)!.envelopeBytes).not.toEqual(first.envelopeBytes);
+    return { reused: sent === hexFrom(prepared.envelopeBytes) };
+  }
+
+  const fill = (byte: number, n: number) => new Uint8Array(n).fill(byte);
+
+  it("an image retry with a NEW KEM message (same nonce) re-seals instead of reusing a stale envelope", async () => {
+    const { reused } = await imageRetry(
+      { kemMessage: fill(1, 32), nonce: fill(1, 12) },
+      { kemMessage: fill(2, 32), nonce: fill(1, 12) },
+      35,
+    );
+    expect(reused).toBe(false);
+  });
+
+  it("an image retry with a NEW nonce (same KEM message) re-seals", async () => {
+    const { reused } = await imageRetry(
+      { kemMessage: fill(1, 32), nonce: fill(1, 12) },
+      { kemMessage: fill(1, 32), nonce: fill(2, 12) },
+      37,
+    );
+    expect(reused).toBe(false);
+  });
+
+  it("an image retry with the SAME encapsulation reuses the journaled envelope", async () => {
+    const same = { kemMessage: fill(1, 32), nonce: fill(1, 12) };
+    const { reused } = await imageRetry(same, { ...same }, 38);
+    expect(reused).toBe(true);
   });
 
   it("refuses to sign with a key that does not match the configured public key", async () => {

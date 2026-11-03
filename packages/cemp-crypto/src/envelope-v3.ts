@@ -296,6 +296,22 @@ export function sealEnvelopeV3(params: SealEnvelopeV3Params): SealEnvelopeV3Resu
   return { ...sealed, transcript, signature };
 }
 
+/**
+ * The ML-KEM-768 ciphertext a fixed encapsulation message produces for a
+ * recipient key (deterministic). Lets a sender check that a journaled
+ * envelope belongs to the SAME §6 encapsulation as a retry's chunks.
+ */
+export function kemCiphertextFor(
+  recipientKemPublicKey: Uint8Array,
+  kemMessage: Uint8Array,
+): Uint8Array {
+  requireLength("recipientKemPublicKey", recipientKemPublicKey, ML_KEM_768_SIZES.publicKey);
+  requireLength("kemMessage", kemMessage, ML_KEM_768_SIZES.sharedSecret);
+  const { cipherText, sharedSecret } = ml_kem768.encapsulate(recipientKemPublicKey, kemMessage);
+  sharedSecret.fill(0);
+  return cipherText;
+}
+
 /* ── open ───────────────────────────────────────────────────────────────── */
 
 export interface OpenEnvelopeV3Params {

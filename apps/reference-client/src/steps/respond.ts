@@ -1,9 +1,9 @@
 import { codec } from "@cemp/core";
 import { computeReceiptProof } from "@cemp/crypto";
-import { buildSendMessageTx, processIncomingText } from "@cemp/ckb";
+import { buildSendMessageTx, openIncoming } from "@cemp/ckb";
 import {
   StepFailure,
-  assembleTextMessage,
+  assembleTextMessageV3,
   broadcastAndCheckpoint,
   cempMessageTypeRef,
   checkProfileFingerprint,
@@ -70,22 +70,26 @@ export const stepRespond: StepFn = async (ctx, log) => {
       "alice's original message cell is no longer live — cannot re-derive the receipt key",
     );
   }
-  const reopened = processIncomingText({
+  const opened = openIncoming({
     cellData: codec.hexToBytes(
       live.cell.data.startsWith("0x") ? live.cell.data.slice(2) : live.cell.data,
     ),
     ownKemSecretKey: bob.bundle.mlKem.secretKey,
     ownProfileId: codec.hexToBytes(bobRecord.profileId),
   });
+  // Only the receipt key is needed here; the sender was verified in receive.
+  const reopened = opened.kind === "v3" ? opened.unverified.message : opened.message;
   reopened.attachmentKey.fill(0);
   if (reopened.receiptKey === null) {
     throw new StepFailure("alice's original is a v1 message: no proven receipt can be sent");
   }
   const proof = computeReceiptProof(reopened.receiptKey, originalMessageId, 0x01);
   reopened.receiptKey.fill(0);
-  const message = assembleTextMessage({
+  const message = assembleTextMessageV3({
     text: RESPOND_TEXT,
     senderProfileId: codec.hexToBytes(bobRecord.profileId),
+    signerSecretKey: bob.bundle.mlDsa.secretKey,
+    signerPublicKey: bob.bundle.mlDsa.publicKey,
     recipientProfileId: codec.hexToBytes(aliceRecord.profileId),
     recipientKemPublicKey: resolved.profile.ml_kem_public_key,
     senderDeviceId: codec.hexToBytes(bob.state.deviceId),

@@ -14,7 +14,7 @@ import { DatabaseError } from "../errors.js";
 import type { MessageState } from "../message-states.js";
 import type { AttachmentRepository } from "./attachments.js";
 import type { BalanceRepository } from "./balances.js";
-import type { MessageRepository } from "./messages.js";
+import type { MessageRepository, PreparedEnvelope } from "./messages.js";
 import type { OutgoingTransactionRepository } from "./outgoing-transactions.js";
 import type { WatchedOutpointRepository } from "./watched-outpoints.js";
 
@@ -91,6 +91,15 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
 
   async setEnvelopeMessageId(messageRowId: number, envelopeMessageIdHex: string): Promise<void> {
     await this.#messages.setEnvelopeMessageId(messageRowId, envelopeMessageIdHex);
+  }
+
+  /** ADR 0007 §7: the signed envelope, journaled before any tx is built. */
+  async setPreparedEnvelope(messageRowId: number, prepared: PreparedEnvelope): Promise<void> {
+    await this.#messages.setPreparedEnvelope(messageRowId, prepared);
+  }
+
+  async getPreparedEnvelope(messageRowId: number): Promise<PreparedEnvelope | undefined> {
+    return await this.#messages.getPreparedEnvelope(messageRowId);
   }
 
   /** ADR 0006: the outgoing row's receipt key, stored before broadcast. */

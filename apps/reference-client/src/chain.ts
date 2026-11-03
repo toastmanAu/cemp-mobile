@@ -316,7 +316,12 @@ export function checkProfileFingerprint(
 }
 
 /** Message assembly lives in @cemp/ckb (Phase 7) — re-exported for the steps. */
-export { assembleTextMessage, currentRoutingEpoch, ROUTING_EPOCH_SECONDS } from "@cemp/ckb";
+export {
+  assembleTextMessage,
+  assembleTextMessageV3,
+  currentRoutingEpoch,
+  ROUTING_EPOCH_SECONDS,
+} from "@cemp/ckb";
 export type { AssembleTextMessageParams, AssembledMessage } from "@cemp/ckb";
 
 function strip0x(hex: string): string {

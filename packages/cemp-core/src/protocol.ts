@@ -29,9 +29,11 @@ export const ENVELOPE_SIGNATURE_CONTEXT_V3 = "CEMP-ENVELOPE-V3";
 
 /**
  * The envelope protocol version every outgoing message is sent as (ADR
- * 0006): no v1 send path remains, so there is nothing to downgrade to.
+ * 0007): content, receipt-only and content+receipt sends are all sender-
+ * signed v3. No v1/v2 send path remains in production, so there is nothing
+ * to downgrade to.
  */
-export const CEMP_SEND_PROTOCOL_VERSION = 2;
+export const CEMP_SEND_PROTOCOL_VERSION = 3;
 export const CEMP_SERIALIZATION_VERSION = 1;
 
 export const ALGORITHM_FAMILY = {

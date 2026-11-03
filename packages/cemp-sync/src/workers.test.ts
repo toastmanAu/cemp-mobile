@@ -373,6 +373,7 @@ async function makeStack(
     store,
     senderProfileId: () => Promise.resolve(BOB_PROFILE_ID),
     senderDeviceId: hexToBytes("02".repeat(16)),
+    envelopeSigningKey: () => Promise.resolve(BOB.mlDsa),
   });
   const notifier = new RecordingNotifier();
   const engineId = opts.engineId ?? "engine-test";

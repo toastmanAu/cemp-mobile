@@ -31,6 +31,7 @@ export const stepReceive: StepFn = async (ctx, log) => {
     const messageId = codec.bytesToHex(msg.header.message_id);
     log(`decrypted message ${messageId} at ${msg.outPoint.txHash}:${msg.outPoint.index}:`);
     log(`  text: ${msg.text ?? "(none)"}`);
+    log(`  sender: ${msg.verified ? "verified (v3 signature)" : "Unverified (legacy)"}`);
     bob.state.messages.push({
       messageId,
       direction: "received",

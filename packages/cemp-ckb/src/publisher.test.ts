@@ -3,16 +3,17 @@ import { CKB_TESTNET, codec } from "@cemp/core";
 import {
   computeReceiptProof,
   deriveIdentityKeys,
+  verifyEnvelopeV3,
   mldsaV2KeygenFromSeed,
   verifyReceiptProof,
   wipeIdentityKeyBundle,
 } from "@cemp/crypto";
 import { describe, expect, it, vi } from "vitest";
 import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
-import type { AssembleTextMessageParams } from "./assemble.js";
+import type { AssembleTextMessageV3Params } from "./assemble.js";
 import { TYPE_ID_CODE_HASH, type CempMessageTypeRef } from "./builders.js";
 import { CempClient, type JsonRpcTransport } from "./client.js";
-import { processIncomingText } from "./incoming.js";
+import { openIncoming } from "./incoming.js";
 import { MlDsaV2TxSigner } from "./signing.js";
 import { MockCkbClient, fillHex, toOutputLike } from "./testing/mock-ccc-client.js";
 import { hashFromRpcBody } from "./testing/rpc-body.js";
@@ -25,9 +26,9 @@ vi.mock("./assemble.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./assemble.js")>();
   return {
     ...actual,
-    assembleTextMessage: (params: AssembleTextMessageParams) => {
+    assembleTextMessageV3: (params: AssembleTextMessageV3Params) => {
       mockAssembleSpy(params);
-      return actual.assembleTextMessage(params);
+      return actual.assembleTextMessageV3(params);
     },
   };
 });
@@ -35,7 +36,12 @@ vi.mock("./assemble.js", async (importOriginal) => {
 // NOTE: MessagePublisher must be imported AFTER vi.mock("./assemble.js") is
 // registered above (Vitest hoists the vi.mock call, but the import ordering
 // here keeps the dependency explicit for readers).
-import { MessagePublisher, PublicationError, type PublicationStore } from "./publisher.js";
+import {
+  MessagePublisher,
+  PublicationError,
+  type PreparedEnvelope,
+  type PublicationStore,
+} from "./publisher.js";
 
 /**
  * Phase 7 publisher pipeline tests (offline): state-transition order,
@@ -75,7 +81,15 @@ function fundingCell(ckb: number, seed: number, lock: Script): Cell {
 // ── fake publication store (records event order for rule-6 assertions) ────
 
 interface StoreEvent {
-  kind: "transition" | "chainref" | "journal" | "txstate" | "broadcast" | "receiptkey";
+  kind:
+    | "transition"
+    | "chainref"
+    | "journal"
+    | "txstate"
+    | "broadcast"
+    | "receiptkey"
+    | "prepared"
+    | "build";
   detail: string;
 }
 
@@ -152,6 +166,19 @@ class FakeStore implements PublicationStore {
     this.receiptKeys.set(id, receiptKey.slice());
     this.events.push({ kind: "receiptkey", detail: String(id) });
     return Promise.resolve();
+  }
+
+  /** ADR 0007 §7: the signed envelope journaled before any tx is built. */
+  readonly prepared = new Map<number, PreparedEnvelope>();
+
+  setPreparedEnvelope(id: number, prepared: PreparedEnvelope): Promise<void> {
+    this.prepared.set(id, prepared);
+    this.events.push({ kind: "prepared", detail: String(id) });
+    return Promise.resolve();
+  }
+
+  getPreparedEnvelope(id: number): Promise<PreparedEnvelope | undefined> {
+    return Promise.resolve(this.prepared.get(id));
   }
 
   recordOutgoingTx(input: { txHash: string; purpose: string; state: string }): Promise<void> {
@@ -269,12 +296,14 @@ function makeFixture(
     rejectedTxHashes?: ReadonlySet<string>;
     neverCommit?: boolean;
     senderProfileId?: () => Promise<Uint8Array>;
+    unfunded?: boolean;
   } = {},
 ): {
   publisher: MessagePublisher;
   store: FakeStore;
   sentBodies: Record<string, unknown>[];
   mockChain: MockCkbClient;
+  signer: MlDsaV2TxSigner;
 } {
   const store = new FakeStore();
   const { transport, sentBodies } = makeFakeChain({
@@ -288,7 +317,6 @@ function makeFixture(
   const client = new CempClient({ transport });
   const mockChain = new MockCkbClient();
   const signer = new MlDsaV2TxSigner({ keyPair, client: mockChain });
-  mockChain.addCells(fundingCell(10_000, 0xf1, signer.lockScript()));
   const publisher = new MessagePublisher({
     client,
     signer,
@@ -296,8 +324,14 @@ function makeFixture(
     store,
     senderProfileId: opts.senderProfileId ?? (() => Promise.resolve(hexToBytes("11".repeat(32)))),
     senderDeviceId: hexToBytes("22".repeat(16)),
+    envelopeSigningKey: () => Promise.resolve(keyPair),
   });
-  return { publisher, store, sentBodies, mockChain };
+  if (opts.unfunded !== true) {
+    // A v3 message cell occupies ~5,000 CKB (ADR 0007: +3.3 KB signature),
+    // so the fixture funds several sends.
+    mockChain.addCells(fundingCell(50_000, 0xf1, signer.lockScript()));
+  }
+  return { publisher, store, sentBodies, mockChain, signer };
 }
 
 function recipientProfileCellJson(): { json: unknown; profileIdHex: string } {
@@ -613,7 +647,7 @@ describe("MessagePublisher.publishText", () => {
  * reject (never fabricate a zero id) when no profile exists yet.
  */
 describe("MessagePublisher stores the ADR 0006 receipt key", () => {
-  it("persists the envelope's receipt key BEFORE broadcast, sends protocol v2, and the recipient derives the same key", async () => {
+  it("persists the envelope's receipt key BEFORE broadcast, sends protocol v3, and the recipient derives the same key", async () => {
     const { json, profileIdHex } = recipientProfileCellJson();
     const { publisher, store, sentBodies } = makeFixture(json);
     await publisher.publishText({
@@ -633,15 +667,172 @@ describe("MessagePublisher stores the ADR 0006 receipt key", () => {
     // Decrypt the broadcast cell as the recipient: v2, same receipt key.
     const body = sentBodies[0] as { outputs_data: string[] };
     const recipient = deriveIdentityKeys(hexToBytes(`0x${"77".repeat(64)}`));
-    const incoming = processIncomingText({
+    const opened = openIncoming({
       cellData: hexToBytes(body.outputs_data[0]!),
       ownKemSecretKey: recipient.mlKem.secretKey,
       ownProfileId: hexToBytes(profileIdHex),
     });
     wipeIdentityKeyBundle(recipient);
-    expect(incoming.protocolVersion).toBe(2);
+    if (opened.kind !== "v3") throw new Error("expected a v3 envelope");
+    const incoming = opened.unverified.message;
+    expect(incoming.protocolVersion).toBe(3);
     const proof = computeReceiptProof(incoming.receiptKey!, incoming.messageId, 0x01);
     expect(verifyReceiptProof(stored!, incoming.messageId, 0x01, proof)).toBe(true);
+  });
+});
+
+describe("MessagePublisher sends sender-signed v3 (ADR 0007 §7)", () => {
+  function recipientOpens(body: Record<string, unknown>, profileIdHex: string) {
+    const recipient = deriveIdentityKeys(hexToBytes(`0x${"77".repeat(64)}`));
+    try {
+      const opened = openIncoming({
+        cellData: hexToBytes((body as { outputs_data: string[] }).outputs_data[0]!),
+        ownKemSecretKey: recipient.mlKem.secretKey,
+        ownProfileId: hexToBytes(profileIdHex),
+      });
+      if (opened.kind !== "v3") throw new Error("expected a v3 envelope");
+      return opened.unverified;
+    } finally {
+      wipeIdentityKeyBundle(recipient);
+    }
+  }
+
+  it("content and receipt-only sends are v3, signed by the configured profile key", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const { publisher, sentBodies } = makeFixture(json);
+    await publisher.publishText({
+      messageRowId: 31,
+      logicalMessageId: "lm-v3-content",
+      text: "signed",
+      recipientProfileIdHex: profileIdHex,
+    });
+    await publisher.publishText({
+      messageRowId: 32,
+      logicalMessageId: "response:lm-v3-ack",
+      text: "",
+      recipientProfileIdHex: profileIdHex,
+      receipts: [
+        { messageId: new Uint8Array(16).fill(9), status: 0x01, proof: new Uint8Array(32).fill(7) },
+      ],
+    });
+    expect(sentBodies).toHaveLength(2);
+    for (const body of sentBodies) {
+      const unverified = recipientOpens(body, profileIdHex);
+      expect(unverified.message.senderProfileId).toEqual(hexToBytes("11".repeat(32)));
+      expect(
+        verifyEnvelopeV3(
+          keyPair.publicKey,
+          unverified.opened.transcript,
+          unverified.opened.inner.signature,
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("signs and journals the envelope BEFORE building the transaction", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const { publisher, store } = makeFixture(json);
+    await publisher.publishText({
+      messageRowId: 33,
+      logicalMessageId: "lm-v3-order",
+      text: "order",
+      recipientProfileIdHex: profileIdHex,
+    });
+    const order = store.events.map((e) => (e.kind === "transition" ? e.detail : e.kind));
+    expect(order.indexOf("prepared")).toBeGreaterThan(-1);
+    expect(order.indexOf("prepared")).toBeLessThan(order.indexOf("building_transaction"));
+    expect(order.indexOf("receiptkey")).toBeLessThan(order.indexOf("building_transaction"));
+  });
+
+  it("a retry after a pre-broadcast failure rebroadcasts the IDENTICAL signed envelope", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const fixture = makeFixture(json, { unfunded: true });
+    const input = {
+      messageRowId: 34,
+      logicalMessageId: "lm-v3-retry",
+      text: "retry, same bytes",
+      recipientProfileIdHex: profileIdHex,
+    };
+    await expect(fixture.publisher.publishText(input)).rejects.toBeInstanceOf(PublicationError);
+    expect(fixture.sentBodies).toHaveLength(0);
+    const prepared = fixture.store.prepared.get(34);
+    expect(prepared).toBeDefined();
+
+    // Funds arrive; the UI retry requeues the row (failed → queued).
+    fixture.mockChain.addCells(fundingCell(10_000, 0xf2, fixture.signer.lockScript()));
+    await fixture.store.transitionMessage(34, "queued");
+    mockAssembleSpy.mockClear();
+    await fixture.publisher.publishText(input);
+    expect(mockAssembleSpy).not.toHaveBeenCalled(); // no second signature
+    const sent = (fixture.sentBodies[0] as { outputs_data: string[] }).outputs_data[0]!;
+    expect(sent).toBe(hexFrom(prepared!.envelopeBytes));
+  });
+
+  it("an image retry with a NEW encapsulation re-seals instead of reusing a stale envelope", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const fixture = makeFixture(json, { unfunded: true });
+    const base = {
+      messageRowId: 35,
+      logicalMessageId: "lm-v3-image-retry",
+      text: "",
+      contentType: 0x03 as const,
+      attachmentManifests: [
+        codec.buildAttachmentManifest({ seed: 3, withThumbnail: false, chunkCount: 1 }),
+      ],
+      recipientProfileIdHex: profileIdHex,
+    };
+    await expect(
+      fixture.publisher.publishText({
+        ...base,
+        attachmentEnvelope: {
+          kemMessage: new Uint8Array(32).fill(1),
+          nonce: new Uint8Array(12).fill(1),
+        },
+      }),
+    ).rejects.toBeInstanceOf(PublicationError);
+    const first = fixture.store.prepared.get(35)!;
+    fixture.mockChain.addCells(fundingCell(10_000, 0xf3, fixture.signer.lockScript()));
+    await fixture.store.transitionMessage(35, "queued");
+    await fixture.publisher.publishText({
+      ...base,
+      attachmentEnvelope: {
+        kemMessage: new Uint8Array(32).fill(2),
+        nonce: new Uint8Array(12).fill(2),
+      },
+    });
+    const sent = (fixture.sentBodies[0] as { outputs_data: string[] }).outputs_data[0]!;
+    expect(sent).not.toBe(hexFrom(first.envelopeBytes));
+    expect(fixture.store.prepared.get(35)!.envelopeBytes).not.toEqual(first.envelopeBytes);
+  });
+
+  it("refuses to sign with a key that does not match the configured public key", async () => {
+    const { json, profileIdHex } = recipientProfileCellJson();
+    const store = new FakeStore();
+    const { transport, sentBodies } = makeFakeChain({ profileCellJson: json });
+    const mockChain = new MockCkbClient();
+    const signer = new MlDsaV2TxSigner({ keyPair, client: mockChain });
+    mockChain.addCells(fundingCell(10_000, 0xf4, signer.lockScript()));
+    const other = mldsaV2KeygenFromSeed(new Uint8Array(32).fill(0x33));
+    const publisher = new MessagePublisher({
+      client: new CempClient({ transport }),
+      signer,
+      messageType: MESSAGE_TYPE_REF,
+      store,
+      senderProfileId: () => Promise.resolve(hexToBytes("11".repeat(32))),
+      senderDeviceId: hexToBytes("22".repeat(16)),
+      envelopeSigningKey: () =>
+        Promise.resolve({ publicKey: keyPair.publicKey, secretKey: other.secretKey }),
+    });
+    await expect(
+      publisher.publishText({
+        messageRowId: 36,
+        logicalMessageId: "lm-v3-badkey",
+        text: "x",
+        recipientProfileIdHex: profileIdHex,
+      }),
+    ).rejects.toBeInstanceOf(PublicationError);
+    expect(sentBodies).toHaveLength(0);
+    expect(store.prepared.get(36)).toBeUndefined();
   });
 });
 
@@ -727,7 +918,7 @@ describe("MessagePublisher sender profile id (fresh lookup, no cache — device 
 });
 
 describe("MessagePublisher.publishText forwards attachmentEnvelope (spec §6)", () => {
-  it("passes the coordination override into assembleTextMessage", async () => {
+  it("passes the coordination override into assembleTextMessageV3", async () => {
     const { json, profileIdHex } = recipientProfileCellJson();
     const { publisher } = makeFixture(json);
     mockAssembleSpy.mockClear();
@@ -759,7 +950,7 @@ describe("MessagePublisher.publishText forwards attachmentEnvelope (spec §6)", 
     expect(Array.from(passed.attachmentEnvelope!.nonce)).toEqual(Array.from(nonce));
   });
 
-  it("omits attachmentEnvelope from the assembleTextMessage call when not supplied", async () => {
+  it("omits attachmentEnvelope from the assembleTextMessageV3 call when not supplied", async () => {
     const { json, profileIdHex } = recipientProfileCellJson();
     const { publisher } = makeFixture(json);
     mockAssembleSpy.mockClear();

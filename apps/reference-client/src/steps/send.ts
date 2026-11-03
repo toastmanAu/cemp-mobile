@@ -2,7 +2,7 @@ import { codec } from "@cemp/core";
 import { buildSendMessageTx } from "@cemp/ckb";
 import {
   StepFailure,
-  assembleTextMessage,
+  assembleTextMessageV3,
   broadcastAndCheckpoint,
   cempMessageTypeRef,
   checkProfileFingerprint,
@@ -16,7 +16,7 @@ import type { MessageMapping } from "../state.js";
 /**
  * send — Alice → Bob: resolve Bob's profile cell by Type ID (fingerprint
  * re-checked against state, rule 4), compute his current-epoch route tag and
- * the conversation id, assemble + encrypt a CempPayloadV1 text message,
+ * the conversation id, assemble, sign (ADR 0007, protocol v3) and encrypt a text message,
  * publish it as a sender-owned message cell (rule 9) and record the mapping.
  */
 
@@ -50,9 +50,13 @@ export const stepSend: StepFn = async (ctx, log) => {
 
   const aliceProfileId = codec.hexToBytes(aliceRecord.profileId);
   const bobProfileId = codec.hexToBytes(bobRecord.profileId);
-  const message = assembleTextMessage({
+  const message = assembleTextMessageV3({
     text: SEND_TEXT,
     senderProfileId: aliceProfileId,
+    // ADR 0007 §7: signed with Alice's profile key (the key her profile
+    // publishes and whose lock holds her profile cell).
+    signerSecretKey: alice.bundle.mlDsa.secretKey,
+    signerPublicKey: alice.bundle.mlDsa.publicKey,
     recipientProfileId: bobProfileId,
     recipientKemPublicKey: resolved.profile.ml_kem_public_key,
     senderDeviceId: codec.hexToBytes(alice.state.deviceId),

@@ -243,6 +243,12 @@ export class MessagingService {
       // user publishes in the same session existed.
       senderProfileId: () => requireActiveSenderProfileId(profiles, accountId),
       senderDeviceId: deviceId,
+      // ADR 0007 §7: envelopes are signed with this device's profile key —
+      // the same ML-DSA key the published profile advertises and whose lock
+      // holds the profile cell (this app publishes profiles from the bundle
+      // and has no rotation flow). Never a caller-chosen identity.
+      envelopeSigningKey: () =>
+        Promise.resolve({ publicKey: bundle.mlDsa.publicKey, secretKey: bundle.mlDsa.secretKey }),
     });
     const lifecycle = new ResponseLifecycle({ client, signer, messageType, store });
     const cursors = new SyncCursorRepository(db);

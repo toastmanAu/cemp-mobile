@@ -21,8 +21,9 @@
  */
 
 import { codec } from "@cemp/core";
+import { kemCiphertextFor } from "@cemp/crypto";
 import type { TransactionLike } from "@ckb-ccc/core";
-import { assembleTextMessage, type ProvenReceipt } from "./assemble.js";
+import { assembleTextMessageV3, type ProvenReceipt } from "./assemble.js";
 import { buildSendMessageTx, type CempMessageTypeRef } from "./builders.js";
 import { CempCkbError, type CempClient } from "./client.js";
 import {
@@ -44,8 +45,26 @@ export interface OutgoingTxRecord {
   readonly capacityShannon: string | null;
 }
 
+/**
+ * A signed outgoing envelope plus the type-args parts of its cell, journaled
+ * BEFORE any transaction is built (ADR 0007 §7), so a crash or retry
+ * rebroadcasts identical bytes instead of producing a second signature for
+ * the same logical message.
+ */
+export interface PreparedEnvelope {
+  readonly envelopeBytes: Uint8Array;
+  readonly routeTag: Uint8Array;
+  readonly conversationTag: Uint8Array;
+  readonly messageNonce: Uint8Array;
+  readonly messageId: Uint8Array;
+}
+
 /** Narrow persistence boundary — cemp-database implements this (rule 14 style). */
 export interface PublicationStore {
+  /** Journal the signed envelope for a row (ADR 0007 §7). */
+  setPreparedEnvelope(messageRowId: number, prepared: PreparedEnvelope): Promise<void>;
+  /** The journaled signed envelope for a row, if one was prepared. */
+  getPreparedEnvelope(messageRowId: number): Promise<PreparedEnvelope | undefined>;
   transitionMessage(messageRowId: number, to: string): Promise<void>;
   /** Current §11 state of a message row (the resume path walks from here). */
   getMessageState(messageRowId: number): Promise<string | undefined>;
@@ -196,6 +215,16 @@ export interface MessagePublisherDeps {
    */
   readonly senderProfileId: () => Promise<Uint8Array>;
   readonly senderDeviceId: Uint8Array;
+  /**
+   * The ACTIVE local profile's ML-DSA-65 key pair, which signs every
+   * envelope (ADR 0007 §7). Never a caller-supplied identity: the composition
+   * root binds it to the device's own profile key. Resolved per publish.
+   * The publisher self-verifies each signature with `publicKey`.
+   */
+  readonly envelopeSigningKey: () => Promise<{
+    readonly publicKey: Uint8Array;
+    readonly secretKey: Uint8Array;
+  }>;
 }
 
 export interface PublishTextInput {
@@ -341,30 +370,19 @@ export class MessagePublisher {
           ? input.recipientProfileIdHex.slice(2)
           : input.recipientProfileIdHex,
       );
-      const assembled = assembleTextMessage({
-        text: input.text,
+      const prepared = await this.#preparedEnvelope(
+        input,
         senderProfileId,
         recipientProfileId,
-        recipientKemPublicKey: resolved.profile.ml_kem_public_key,
-        senderDeviceId: this.#deps.senderDeviceId,
-        ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
-        ...(input.receipts === undefined ? {} : { receipts: input.receipts }),
-        receiptRequest: input.receiptRequest ?? 1,
-        ...(input.contentType === undefined ? {} : { contentType: input.contentType }),
-        ...(input.attachmentManifests === undefined
-          ? {}
-          : { attachmentManifests: input.attachmentManifests }),
-        ...(input.attachmentEnvelope === undefined
-          ? {}
-          : { attachmentEnvelope: input.attachmentEnvelope }),
-      });
+        resolved.profile.ml_kem_public_key,
+      );
 
       await store.transitionMessage(input.messageRowId, "building_transaction");
       const built = await buildSendMessageTx({
-        envelopeBytes: assembled.envelopeBytes,
-        routeTag: assembled.routeTag,
-        conversationTag: assembled.conversationTag,
-        messageNonce: assembled.messageNonce,
+        envelopeBytes: prepared.envelopeBytes,
+        routeTag: prepared.routeTag,
+        conversationTag: prepared.conversationTag,
+        messageNonce: prepared.messageNonce,
         sender: this.#deps.signer,
         cempMessageType: this.#deps.messageType,
       });
@@ -390,15 +408,7 @@ export class MessagePublisher {
       });
       await store.setMessageChainRef(input.messageRowId, { txHash, outpointIndex: 0 });
       // Receipts and reply_to reference the ENVELOPE message id (Phase 8).
-      await store.setEnvelopeMessageId(input.messageRowId, codec.bytesToHex(assembled.messageId));
-      // ADR 0006: the receipt key that verifies this message's receipts is
-      // stored with the envelope id, before broadcast — a receipt can then
-      // never arrive for a row that could not verify it.
-      try {
-        await store.setReceiptKey(input.messageRowId, assembled.receiptKey);
-      } finally {
-        assembled.receiptKey.fill(0);
-      }
+      await store.setEnvelopeMessageId(input.messageRowId, codec.bytesToHex(prepared.messageId));
 
       const accepted = await this.#deps.client.sendTransaction(wire);
       if (accepted !== txHash) {
@@ -434,6 +444,96 @@ export class MessagePublisher {
       }
       throw publicationError;
     }
+  }
+
+  /**
+   * The signed envelope for this row (ADR 0007 §7): the journaled one when it
+   * exists and still matches the request, else a fresh one that is signed
+   * here and journaled — together with its ADR 0006 receipt key — BEFORE any
+   * transaction is built.
+   *
+   * Reuse rule: a journaled envelope is reused unless the caller supplied a
+   * §6 attachment encapsulation that is not the one inside it (an image
+   * retry that re-published its chunks under a new key). Re-sealing then is
+   * correct: the stale envelope was never broadcast (a broadcast one is
+   * resumed before this point) and would name chunks under another key.
+   */
+  async #preparedEnvelope(
+    input: PublishTextInput,
+    senderProfileId: Uint8Array,
+    recipientProfileId: Uint8Array,
+    recipientKemPublicKey: Uint8Array,
+  ): Promise<PreparedEnvelope> {
+    const { store } = this.#deps;
+    const journaled = await store.getPreparedEnvelope(input.messageRowId);
+    if (
+      journaled !== undefined &&
+      this.#matchesEncapsulation(journaled, input, recipientKemPublicKey)
+    ) {
+      return journaled;
+    }
+    const key = await this.#deps.envelopeSigningKey();
+    const assembled = assembleTextMessageV3({
+      text: input.text,
+      senderProfileId,
+      signerSecretKey: key.secretKey,
+      signerPublicKey: key.publicKey,
+      recipientProfileId,
+      recipientKemPublicKey,
+      senderDeviceId: this.#deps.senderDeviceId,
+      ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
+      ...(input.receipts === undefined ? {} : { receipts: input.receipts }),
+      receiptRequest: input.receiptRequest ?? 1,
+      ...(input.contentType === undefined ? {} : { contentType: input.contentType }),
+      ...(input.attachmentManifests === undefined
+        ? {}
+        : { attachmentManifests: input.attachmentManifests }),
+      ...(input.attachmentEnvelope === undefined
+        ? {}
+        : { attachmentEnvelope: input.attachmentEnvelope }),
+    });
+    assembled.attachmentKey.fill(0);
+    // ADR 0006: the receipt key that verifies this message's receipts is
+    // stored before broadcast — a receipt can then never arrive for a row
+    // that could not verify it.
+    try {
+      await store.setReceiptKey(input.messageRowId, assembled.receiptKey);
+    } finally {
+      assembled.receiptKey.fill(0);
+    }
+    const prepared: PreparedEnvelope = {
+      envelopeBytes: assembled.envelopeBytes,
+      routeTag: assembled.routeTag,
+      conversationTag: assembled.conversationTag,
+      messageNonce: assembled.messageNonce,
+      messageId: assembled.messageId,
+    };
+    await store.setPreparedEnvelope(input.messageRowId, prepared);
+    return prepared;
+  }
+
+  #matchesEncapsulation(
+    journaled: PreparedEnvelope,
+    input: PublishTextInput,
+    recipientKemPublicKey: Uint8Array,
+  ): boolean {
+    let decoded: codec.DecodedCempEnvelope;
+    try {
+      decoded = codec.decodeCempEnvelope(journaled.envelopeBytes);
+    } catch {
+      return false; // unreadable journal entry: re-seal
+    }
+    if (decoded.version !== 3) {
+      return false;
+    }
+    if (input.attachmentEnvelope === undefined) {
+      return true;
+    }
+    const expected = kemCiphertextFor(recipientKemPublicKey, input.attachmentEnvelope.kemMessage);
+    return (
+      codec.bytesEqual(expected, decoded.envelope.kem_ciphertext) &&
+      codec.bytesEqual(input.attachmentEnvelope.nonce, decoded.envelope.nonce)
+    );
   }
 
   /** Drive a journaled tx to commit and land the message in available_on_chain. */

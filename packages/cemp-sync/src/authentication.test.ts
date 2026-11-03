@@ -277,6 +277,7 @@ async function makeStack(
     store,
     senderProfileId: () => Promise.resolve(device.profileId),
     senderDeviceId: hexToBytes("02".repeat(16)),
+    envelopeSigningKey: () => Promise.resolve(device.keys.mlDsa),
   });
   const notifier = new RecordingNotifier();
   const walletLockScript = signer.lockScript();

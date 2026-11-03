@@ -195,8 +195,18 @@ export class AuthenticatedSenderResolver {
     const fetched = await fetchStep("profile lookup", () =>
       fetchProfileCells(this.#deps.chain, claimed),
     );
-    if (!fetched.ok)
+    if (!fetched.ok) {
       return { kind: "verdict", verdict: { kind: "deferred", reason: fetched.reason } };
+    }
+    if (fetched.value.length === 0) {
+      // "Not found" may be indexer lag on a freshly published profile, so it
+      // defers (bounded backoff) instead of rejecting for good. Nothing is
+      // shown or acked while deferred, so this is never a downgrade.
+      return {
+        kind: "verdict",
+        verdict: { kind: "deferred", reason: "no live profile cell for the claimed sender (yet)" },
+      };
+    }
     let resolved: ResolvedProfile;
     try {
       resolved = selectLiveProfile(fetched.value, claimed);

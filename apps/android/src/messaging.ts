@@ -8,6 +8,7 @@
  */
 
 import {
+  AuthenticatedSenderResolver,
   CempClient,
   MessagePublisher,
   MlDsaV2TxSigner,
@@ -53,7 +54,13 @@ import {
   type IdentityKeyBundle,
 } from "@cemp/crypto";
 import { RateLimiter, DEFAULT_RATE_LIMITS } from "@cemp/ckb";
-import { SyncEngine, BackoffPolicy, buildWorkerSpecs, type Scheduler } from "@cemp/sync";
+import {
+  SyncEngine,
+  BackoffPolicy,
+  buildWorkerSpecs,
+  contactPinnedSenderLookup,
+  type Scheduler,
+} from "@cemp/sync";
 import type { Notifier } from "@cemp/ui";
 import type { SecureVaultImpl } from "@cemp/secure-vault";
 import {
@@ -62,6 +69,7 @@ import {
   ContactRepository,
   ConversationRepository,
   DatabasePublicationStore,
+  IncomingDispositionRepository,
   LocalSettingsRepository,
   MessageRepository,
   OutgoingTransactionRepository,
@@ -258,6 +266,15 @@ export class MessagingService {
         leases,
         balances,
         rateLimiter: new RateLimiter(new RateLimitRepository(db), { ...DEFAULT_RATE_LIMITS }),
+        // ADR 0007 §5: every v3 message's sender is resolved and its
+        // signature verified before any contact, block-list, rate-limit,
+        // notification or receipt decision.
+        senderResolver: new AuthenticatedSenderResolver({
+          chain: client,
+          contacts: contactPinnedSenderLookup(contacts),
+          mlDsaLock: { codeHash: mlDsaDeployment.codeHash, hashType: mlDsaDeployment.hashType },
+        }),
+        dispositions: new IncomingDispositionRepository(db),
         walletId,
         walletLock: { codeHash: lock.codeHash, hashType: lock.hashType, args: lock.args },
         notifier,

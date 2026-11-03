@@ -246,6 +246,26 @@ export const MIGRATIONS: readonly Migration[] = [
     description: "messages: per-message receipt key for receipt proofs (ADR 0006)",
     statements: ["ALTER TABLE messages ADD COLUMN receipt_key BLOB"],
   },
+  {
+    version: 11,
+    description:
+      "sender-signed envelopes (ADR 0007): message auth status + verifying key hash, journaled signed envelope, incoming dispositions",
+    statements: [
+      "ALTER TABLE messages ADD COLUMN auth_status TEXT",
+      "ALTER TABLE messages ADD COLUMN sender_key_hash_hex TEXT",
+      "ALTER TABLE messages ADD COLUMN prepared_envelope TEXT",
+      `CREATE TABLE incoming_dispositions (
+         source_key TEXT NOT NULL,
+         outpoint_index INTEGER NOT NULL,
+         disposition TEXT NOT NULL CHECK (disposition IN ('ingested', 'rejected', 'deferred')),
+         attempts INTEGER NOT NULL DEFAULT 0,
+         next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+         cell_data BLOB,
+         updated_at_ms INTEGER NOT NULL,
+         PRIMARY KEY (source_key, outpoint_index)
+       )`,
+    ],
+  },
 ];
 
 const BOOKKEEPING_DDL = `CREATE TABLE IF NOT EXISTS cemp_schema_migrations (

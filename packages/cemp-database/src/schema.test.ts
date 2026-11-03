@@ -7,9 +7,9 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v10: messages.receipt_key — the ADR 0006 per-message receipt key that
-    // verifies (sender) or produces (recipient) receipt proofs.
-    expect(SCHEMA_VERSION).toBe(10);
+    // v11: ADR 0007 sender authentication (auth status, verifying key hash,
+    // journaled signed envelope, incoming dispositions).
+    expect(SCHEMA_VERSION).toBe(11);
   });
 
   it("covers the spec §11 core tables", () => {

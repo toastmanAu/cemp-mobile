@@ -31,7 +31,8 @@ describe("messages.receipt_key (schema v10)", () => {
     const db = new NodeSqliteAdapter();
     try {
       await migrate(db);
-      expect(await currentSchemaVersion(db)).toBe(10);
+      // v10 introduced the column; later versions keep it (v11: ADR 0007).
+      expect(await currentSchemaVersion(db)).toBeGreaterThanOrEqual(10);
       const cols = await db.all("PRAGMA table_info(messages)");
       expect(cols.map((c) => String(c.name))).toContain("receipt_key");
     } finally {

@@ -3,7 +3,7 @@ import { CKB_TESTNET, codec, deriveRouteTag } from "@cemp/core";
 import {
   MessagePublisher,
   ResponseLifecycle,
-  assembleTextMessage,
+  assembleTextMessageV3,
   buildRouteTagPrefix,
   currentRoutingEpoch,
   incomingLogicalMessageId,
@@ -14,7 +14,7 @@ import { MockCkbClient, fillHex, hashFromRpcBody } from "@cemp/ckb/testing";
 import {
   computeReceiptProof,
   deriveIdentityKeys,
-  decryptEnvelope,
+  openEnvelopeV3,
   mldsaV2KeygenFromSeed,
   mnemonicToSeed,
 } from "@cemp/crypto";
@@ -24,6 +24,7 @@ import {
   ContactRepository,
   ConversationRepository,
   DatabasePublicationStore,
+  IncomingDispositionRepository,
   LocalSettingsRepository,
   MessageRepository,
   OutgoingTransactionRepository,
@@ -43,6 +44,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
 import { InMemoryScheduler, SyncEngine } from "./engine.js";
+import { makeTestResolver, makeTestSender, withSenderProfiles } from "./test-helpers.js";
 import { BackoffPolicy } from "./retry.js";
 import { EndpointRotator } from "./endpoints.js";
 import {
@@ -78,6 +80,12 @@ const BOB = deriveIdentityKeys(
 );
 const BOB_PROFILE_ID = hexToBytes("bb".repeat(32));
 const ALICE_PROFILE_ID = hexToBytes("aa".repeat(32));
+/** Alice publishes a profile bound to her ML-DSA lock and signs v3 (ADR 0007). */
+const ALICE = makeTestSender(0x07, ALICE_PROFILE_ID);
+const ALICE_SIGNS = {
+  signerSecretKey: ALICE.keys.mlDsa.secretKey,
+  signerPublicKey: ALICE.keys.mlDsa.publicKey,
+} as const;
 const signerKeyPair = mldsaV2KeygenFromSeed(hexToBytes(vectors.keygen[0]!.seed));
 
 const MESSAGE_TYPE_REF: CempMessageTypeRef = {
@@ -103,7 +111,7 @@ class RecordingNotifier implements Notifier {
 
 /** Wrap an assembled envelope as an indexer message-cell JSON (alice → bob). */
 function assembledCellJson(
-  assembled: ReturnType<typeof assembleTextMessage>,
+  assembled: ReturnType<typeof assembleTextMessageV3>,
   outPointByte = 0xd1,
 ): { json: unknown; messageId: Uint8Array } {
   const typeArgs = new Uint8Array(81);
@@ -141,7 +149,8 @@ function discoveryCellJson(
   messageId?: Uint8Array,
 ): { json: unknown; messageId: Uint8Array } {
   return assembledCellJson(
-    assembleTextMessage({
+    assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text,
       senderProfileId: ALICE_PROFILE_ID,
       recipientProfileId: BOB_PROFILE_ID,
@@ -162,7 +171,8 @@ function discoveryAttachmentCellJson(manifest: codec.AttachmentManifestV1): {
   messageId: Uint8Array;
 } {
   return assembledCellJson(
-    assembleTextMessage({
+    assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text: "",
       contentType: 0x03,
       attachmentManifests: [manifest],
@@ -184,7 +194,8 @@ function receiptOnlyCellJson(
   messageId: Uint8Array;
 } {
   return assembledCellJson(
-    assembleTextMessage({
+    assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text: "",
       senderProfileId: ALICE_PROFILE_ID,
       recipientProfileId: BOB_PROFILE_ID,
@@ -346,7 +357,9 @@ async function makeStack(
     attachments,
   });
 
-  const client = new CempClient({ transport: opts.transport ?? makeTransport(opts.cells ?? []) });
+  const client = new CempClient({
+    transport: withSenderProfiles(opts.transport ?? makeTransport(opts.cells ?? []), [ALICE]),
+  });
   const mockChain = new MockCkbClient();
   const signer = new (await import("@cemp/ckb")).MlDsaV2TxSigner({
     keyPair: signerKeyPair,
@@ -379,6 +392,8 @@ async function makeStack(
     leases,
     balances,
     rateLimiter,
+    senderResolver: makeTestResolver(client, contacts),
+    dispositions: new IncomingDispositionRepository(db),
     walletId,
     walletLock: {
       codeHash: walletLockScript.codeHash,
@@ -846,7 +861,7 @@ describe("processDiscoveredCell image branch (Task 12)", () => {
     // The expected key is the one derivable from THIS envelope — the same
     // decryption the worker performs (test fixture material, not a log).
     const cellData = hexToBytes((json as { output_data: string }).output_data);
-    const expectedKey = decryptEnvelope({
+    const expectedKey = openEnvelopeV3({
       envelopeBytes: cellData,
       recipientKemSecretKey: BOB.mlKem.secretKey,
       ownProfileId: BOB_PROFILE_ID,
@@ -1624,7 +1639,8 @@ describe("lora gateway poll worker", () => {
   const EVE_PROFILE_ID = hexToBytes("ee".repeat(32));
 
   function loraObjectForBob(text: string, messageId?: Uint8Array): LoraObject {
-    const assembled = assembleTextMessage({
+    const assembled = assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text,
       senderProfileId: ALICE_PROFILE_ID,
       recipientProfileId: BOB_PROFILE_ID,
@@ -1643,7 +1659,8 @@ describe("lora gateway poll worker", () => {
   }
 
   function loraObjectForEve(text: string): LoraObject {
-    const assembled = assembleTextMessage({
+    const assembled = assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text,
       senderProfileId: ALICE_PROFILE_ID,
       recipientProfileId: EVE_PROFILE_ID,

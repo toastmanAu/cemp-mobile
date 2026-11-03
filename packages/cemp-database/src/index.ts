@@ -18,3 +18,4 @@ export * from "./repositories/rate-limits.js";
 export * from "./repositories/publication-store.js";
 export * from "./repositories/watched-outpoints.js";
 export * from "./repositories/local-settings.js";
+export * from "./repositories/incoming-dispositions.js";

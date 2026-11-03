@@ -243,8 +243,16 @@ describe("unknown sender", () => {
     expect(verdict.kind).toBe("deferred");
   });
 
-  it("no live profile → rejected", async () => {
+  it("no live profile → deferred (may be indexer lag; never shown meanwhile)", async () => {
     const verdict = await resolver(chain({})).resolve(openedFrom(ALICE, ALICE_ID));
+    expect(verdict.kind).toBe("deferred");
+  });
+
+  it("two live cells for one profile id (impossible under Type ID) → rejected", async () => {
+    const cell = profileCell({ id: ALICE_ID, key: ALICE.mlDsa.publicKey });
+    const verdict = await resolver(
+      chain({ profiles: new Map([[`0x${hex(ALICE_ID)}`, [cell, cell]]]) }),
+    ).resolve(openedFrom(ALICE, ALICE_ID));
     expect(verdict.kind).toBe("rejected");
   });
 

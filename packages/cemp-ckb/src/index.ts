@@ -27,3 +27,4 @@ export * from "./lifecycle.js";
 export * from "./rate-limit.js";
 export * from "./rotation-verify.js";
 export * from "./sender-resolver.js";
+export * from "./funding.js";

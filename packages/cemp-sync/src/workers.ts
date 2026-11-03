@@ -22,30 +22,35 @@ import {
   balanceCategories,
   currentRoutingEpoch,
   findMessageCells,
-  incomingLogicalMessageId,
-  processIncomingText,
   type CempClient,
   type CempMessageTypeRef,
-  type LegacyIncoming,
   type MessagePublisher,
   type OutPoint,
   type RateLimiter,
 } from "@cemp/ckb";
 import { codec, deriveRouteTag } from "@cemp/core";
 import { computeReceiptProof } from "@cemp/crypto";
-import { checkManifest } from "@cemp/images";
 import { LoraTransport, type LoraPollResult } from "@cemp/lora";
 import type {
   AttachmentRepository,
   BalanceRepository,
   ContactRepository,
   ConversationRepository,
+  IncomingDispositionRepository,
   LocalSettingsRepository,
   MessageRepository,
   OutgoingTransactionRepository,
   SyncCursorRepository,
   WorkerLeaseRepository,
 } from "@cemp/database";
+import {
+  advanceIncomingToReceived,
+  ingestIncomingCellData,
+  PreDecryptBudget,
+  type SenderResolver,
+} from "./ingest.js";
+
+export { ingestIncomingCellData } from "./ingest.js";
 import type { Notifier } from "@cemp/ui";
 import type { WorkerSpec } from "./engine.js";
 
@@ -99,6 +104,15 @@ export interface SyncWorkerDeps {
   readonly balances: BalanceRepository;
   /** Incoming/outgoing rate limits (Phase 11 task 9). */
   readonly rateLimiter: RateLimiter;
+  /**
+   * Resolves and verifies the sender of every v3 message (ADR 0007 §5):
+   * `AuthenticatedSenderResolver` over the network client + contacts table.
+   */
+  readonly senderResolver: SenderResolver;
+  /** Per-cell ingested / rejected / deferred-with-backoff (schema v11). */
+  readonly dispositions: IncomingDispositionRepository;
+  /** Pre-decryption budgets per tick (defaults: PRE_DECRYPT_LIMITS). */
+  readonly preDecryptLimits?: { perSync: number; perFundingLock: number };
   /** Wallet whose balance row the balance-refresh worker updates. */
   readonly walletId: number;
   /** The wallet lock the balance-refresh worker reports on. */
@@ -210,6 +224,8 @@ async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
   }
   const now = Date.now();
   const epoch = currentRoutingEpoch(now);
+  // One pre-decryption budget for the whole tick (ADR 0007 question 3).
+  const budget = new PreDecryptBudget(deps.preDecryptLimits);
   // NO cursor is persisted between runs. A message cell's type args are
   // `version ‖ routeTag ‖ conversationTag ‖ messageNonce`, and the indexer
   // orders a prefix search BY THOSE ARGS — which end in a RANDOM 32-byte nonce.
@@ -239,6 +255,7 @@ async function runIncomingDiscovery(deps: SyncWorkerDeps): Promise<void> {
             cell.data,
             cell.outPoint.txHash,
             Number(BigInt(cell.outPoint.index)),
+            budget,
           );
         } catch {
           // One bad cell never stalls discovery (rule 4): it is transport noise.
@@ -262,278 +279,9 @@ async function processDiscoveredCell(
   cellDataHex: string,
   txHash: string,
   outpointIndex: number,
+  budget: PreDecryptBudget,
 ): Promise<void> {
-  await ingestIncomingCellData(deps, ownProfileId, cellDataHex, { txHash, outpointIndex });
-}
-
-/**
- * The transport-agnostic incoming pipeline tail (docs/lora-transport Phase
- * L3): decrypt → block check → ack handling → rate limit → contact →
- * conversation → insert → advance/notify. Callable with raw `cellData` from
- * ANY source; the chain discovery worker and the LoRa gateway poll both feed
- * here.
- *
- * `source` is the chain outpoint the envelope came from, or null for a
- * source with no chain identity (the LoRa relay). With `source === null` no
- * chain ref is recorded and NO auto-ack is queued: v1 LoRa is receive-only
- * (an ack needs the original cell's outpoint to address its reply_to, and
- * receipts over LoRa are future work). A chain source's behavior is
- * byte-identical to the pre-refactor `processDiscoveredCell`.
- */
-export async function ingestIncomingCellData(
-  deps: SyncWorkerDeps,
-  ownProfileId: Uint8Array,
-  cellDataHex: string,
-  source: { txHash: string; outpointIndex: number } | null,
-): Promise<void> {
-  const cellData = hexToBytes(cellDataHex);
-  const incoming = processIncomingText({
-    cellData,
-    ownKemSecretKey: deps.ownKemSecretKey,
-    ownProfileId,
-  });
-  try {
-    await ingestDecrypted(deps, incoming, source);
-  } finally {
-    // The keys now live in the encrypted database where they are needed (or
-    // were never needed: acks, blocked senders); drop the in-memory copies.
-    incoming.attachmentKey.fill(0);
-    incoming.receiptKey?.fill(0);
-  }
-}
-
-async function ingestDecrypted(
-  deps: SyncWorkerDeps,
-  incoming: LegacyIncoming,
-  source: { txHash: string; outpointIndex: number } | null,
-): Promise<void> {
-  const senderProfileIdHex = bytesToHex(incoming.senderProfileId);
-  // Phase 11 task 10: a blocked sender is dropped at ingestion — history is
-  // untouched, nothing new is stored (rule 8 applies to history, not spam).
-  if (await deps.contacts.isBlockedByProfileId(senderProfileIdHex)) {
-    return;
-  }
-  // A pure acknowledgement (empty body + receipts) advances OUR outgoing
-  // messages but is never shown and is never itself acked — that terminates the
-  // exchange (acks carry no content, and only content messages are auto-acked).
-  // Not rate-limited: an ack per delivered message is legitimate, not spam.
-  if (incoming.text.length === 0 && incoming.receipts.length > 0) {
-    await deps.lifecycle.processAcknowledgements(incoming);
-    return;
-  }
-  // Phase 11 task 9: per-contact + global incoming rate limit. Over-limit
-  // cells are skipped (the cursor still advances — spam cannot stall sync).
-  if (!(await deps.rateLimiter.consume("incoming", senderProfileIdHex))) {
-    return;
-  }
-  let contact = await deps.contacts.getByProfileId(senderProfileIdHex);
-  if (contact === undefined) {
-    // Unknown sender: stub contact (QR/profile flows replace it with a
-    // verified one — Phase 5 trust evaluation runs before display).
-    contact = await deps.contacts.create({
-      displayName: `unknown-${senderProfileIdHex.slice(0, 8)}`,
-      profileIdHex: senderProfileIdHex,
-    });
-  }
-  const conversation = await deps.conversations.getOrCreateForContact(contact.id);
-  const inserted = await deps.messages.insert({
-    conversationId: conversation.id,
-    direction: "incoming",
-    body: incoming.text,
-    logicalMessageId: incomingLogicalMessageId(incoming.messageId),
-  });
-  // ADR 0006: keep the recipient's receipt key with the row on first ingest.
-  // The 0x01 ack is sent later by the response sender and the 0x05 only after
-  // a tap, possibly once the sender has reclaimed the message cell, so the
-  // key cannot be re-derived from chain then. A v1 message has none (its
-  // sender cannot verify a proof), and is therefore never acked.
-  if (incoming.receiptKey !== null) {
-    const stored = await deps.messages.getReceiptKey(inserted.id);
-    if (stored === null) {
-      await deps.messages.setReceiptKey(inserted.id, incoming.receiptKey);
-    } else {
-      stored.fill(0);
-    }
-  }
-  // Image branch (design §3 step 1): an attachment message stores its manifest
-  // (thumbnail embedded) so the bubble renders immediately with no fetch. The
-  // full-res chunk download is deferred to a user tap (downloadAttachment).
-  //
-  // The envelope-derived attachment key is persisted WITH the manifest row
-  // (schema v8; rule 3 — the database is encrypted). Re-deriving it at tap
-  // time from the message cell depended on that cell still being live, which
-  // the SENDER controls (rule 9 reclaim after ack) — a reclaimed cell
-  // permanently bricked tap-to-download even though the row survived
-  // (rule 8). The in-memory copy is wiped right after it is stored.
-  //
-  // Discovery persists no cursor (see the comment in runIncomingDiscovery), so
-  // the same cell is re-scanned on every worker tick, and a healed/stranded
-  // row can also re-enter this function — guard on existing rows (the same
-  // check-before-create idempotency pattern queueAcknowledgement uses) so a
-  // manifest is persisted exactly once per message.
-  if (incoming.attachmentManifests.length > 0) {
-    if ((await deps.attachments.listForMessage(inserted.id)).length === 0) {
-      for (const manifest of incoming.attachmentManifests) {
-        // Rule 4 receive-side hardening: the manifest is validated BEFORE it is
-        // persisted (the same checkManifest the download path runs). A hostile
-        // manifest — decompression-bomb sizes, a chunk count that doesn't match
-        // the declared ciphertext — never reaches the attachments table: the
-        // message stays a plain row and the worker carries on.
-        if (!checkManifest(manifest).ok) {
-          continue;
-        }
-        await deps.attachments.create({
-          messageId: inserted.id,
-          kind: "image",
-          byteLength: Number(manifest.plaintext_size),
-          manifest: codec.encodeAttachmentManifestV1(manifest),
-          attachmentKey: incoming.attachmentKey,
-        });
-      }
-    }
-    // The key now lives in the encrypted database (or the row was already
-    // persisted on an earlier scan); drop the in-memory copy either way
-    // (processAcknowledgements below only reads `incoming.receipts`).
-    incoming.attachmentKey.fill(0);
-  }
-  // Idempotent insert collapses duplicates: an already-received row needs no
-  // transition, but its receipts are processed EVERY time (review E8 — a
-  // swallowed ack must not strand the sender's capacity).
-  //
-  // The guard admits the two MID-ADVANCE states as well as `discovered`. The
-  // advance below spans three separate transactions, so an interruption
-  // (auto-lock closing the database, process death) can leave the row at
-  // `downloading`/`decrypting`; because `insert()` is ON CONFLICT DO NOTHING
-  // + re-read, a later pass sees that state, and a `=== "discovered"` guard
-  // would skip the block FOREVER — never notified, never acked, with the
-  // sender hung at "sent". `advanceIncomingToReceived` walks from wherever
-  // the row actually is.
-  if (STRANDABLE_INCOMING_STATES.has(inserted.state)) {
-    await deps.messages.setEnvelopeMessageId(inserted.id, bytesToHex(incoming.messageId));
-    // Record the source cell BEFORE the advance: the healer (runPendingTransactions)
-    // rebuilds the auto-ack from this chain ref when the cell itself is never
-    // discovered again. A chain-less source (LoRa) records nothing and queues
-    // no ack — the advance below simply gets no `cell` context.
-    if (source !== null) {
-      await deps.messages.setChainRef(inserted.id, source);
-    }
-    await advanceIncomingToReceived(deps, inserted.id, inserted.state, {
-      conversationId: conversation.id,
-      logicalMessageId: inserted.logicalMessageId,
-      ...(source === null ? {} : { cell: source }),
-    });
-  }
-  // A reply that ALSO carries receipts (content + ack) still advances OUR
-  // outgoing messages — processAcknowledgements is idempotent.
-  if (incoming.receipts.length > 0) {
-    await deps.lifecycle.processAcknowledgements(incoming);
-  }
-}
-
-/**
- * Incoming states from which the advance-to-`received` path can still be
- * driven: the initial state plus the two the multi-transaction advance can be
- * interrupted in. See the guard in {@link processDiscoveredCell}.
- */
-const STRANDABLE_INCOMING_STATES: ReadonlySet<string> = new Set([
-  "discovered",
-  "downloading",
-  "decrypting",
-]);
-
-/** The incoming advance path, in order (§11 state machine). */
-const INCOMING_ADVANCE_ORDER = ["discovered", "downloading", "decrypting", "received"] as const;
-
-/**
- * Drive an incoming message from wherever it currently sits up to `received`,
- * then notify and queue the auto-ack.
- *
- * Shared by first discovery and by the stranded-message healer so both take
- * the SAME path: only the transitions still outstanding are applied (the §11
- * machine is strict and forward-only, so replaying an already-applied one
- * would throw). Notify and ack run once the row is at `received`; both are
- * idempotent on the row id / `response:` logical id, so healing a row that
- * was already notified cannot double-notify or double-ack.
- */
-async function advanceIncomingToReceived(
-  deps: SyncWorkerDeps,
-  messageId: number,
-  fromState: string,
-  context: {
-    conversationId: number;
-    logicalMessageId: string;
-    /**
-     * The message's source outpoint, which the auto-ack must name. Absent only
-     * when healing a row whose chain ref was never written (an interruption
-     * before that write): the message is still advanced and shown, but no
-     * unaddressed ack is queued.
-     */
-    cell?: { txHash: string; outpointIndex: number };
-  },
-): Promise<void> {
-  const startIndex = INCOMING_ADVANCE_ORDER.indexOf(
-    fromState as (typeof INCOMING_ADVANCE_ORDER)[number],
-  );
-  if (startIndex < 0) {
-    return; // already past `received` (or invalid) — nothing to drive
-  }
-  for (const next of INCOMING_ADVANCE_ORDER.slice(startIndex + 1)) {
-    await deps.messages.transitionState(messageId, next);
-  }
-  // Notification (task 8; hardened per security review — no sender identity
-  // or message content ever leaves the app, regardless of the device's
-  // "hide sensitive content" setting, which the app cannot verify or trust
-  // as a default). Copy matches the locked-probe notification in
-  // background-sync-core.ts: generic, always — detail is shown only in-app
-  // after unlock.
-  await deps.notifier.post({
-    id: `message:${String(messageId)}`,
-    channel: "messages",
-    title: "CellSend",
-    body: "New message. Unlock to view.",
-  });
-  // Auto-ack on receive (§7.3, ADR 0005): queue a receipt-only response so the
-  // sender advances to delivered/read without any action here. Idempotent on
-  // the `response:` logical id; the response-sender worker publishes it.
-  if (context.cell !== undefined) {
-    await queueAcknowledgement(deps, {
-      conversationId: context.conversationId,
-      originalLogicalId: context.logicalMessageId,
-      originalCell: context.cell,
-    });
-  }
-}
-
-/**
- * Queue a receipt-only acknowledgement response for a freshly received message
- * (ADR 0005). The response is a normal OUTGOING `queued` row whose logical id is
- * prefixed `response:` and whose chain ref names the original cell; the
- * response-sender worker publishes it with a 0x01 receipt. Idempotent: a second
- * discovery of the same message finds the existing row and does nothing.
- */
-async function queueAcknowledgement(
-  deps: SyncWorkerDeps,
-  input: {
-    conversationId: number;
-    originalLogicalId: string;
-    originalCell: { txHash: string; outpointIndex: number };
-  },
-): Promise<void> {
-  const responseLogicalId = `response:${input.originalLogicalId}`;
-  if ((await deps.messages.getByLogicalId(responseLogicalId)) !== undefined) {
-    return;
-  }
-  const row = await deps.messages.insert({
-    conversationId: input.conversationId,
-    direction: "outgoing",
-    body: "",
-    logicalMessageId: responseLogicalId,
-    state: "queued",
-  });
-  await deps.messages.setChainRef(row.id, {
-    replyToTxHash: input.originalCell.txHash,
-    replyToOutpointIndex: input.originalCell.outpointIndex,
-  });
+  await ingestIncomingCellData(deps, ownProfileId, cellDataHex, { txHash, outpointIndex }, budget);
 }
 
 /* ── lora gateway poll (docs/lora-transport Phase L3) ────────────────────── */
@@ -588,9 +336,35 @@ async function runLoraPoll(deps: SyncWorkerDeps): Promise<void> {
   const transport = createTransport({ baseUrl, routeTags });
   const since = await deps.cursors.get(LORA_CURSOR_NAME);
   const result = await transport.poll(since);
+  // Same pipeline as chain discovery; the gateway is the funding source
+  // for the pre-decryption budget (ADR 0007 question 3).
+  const budget = new PreDecryptBudget(deps.preDecryptLimits);
+  const gatewaySource = `lora:${baseUrl}`;
+  // Deferred LoRa objects keep their bytes (the cursor moved past them).
+  for (const due of await deps.dispositions.listDueDeferredWithData(Date.now())) {
+    try {
+      await ingestIncomingCellData(
+        deps,
+        ownProfileId,
+        bytesToHex(due.cellData),
+        null,
+        budget,
+        gatewaySource,
+      );
+    } catch {
+      // isolated per object, as below
+    }
+  }
   for (const object of result.objects) {
     try {
-      await ingestIncomingCellData(deps, ownProfileId, bytesToHex(object.cellData), null);
+      await ingestIncomingCellData(
+        deps,
+        ownProfileId,
+        bytesToHex(object.cellData),
+        null,
+        budget,
+        gatewaySource,
+      );
     } catch {
       // One bad object never stalls the poll (rule 4): it is transport noise,
       // and message-id dedup keeps re-delivery from duplicating rows.
@@ -803,9 +577,13 @@ async function healStrandedIncoming(deps: SyncWorkerDeps): Promise<void> {
         ref?.txHash != null && ref.outpointIndex !== null
           ? { txHash: ref.txHash, outpointIndex: ref.outpointIndex }
           : undefined;
+      // ADR 0007: only an authenticated row (or a pre-upgrade row, NULL
+      // status, received under the old rules) is notified and acked; a
+      // legacy-unverified row never is.
       await advanceIncomingToReceived(deps, message.id, message.state, {
         conversationId: message.conversationId,
         logicalMessageId: message.logicalMessageId,
+        notify: message.authStatus !== "legacy-unverified",
         ...(cell === undefined ? {} : { cell }),
       });
     } catch {

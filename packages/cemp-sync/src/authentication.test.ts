@@ -1,4 +1,4 @@
-import { Cell, CellOutput, Script, bytesFrom, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
+import { Cell, CellOutput, Script, fixedPointFrom, hexFrom } from "@ckb-ccc/core";
 import { CKB_TESTNET, codec, deriveConversationId, deriveRouteTag } from "@cemp/core";
 import {
   MessagePublisher,
@@ -8,6 +8,7 @@ import {
   ResponseLifecycle,
   TYPE_ID_CODE_HASH,
   assembleTextMessage,
+  assembleTextMessageV3,
   currentRoutingEpoch,
   incomingLogicalMessageId,
   type CempMessageTypeRef,
@@ -29,6 +30,7 @@ import {
   ContactRepository,
   ConversationRepository,
   DatabasePublicationStore,
+  IncomingDispositionRepository,
   LocalSettingsRepository,
   MessageRepository,
   OutgoingTransactionRepository,
@@ -40,10 +42,11 @@ import {
 } from "@cemp/database";
 import { NodeSqliteAdapter } from "@cemp/database/node";
 import type { NotificationContent, Notifier } from "@cemp/ui";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
 import { InMemoryScheduler, SyncEngine } from "./engine.js";
 import { BackoffPolicy } from "./retry.js";
+import { makeTestResolver, testSenderFromKeys, withSenderProfiles } from "./test-helpers.js";
 import { buildWorkerSpecs, ingestIncomingCellData, type SyncWorkerDeps } from "./workers.js";
 
 /**
@@ -52,11 +55,13 @@ import { buildWorkerSpecs, ingestIncomingCellData, type SyncWorkerDeps } from ".
  * Handoff matrix rows AUTH-01, AUTH-02, RCPT-01/02 and TRNS-01 through
  * `ingestIncomingCellData`, the incoming-discovery, response-sender and
  * reclaim-batch workers on the REAL database stack. Content spoofing
- * (AUTH-01/02, TRNS-01 content) is STILL OPEN and those tests still assert
- * the vulnerable behaviour. Receipt forgery (RCPT-01/02, TRNS-01 receipts)
- * is FIXED by ADR 0006 and those tests assert zero effect; an end-to-end
- * test proves a genuine receipt still works. Nothing is broadcast: the
- * chain transport is a fake.
+ * (AUTH-01/02, TRNS-01 content) is FIXED by ADR 0007 (sender-signed v3
+ * envelopes): a forged v3 message is rejected with no row, notification,
+ * ack or contact, and a v1/v2 message is labelled "Unverified (legacy)",
+ * never notified and never acked. Receipt forgery (RCPT-01/02, TRNS-01
+ * receipts) is FIXED by ADR 0006 and those tests assert zero effect; an
+ * end-to-end test proves a genuine receipt still works. Nothing is
+ * broadcast: the chain transport is a fake.
  *
  * The stack below mirrors `makeStack` in workers.test.ts (not exported),
  * parameterised by WHICH identity owns the device, so the same harness can
@@ -85,8 +90,15 @@ const ALICE = deriveIdentityKeys(
 const BOB = deriveIdentityKeys(
   mnemonicToSeed("letter advice cage absurd amount doctor acoustic avoid letter advice cage above"),
 );
+const MALLORY = deriveIdentityKeys(new Uint8Array(64).fill(0x4d));
 const ALICE_PROFILE_ID = hexToBytes("aa".repeat(32));
 const BOB_PROFILE_ID = hexToBytes("bb".repeat(32));
+const MALLORY_PROFILE_ID = hexToBytes("4d".repeat(32));
+/** Published profiles bound to each identity's ML-DSA lock (ADR 0007 §5). */
+const ALICE_SENDER = testSenderFromKeys(ALICE, ALICE_PROFILE_ID, 0x5a);
+const BOB_SENDER = testSenderFromKeys(BOB, BOB_PROFILE_ID, 0x5b);
+const MALLORY_SENDER = testSenderFromKeys(MALLORY, MALLORY_PROFILE_ID, 0x5c);
+const PUBLISHED = [ALICE_SENDER, BOB_SENDER, MALLORY_SENDER];
 const MALLORY_DEVICE = hexToBytes("66".repeat(16));
 const signerKeyPair = mldsaV2KeygenFromSeed(hexToBytes(vectors.keygen[0]!.seed));
 
@@ -125,7 +137,12 @@ class RecordingNotifier implements Notifier {
 
 /** Wrap envelope bytes as an indexer message-cell JSON with a chosen output lock. */
 function cellJson(
-  assembled: ReturnType<typeof assembleTextMessage>,
+  assembled: {
+    routeTag: Uint8Array;
+    conversationTag: Uint8Array;
+    messageNonce: Uint8Array;
+    envelopeBytes: Uint8Array;
+  },
   outPointByte: number,
   lock: Script,
 ): unknown {
@@ -204,7 +221,12 @@ interface Device {
 async function makeStack(
   device: Device,
   cells: unknown[] = [],
-  opts: { profileCells?: unknown[]; fundSigner?: boolean } = {},
+  opts: {
+    profileCells?: unknown[];
+    fundSigner?: boolean;
+    failProfileLookups?: () => boolean;
+    preDecryptLimits?: { perSync: number; perFundingLock: number };
+  } = {},
 ) {
   const db = new NodeSqliteAdapter();
   await migrate(db);
@@ -228,7 +250,11 @@ async function makeStack(
   });
   const sent: Record<string, unknown>[] = [];
   const client = new CempClient({
-    transport: makeTransport(cells, opts.profileCells ?? [], sent),
+    transport: withSenderProfiles(makeTransport(cells, opts.profileCells ?? [], sent), PUBLISHED, {
+      ...(opts.failProfileLookups === undefined
+        ? {}
+        : { failProfileLookups: opts.failProfileLookups }),
+    }),
   });
   const wallet = new MockCkbClient();
   const signer = new MlDsaV2TxSigner({ keyPair: signerKeyPair, client: wallet });
@@ -269,6 +295,9 @@ async function makeStack(
     leases,
     balances,
     rateLimiter,
+    senderResolver: makeTestResolver(client, contacts),
+    dispositions: new IncomingDispositionRepository(db),
+    ...(opts.preDecryptLimits === undefined ? {} : { preDecryptLimits: opts.preDecryptLimits }),
     walletId,
     walletLock: {
       codeHash: walletLockScript.codeHash,
@@ -297,6 +326,8 @@ async function makeStack(
     db,
     engine,
     deps,
+    notifier,
+    rateLimiter,
     messages,
     contacts,
     conversations,
@@ -314,8 +345,25 @@ type Stack = Awaited<ReturnType<typeof makeStack>>;
 const BOB_DEVICE: Device = { profileId: BOB_PROFILE_ID, keys: BOB };
 const ALICE_DEVICE: Device = { profileId: ALICE_PROFILE_ID, keys: ALICE };
 
-/** Mallory's impersonation: Alice's PUBLIC id + Bob's PUBLIC KEM key. No secrets. */
-function mallorySpoofsAliceToBob(text: string) {
+/**
+ * Mallory's v3 impersonation: she claims Alice's PUBLIC id and encrypts to
+ * Bob's PUBLIC KEM key, but can only sign with her OWN ML-DSA key.
+ */
+function mallorySignsAsAliceToBob(text: string) {
+  return assembleTextMessageV3({
+    text,
+    senderProfileId: ALICE_PROFILE_ID,
+    signerSecretKey: MALLORY.mlDsa.secretKey,
+    signerPublicKey: MALLORY.mlDsa.publicKey,
+    recipientProfileId: BOB_PROFILE_ID,
+    recipientKemPublicKey: BOB.mlKem.publicKey,
+    senderDeviceId: MALLORY_DEVICE,
+    receiptRequest: 1,
+  });
+}
+
+/** Mallory's unsigned legacy (v2) impersonation — what Phase A reproduced. */
+function malloryLegacySpoofsAliceToBob(text: string) {
   return assembleTextMessage({
     text,
     senderProfileId: ALICE_PROFILE_ID,
@@ -326,12 +374,35 @@ function mallorySpoofsAliceToBob(text: string) {
   });
 }
 
-/** Bob already knows Alice (pinned contact + conversation). Returns that conversation id. */
-async function bobKnowsAlice(stack: Stack): Promise<number> {
+/** A genuine v3 message from Alice to Bob. */
+function aliceSignsToBob(text: string) {
+  return assembleTextMessageV3({
+    text,
+    senderProfileId: ALICE_PROFILE_ID,
+    signerSecretKey: ALICE.mlDsa.secretKey,
+    signerPublicKey: ALICE.mlDsa.publicKey,
+    recipientProfileId: BOB_PROFILE_ID,
+    recipientKemPublicKey: BOB.mlKem.publicKey,
+    senderDeviceId: hexToBytes("01".repeat(16)),
+    receiptRequest: 1,
+  });
+}
+
+/** Bob already knows Alice (contact + conversation). Returns that conversation id. */
+async function bobKnowsAlice(stack: Stack, pinned = false): Promise<number> {
   const alice = await stack.contacts.create({
     displayName: "Alice",
     profileIdHex: bytesToHex(ALICE_PROFILE_ID),
   });
+  if (pinned) {
+    await stack.contacts.setProfileSecurity(alice.id, {
+      profileTypeIdHex: bytesToHex(ALICE_PROFILE_ID),
+      mlDsaPublicKey: ALICE.mlDsa.publicKey,
+      mlKemPublicKey: ALICE.mlKem.publicKey,
+      fingerprint: "test",
+      trustVerdict: "trusted",
+    });
+  }
   return (await stack.conversations.getOrCreateForContact(alice.id)).id;
 }
 
@@ -339,94 +410,272 @@ async function rowFor(stack: Stack, messageId: Uint8Array) {
   return stack.messages.getByLogicalId(incomingLogicalMessageId(messageId));
 }
 
+async function queuedAcks(stack: Stack): Promise<number> {
+  return (await stack.messages.listByState(["queued"])).filter((m) =>
+    m.logicalMessageId.startsWith("response:"),
+  ).length;
+}
+
+/** Nothing at all happened on Bob's device. */
+async function expectNoTrace(stack: Stack, messageId: Uint8Array, contactsBefore: number) {
+  expect(await rowFor(stack, messageId)).toBeUndefined();
+  expect(await stack.contacts.list()).toHaveLength(contactsBefore);
+  expect(stack.notifier.posted).toHaveLength(0);
+  expect(await queuedAcks(stack)).toBe(0);
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 /* ── AUTH-01 / AUTH-02 / TRNS-01: impersonation ─────────────────────────── */
 
-describe("VULN reproduction (pre-fix): AUTH-01 spoofed sender lands in Alice's conversation (chain discovery)", () => {
-  it("a Mallory-funded cell claiming Alice is inserted into Bob's EXISTING Alice conversation and auto-acked to 'Alice'", async () => {
-    const forged = mallorySpoofsAliceToBob("it's alice. new address, please pay here");
-    const stack = await makeStack(BOB_DEVICE, [cellJson(forged, 0xe1, MALLORY_LOCK)]);
-    try {
-      const aliceConversationId = await bobKnowsAlice(stack);
-      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+describe("FIXED (ADR 0007): AUTH-01 spoofed sender (chain discovery)", () => {
+  for (const pinned of [true, false]) {
+    it(`a v3 cell claiming Alice but signed by Mallory is rejected: no row, contact, notification or ack (Alice ${pinned ? "pinned" : "known, unpinned"})`, async () => {
+      const forged = mallorySignsAsAliceToBob("it's alice. new address, please pay here");
+      const stack = await makeStack(BOB_DEVICE, [cellJson(forged, 0xe1, MALLORY_LOCK)]);
+      try {
+        await bobKnowsAlice(stack, pinned);
+        expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+        await expectNoTrace(stack, forged.messageId, 1);
+        expect(
+          (await stack.deps.dispositions.get({ txHash: fillHex(0xe1, 32), outpointIndex: 0 }))
+            ?.disposition,
+        ).toBe("rejected");
+      } finally {
+        await stack.db.close();
+      }
+    });
+  }
 
-      const row = await rowFor(stack, forged.messageId);
+  it("a v3 forgery claiming an id Bob has never seen creates no contact", async () => {
+    const forged = mallorySignsAsAliceToBob("hello stranger");
+    const stack = await makeStack(BOB_DEVICE, [cellJson(forged, 0xe8, MALLORY_LOCK)]);
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      await expectNoTrace(stack, forged.messageId, 0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("control: Alice's genuine v3 message is received, verified, notified and auto-acked", async () => {
+    const genuine = aliceSignsToBob("hi bob");
+    const stack = await makeStack(BOB_DEVICE, [cellJson(genuine, 0xe9, ALICE_LOCK)]);
+    try {
+      const conversationId = await bobKnowsAlice(stack, true);
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const row = await rowFor(stack, genuine.messageId);
       expect(row?.state).toBe("received");
-      expect(row?.body).toBe("it's alice. new address, please pay here");
-      // PRE-FIX: displayed inside Alice's conversation, no new contact.
-      expect(row?.conversationId).toBe(aliceConversationId);
-      expect(await stack.contacts.list()).toHaveLength(1);
-      // Bob's device also queues an auto-ack addressed back to "Alice" —
-      // Bob spends capacity responding to a message Alice never sent.
-      const responses = (await stack.messages.listByState(["queued"])).filter((m) =>
-        m.logicalMessageId.startsWith("response:"),
+      expect(row?.conversationId).toBe(conversationId);
+      expect(row?.authStatus).toBe("verified");
+      expect(row?.senderKeyHashHex).toMatch(/^[0-9a-f]{64}$/);
+      expect(stack.notifier.posted).toHaveLength(1);
+      expect(await queuedAcks(stack)).toBe(1);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("legacy v2 spoof: labelled Unverified (legacy) in Alice's conversation, never notified, never acked", async () => {
+    const forged = malloryLegacySpoofsAliceToBob("legacy spoof");
+    const stack = await makeStack(BOB_DEVICE, [cellJson(forged, 0xea, MALLORY_LOCK)]);
+    try {
+      await bobKnowsAlice(stack, true);
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      const row = await rowFor(stack, forged.messageId);
+      expect(row?.authStatus).toBe("legacy-unverified");
+      expect(row?.senderKeyHashHex).toBeNull();
+      expect(stack.notifier.posted).toHaveLength(0);
+      expect(await queuedAcks(stack)).toBe(0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("legacy v2 content claiming an unknown sender is not stored and creates no contact", async () => {
+    const forged = malloryLegacySpoofsAliceToBob("legacy to a stranger");
+    const stack = await makeStack(BOB_DEVICE, [cellJson(forged, 0xeb, MALLORY_LOCK)]);
+    try {
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      await expectNoTrace(stack, forged.messageId, 0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("forged traffic does not consume Alice's per-sender rate budget (limiter keys on the authenticated sender)", async () => {
+    const forgeries = Array.from({ length: 5 }, (_, i) => mallorySignsAsAliceToBob(`spam ${i}`));
+    const stack = await makeStack(
+      BOB_DEVICE,
+      forgeries.map((f, i) => cellJson(f, 0x30 + i, MALLORY_LOCK)),
+    );
+    try {
+      await bobKnowsAlice(stack, true);
+      const before = await stack.rateLimiter.available("incoming", bytesToHex(ALICE_PROFILE_ID));
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await stack.rateLimiter.available("incoming", bytesToHex(ALICE_PROFILE_ID))).toBe(
+        before,
       );
-      expect(responses).toHaveLength(1);
-      expect(responses[0]!.conversationId).toBe(aliceConversationId);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a blocked AUTHENTICATED sender is dropped even with a valid signature", async () => {
+    const genuine = aliceSignsToBob("blocked");
+    const stack = await makeStack(BOB_DEVICE, [cellJson(genuine, 0xec, ALICE_LOCK)]);
+    try {
+      await bobKnowsAlice(stack, true);
+      const alice = await stack.contacts.getByProfileId(bytesToHex(ALICE_PROFILE_ID));
+      await stack.contacts.setBlocked(alice!.id, true);
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await rowFor(stack, genuine.messageId)).toBeUndefined();
+      expect(stack.notifier.posted).toHaveLength(0);
     } finally {
       await stack.db.close();
     }
   });
 });
 
-describe("VULN reproduction (pre-fix): AUTH-02 output lock is ignored by ingestion", () => {
-  it("cells locked to Alice's lock and to Mallory's own lock are ingested identically as 'from Alice'", async () => {
-    const underAliceLock = mallorySpoofsAliceToBob("under alice's lock");
-    const underMalloryLock = mallorySpoofsAliceToBob("under mallory's lock");
+describe("FIXED (ADR 0007): AUTH-02 output lock is not sender proof — the signature is", () => {
+  it("forgeries under Alice's lock and under Mallory's lock are both rejected; a genuine cell under Mallory's lock is accepted", async () => {
+    const underAliceLock = mallorySignsAsAliceToBob("under alice's lock");
+    const underMalloryLock = mallorySignsAsAliceToBob("under mallory's lock");
+    const genuineOddLock = aliceSignsToBob("genuine, odd output lock");
     const stack = await makeStack(BOB_DEVICE, [
-      // Mallory spends only her own inputs; the OUTPUT lock is free choice.
       cellJson(underAliceLock, 0xe2, ALICE_LOCK),
       cellJson(underMalloryLock, 0xe3, MALLORY_LOCK),
+      cellJson(genuineOddLock, 0xed, MALLORY_LOCK),
     ]);
     try {
-      const aliceConversationId = await bobKnowsAlice(stack);
+      await bobKnowsAlice(stack, true);
       expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
-      const a = await rowFor(stack, underAliceLock.messageId);
-      const m = await rowFor(stack, underMalloryLock.messageId);
-      expect(a?.state).toBe("received");
-      expect(m?.state).toBe("received");
-      expect(a?.conversationId).toBe(aliceConversationId);
-      expect(m?.conversationId).toBe(aliceConversationId);
+      expect(await rowFor(stack, underAliceLock.messageId)).toBeUndefined();
+      expect(await rowFor(stack, underMalloryLock.messageId)).toBeUndefined();
+      expect((await rowFor(stack, genuineOddLock.messageId))?.authStatus).toBe("verified");
     } finally {
       await stack.db.close();
     }
   });
 });
 
-describe("VULN reproduction (pre-fix): TRNS-01 identical spoofed bytes via CKB and via LoRa (source: null)", () => {
-  it("both transports accept the spoof into Alice's conversation; only the auto-ack differs", async () => {
-    const forged = mallorySpoofsAliceToBob("same bytes, two transports");
-    const cellDataHex = bytesToHex(forged.envelopeBytes);
-
+describe("FIXED (ADR 0007): TRNS-01 identical bytes via CKB and via LoRa (source: null)", () => {
+  it("a forgery is rejected on both transports", async () => {
+    const forgedHex = bytesToHex(
+      mallorySignsAsAliceToBob("same bytes, two transports").envelopeBytes,
+    );
     const chain = await makeStack(BOB_DEVICE);
     const lora = await makeStack(BOB_DEVICE);
     try {
-      const chainConv = await bobKnowsAlice(chain);
-      const loraConv = await bobKnowsAlice(lora);
-      await ingestIncomingCellData(chain.deps, BOB_PROFILE_ID, cellDataHex, {
+      await bobKnowsAlice(chain, true);
+      await bobKnowsAlice(lora, true);
+      await ingestIncomingCellData(chain.deps, BOB_PROFILE_ID, forgedHex, {
         txHash: fillHex(0xe4, 32),
         outpointIndex: 0,
       });
-      await ingestIncomingCellData(lora.deps, BOB_PROFILE_ID, cellDataHex, null);
-
-      const viaChain = await rowFor(chain, forged.messageId);
-      const viaLora = await rowFor(lora, forged.messageId);
-      // PRE-FIX: identical acceptance — both "received", both in Alice's conversation.
-      expect(viaChain?.state).toBe("received");
-      expect(viaLora?.state).toBe("received");
-      expect(viaChain?.conversationId).toBe(chainConv);
-      expect(viaLora?.conversationId).toBe(loraConv);
-      expect(viaChain?.body).toBe(viaLora?.body);
-      // The only difference is transport plumbing, not authentication: the
-      // chain path records a chain ref and queues an auto-ack; LoRa does not.
-      const queued = async (s: Stack) =>
-        (await s.messages.listByState(["queued"])).filter((x) =>
-          x.logicalMessageId.startsWith("response:"),
-        ).length;
-      expect(await queued(chain)).toBe(1);
-      expect(await queued(lora)).toBe(0);
+      await ingestIncomingCellData(lora.deps, BOB_PROFILE_ID, forgedHex, null);
+      for (const s of [chain, lora]) {
+        expect(await s.messages.listByState(["received"])).toHaveLength(0);
+        expect(s.notifier.posted).toHaveLength(0);
+      }
     } finally {
       await chain.db.close();
       await lora.db.close();
+    }
+  });
+
+  it("a genuine message is verified on both; only the chain path queues an ack", async () => {
+    const genuine = aliceSignsToBob("genuine, two transports");
+    const hex = bytesToHex(genuine.envelopeBytes);
+    const chain = await makeStack(BOB_DEVICE);
+    const lora = await makeStack(BOB_DEVICE);
+    try {
+      await bobKnowsAlice(chain, true);
+      await bobKnowsAlice(lora, true);
+      await ingestIncomingCellData(chain.deps, BOB_PROFILE_ID, hex, {
+        txHash: fillHex(0xee, 32),
+        outpointIndex: 0,
+      });
+      await ingestIncomingCellData(lora.deps, BOB_PROFILE_ID, hex, null);
+      expect((await rowFor(chain, genuine.messageId))?.authStatus).toBe("verified");
+      expect((await rowFor(lora, genuine.messageId))?.authStatus).toBe("verified");
+      expect(await queuedAcks(chain)).toBe(1);
+      expect(await queuedAcks(lora)).toBe(0);
+    } finally {
+      await chain.db.close();
+      await lora.db.close();
+    }
+  });
+});
+
+describe("ADR 0007 receive pipeline: deferral and pre-decryption budgets", () => {
+  it("a profile-lookup failure defers (never shown or acked) and the cell is retried after backoff", async () => {
+    const genuine = aliceSignsToBob("arrives while the indexer is down");
+    let indexerDown = true;
+    const stack = await makeStack(BOB_DEVICE, [cellJson(genuine, 0xef, ALICE_LOCK)], {
+      failProfileLookups: () => indexerDown,
+    });
+    try {
+      await bobKnowsAlice(stack, false); // unpinned: the live profile is needed
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      await expectNoTrace(stack, genuine.messageId, 1);
+      const key = { txHash: fillHex(0xef, 32), outpointIndex: 0 };
+      const deferred = await stack.deps.dispositions.get(key);
+      expect(deferred?.disposition).toBe("deferred");
+
+      // Indexer back, but still inside the backoff window: not retried yet.
+      indexerDown = false;
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await rowFor(stack, genuine.messageId)).toBeUndefined();
+
+      // After the backoff: retried, verified, shown.
+      const later = deferred!.nextAttemptAtMs + 1;
+      vi.spyOn(Date, "now").mockReturnValue(later);
+      await ingestIncomingCellData(
+        stack.deps,
+        BOB_PROFILE_ID,
+        bytesToHex(genuine.envelopeBytes),
+        key,
+      );
+      expect((await rowFor(stack, genuine.messageId))?.authStatus).toBe("verified");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("the per-funding-lock budget bounds work per tick; the rest stays untouched for the next tick", async () => {
+    const messages = [aliceSignsToBob("one"), aliceSignsToBob("two"), aliceSignsToBob("three")];
+    const stack = await makeStack(
+      BOB_DEVICE,
+      messages.map((m, i) => cellJson(m, 0x40 + i, ALICE_LOCK)),
+      { preDecryptLimits: { perSync: 100, perFundingLock: 2 } },
+    );
+    try {
+      await bobKnowsAlice(stack, true);
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await stack.messages.listByState(["received"])).toHaveLength(2);
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await stack.messages.listByState(["received"])).toHaveLength(3);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("the global per-sync budget bounds work across funding locks", async () => {
+    const messages = [aliceSignsToBob("a"), aliceSignsToBob("b"), aliceSignsToBob("c")];
+    const stack = await makeStack(
+      BOB_DEVICE,
+      messages.map((m, i) => cellJson(m, 0x50 + i, ALICE_LOCK)),
+      { preDecryptLimits: { perSync: 1, perFundingLock: 100 } },
+    );
+    try {
+      await bobKnowsAlice(stack, true);
+      expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
+      expect(await stack.messages.listByState(["received"])).toHaveLength(1);
+    } finally {
+      await stack.db.close();
     }
   });
 });
@@ -466,11 +715,13 @@ const ALICE_MESSAGE_TX = fillHex(0xa1, 32);
  * (what any chain observer can read) and the row id.
  */
 function alicePublishesImageToBob() {
-  return assembleTextMessage({
+  return assembleTextMessageV3({
     text: "",
     contentType: 0x03,
     attachmentManifests: [testManifest()],
     senderProfileId: ALICE_PROFILE_ID,
+    signerSecretKey: ALICE.mlDsa.secretKey,
+    signerPublicKey: ALICE.mlDsa.publicKey,
     recipientProfileId: BOB_PROFILE_ID,
     recipientKemPublicKey: BOB.mlKem.publicKey,
     senderDeviceId: hexToBytes("01".repeat(16)),
@@ -521,29 +772,33 @@ async function aliceHasPendingImageToBob(
 }
 
 /**
- * Mallory forges Bob's receipts from Alice's PUBLISHED cell bytes + Alice's
- * PUBLIC KEM key: the cleartext header yields message_id and Alice's id; the
- * cleartext conversation_id confirms Bob among public profile ids.
+ * Mallory forges Bob's receipts. A v3 envelope no longer shows the message
+ * id or the parties in clear text, so this GRANTS Mallory the message id
+ * (a stronger attacker than the chain allows) and has her claim to be Bob.
+ * Two forms: an unsigned legacy v2 ack (its proof is a guess) and a v3 ack
+ * signed with her own key.
  */
-function malloryForgesBobReceipts(publishedCellData: Uint8Array) {
-  const { header } = codec.decodeCempEnvelopeV1(publishedCellData);
-  const candidates = [hexToBytes("4d".repeat(32)), BOB_PROFILE_ID];
-  const bobId = candidates.find((c) =>
-    codec.bytesEqual(deriveConversationId(header.sender_profile_id, c), header.conversation_id),
-  )!;
-  return assembleTextMessage({
+function malloryForgesBobReceipts(messageId: Uint8Array, form: "v2" | "v3" = "v2") {
+  const common = {
     text: "",
-    senderProfileId: bobId,
-    recipientProfileId: header.sender_profile_id,
+    senderProfileId: BOB_PROFILE_ID,
+    recipientProfileId: ALICE_PROFILE_ID,
     recipientKemPublicKey: ALICE.mlKem.publicKey,
     senderDeviceId: MALLORY_DEVICE,
-    // v2 receipts need a proof under Alice→Bob's receipt key, which only
-    // Alice and Bob can derive: Mallory can only guess.
+    // Receipts need a proof under Alice→Bob's receipt key, which only Alice
+    // and Bob can derive: Mallory can only guess.
     receipts: [
-      { messageId: header.message_id, status: 0x01, proof: randomBytes(32) },
-      { messageId: header.message_id, status: 0x05, proof: randomBytes(32) },
+      { messageId, status: 0x01, proof: randomBytes(32) },
+      { messageId, status: 0x05, proof: randomBytes(32) },
     ],
-  });
+  };
+  return form === "v2"
+    ? assembleTextMessage(common)
+    : assembleTextMessageV3({
+        ...common,
+        signerSecretKey: MALLORY.mlDsa.secretKey,
+        signerPublicKey: MALLORY.mlDsa.publicKey,
+      });
 }
 
 async function expectUntouched(stack: Stack, rowId: number): Promise<void> {
@@ -559,11 +814,15 @@ describe("FIXED (ADR 0006): RCPT-01/02 forged receipts through the sync pipeline
     const stack = await makeStack(ALICE_DEVICE);
     try {
       const { published, rowId } = await aliceHasPendingImageToBob(stack);
-      const forged = malloryForgesBobReceipts(published.envelopeBytes);
-      await ingestIncomingCellData(stack.deps, ALICE_PROFILE_ID, bytesToHex(forged.envelopeBytes), {
-        txHash: fillHex(0xe5, 32),
-        outpointIndex: 0,
-      });
+      for (const [i, form] of (["v2", "v3"] as const).entries()) {
+        const forged = malloryForgesBobReceipts(published.messageId, form);
+        await ingestIncomingCellData(
+          stack.deps,
+          ALICE_PROFILE_ID,
+          bytesToHex(forged.envelopeBytes),
+          { txHash: fillHex(0xe5, 32), outpointIndex: i },
+        );
+      }
 
       await expectUntouched(stack, rowId);
       expect(await stack.messages.listByState(["received"])).toHaveLength(0);
@@ -577,7 +836,7 @@ describe("FIXED (ADR 0006): RCPT-01/02 forged receipts through the sync pipeline
 
   it("incoming-discovery worker: the forged receipt cell is found by Alice's PUBLIC route tag but ignored", async () => {
     const published = alicePublishesImageToBob();
-    const forged = malloryForgesBobReceipts(published.envelopeBytes);
+    const forged = malloryForgesBobReceipts(published.messageId);
     expect(forged.routeTag).toEqual(deriveRouteTag(ALICE_PROFILE_ID, currentRoutingEpoch()));
     const stack = await makeStack(ALICE_DEVICE, [cellJson(forged, 0xe6, MALLORY_LOCK)]);
     try {
@@ -596,7 +855,7 @@ describe("FIXED (ADR 0006): RCPT-01/02 forged receipts through the sync pipeline
       const published = alicePublishesImageToBob();
       const c = await aliceHasPendingImageToBob(chain, published);
       const loraRow = (await aliceHasPendingImageToBob(lora, published)).rowId;
-      const forgedHex = bytesToHex(malloryForgesBobReceipts(published.envelopeBytes).envelopeBytes);
+      const forgedHex = bytesToHex(malloryForgesBobReceipts(published.messageId).envelopeBytes);
       await ingestIncomingCellData(chain.deps, ALICE_PROFILE_ID, forgedHex, {
         txHash: fillHex(0xe7, 32),
         outpointIndex: 0,
@@ -615,31 +874,7 @@ describe("FIXED (ADR 0006): RCPT-01/02 forged receipts through the sync pipeline
 
 /** Alice's on-chain profile cell, so Bob's real publisher can encrypt to her. */
 function aliceProfileCellJson(): unknown {
-  const lock = Script.from({
-    codeHash: fillHex(0x77, 32),
-    hashType: "type",
-    args: `0x${"a1".repeat(37)}`,
-  });
-  const data = codec.encodeCempProfileV1({
-    ...codec.buildProfileMinimal(),
-    ml_dsa_public_key: ALICE.mlDsa.publicKey,
-    ml_kem_public_key: ALICE.mlKem.publicKey,
-    lock_script_hash: bytesFrom(lock.hash()),
-  });
-  return {
-    out_point: { tx_hash: fillHex(0x5a, 32), index: "0x0" },
-    output: {
-      capacity: `0x${fixedPointFrom(4000).toString(16)}`,
-      lock: { code_hash: lock.codeHash, hash_type: "type", args: lock.args },
-      type: {
-        code_hash: TYPE_ID_CODE_HASH,
-        hash_type: "type",
-        args: `0x${bytesToHex(ALICE_PROFILE_ID)}`,
-      },
-    },
-    output_data: hexFrom(data),
-    block_number: "0x1",
-  };
+  return ALICE_SENDER.profileCellJson;
 }
 
 /** The message-cell data of every message Bob's device broadcast. */
@@ -656,11 +891,12 @@ describe("ADR 0006 end to end: Bob's real acks via the real response sender", ()
     });
     const alice = await makeStack(ALICE_DEVICE);
     try {
-      // Bob: discover → ingest (stores HIS receipt key) → auto-ack queued.
-      await bobKnowsAlice(bob);
+      // Bob: discover → verify → ingest (stores HIS receipt key) → auto-ack queued.
+      await bobKnowsAlice(bob, true);
       expect(await bob.engine.runWorker("incoming-discovery")).toBe("success");
       const original = await rowFor(bob, published.messageId);
       expect(original?.state).toBe("received");
+      expect(original?.authStatus).toBe("verified");
       const bobKey = await bob.messages.getReceiptKey(original!.id);
       expect(Array.from(bobKey!)).toEqual(Array.from(published.receiptKey));
       // Bob taps to download: the app queues the 0x05 confirmation the same
@@ -709,9 +945,9 @@ describe("ADR 0006 end to end: Bob's real acks via the real response sender", ()
     }
   });
 
-  it("the response sender sends NOTHING for a v1 original (no receipt key) and leaves the row queued", async () => {
-    // A legacy v1 message from Alice: decrypts and displays, but its sender
-    // cannot verify a proof, so no receipt is ever owed or sent.
+  it("a v1 original is legacy: labelled, no receipt key, no ack queued, nothing sent", async () => {
+    // A legacy v1 message from Alice: decrypts and displays with the
+    // "Unverified (legacy)" label (ADR 0007 §8) and is never auto-acked.
     const messageId = hexToBytes("71".repeat(16));
     const payload = codec.encodeCempPayloadV1({
       message_id: messageId,
@@ -755,6 +991,8 @@ describe("ADR 0006 end to end: Bob's real acks via the real response sender", ()
       const row = await rowFor(bob, messageId);
       expect(row?.state).toBe("received");
       expect(row?.body).toBe("hello from an old build");
+      expect(row?.authStatus).toBe("legacy-unverified");
+      expect(bob.notifier.posted).toHaveLength(0);
       expect(await bob.messages.getReceiptKey(row!.id)).toBeNull();
 
       // Funded exactly like the end-to-end test, so a send WOULD succeed.
@@ -765,10 +1003,7 @@ describe("ADR 0006 end to end: Bob's real acks via the real response sender", ()
       );
       expect(await bob.engine.runWorker("response-sender")).toBe("success");
       expect(bob.sent).toHaveLength(0);
-      const queued = (await bob.messages.listByState(["queued"])).filter((m) =>
-        m.logicalMessageId.startsWith("response:"),
-      );
-      expect(queued).toHaveLength(1);
+      expect(await queuedAcks(bob)).toBe(0);
     } finally {
       await bob.db.close();
     }
@@ -778,4 +1013,5 @@ describe("ADR 0006 end to end: Bob's real acks via the real response sender", ()
 afterAll(() => {
   wipeIdentityKeyBundle(ALICE);
   wipeIdentityKeyBundle(BOB);
+  wipeIdentityKeyBundle(MALLORY);
 });

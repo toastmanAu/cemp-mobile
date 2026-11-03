@@ -31,8 +31,51 @@ export interface Message {
   readonly logicalMessageId: string;
   /** Envelope message id (schema v3; null until published/processed). */
   readonly envelopeMessageIdHex: string | null;
+  /**
+   * Sender authentication of an INCOMING row (schema v11, ADR 0007): null for
+   * outgoing and pre-upgrade rows. The UI labels `legacy-unverified` rows
+   * "Unverified (legacy)" and shows a blocking card for
+   * `key-changed-blocking` rows (whose body is never stored).
+   */
+  readonly authStatus: MessageAuthStatus | null;
+  /** ckbHash of the key that verified this incoming v3 message, hex. */
+  readonly senderKeyHashHex: string | null;
   readonly createdAtMs: number;
   readonly updatedAtMs: number;
+}
+
+export const MESSAGE_AUTH_STATUSES = [
+  "verified",
+  "legacy-unverified",
+  "key-changed-blocking",
+] as const;
+export type MessageAuthStatus = (typeof MESSAGE_AUTH_STATUSES)[number];
+
+/** A signed outgoing envelope journaled before broadcast (schema v11). */
+export interface PreparedEnvelope {
+  readonly envelopeBytes: Uint8Array;
+  readonly routeTag: Uint8Array;
+  readonly conversationTag: Uint8Array;
+  readonly messageNonce: Uint8Array;
+  readonly messageId: Uint8Array;
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function fromHex(value: unknown, label: string): Uint8Array {
+  const text = typeof value === "string" ? value : "";
+  if (text.length % 2 !== 0 || !/^[0-9a-f]*$/.test(text)) {
+    throw new DatabaseError("adapter-error", `prepared envelope field ${label} is not hex`);
+  }
+  const out = new Uint8Array(text.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(text.slice(2 * i, 2 * i + 2), 16);
+  return out;
+}
+
+function nullableText(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
 }
 
 export interface MessageChainRef {
@@ -55,6 +98,8 @@ function rowToMessage(row: SqlRow): Message {
       row.envelope_message_id_hex === null || row.envelope_message_id_hex === undefined
         ? null
         : String(row.envelope_message_id_hex),
+    authStatus: nullableText(row.auth_status) as MessageAuthStatus | null,
+    senderKeyHashHex: nullableText(row.sender_key_hash_hex),
     createdAtMs: Number(row.created_at_ms),
     updatedAtMs: Number(row.updated_at_ms),
   };
@@ -291,6 +336,76 @@ export class MessageRepository {
     if (result.changes === 0) {
       throw new DatabaseError("not-found", `message ${String(id)} does not exist`);
     }
+  }
+
+  /* ------------------------------ sender authentication (schema v11) -- */
+
+  /** Record how an incoming row's sender was authenticated (ADR 0007 §5, §8). */
+  async setSenderAuthentication(
+    id: number,
+    auth: { authStatus: MessageAuthStatus; senderKeyHashHex: string | null },
+  ): Promise<void> {
+    if (!(MESSAGE_AUTH_STATUSES as readonly string[]).includes(auth.authStatus)) {
+      throw new DatabaseError(
+        "constraint-violation",
+        `unknown auth status ${String(auth.authStatus)}`,
+      );
+    }
+    if (auth.senderKeyHashHex !== null && !/^[0-9a-f]{64}$/.test(auth.senderKeyHashHex)) {
+      throw new DatabaseError(
+        "constraint-violation",
+        "sender key hash must be 32-byte lowercase hex",
+      );
+    }
+    const result = await this.#db.run(
+      "UPDATE messages SET auth_status = ?, sender_key_hash_hex = ?, updated_at_ms = ? WHERE id = ?",
+      [auth.authStatus, auth.senderKeyHashHex, Date.now(), id],
+    );
+    if (result.changes === 0) {
+      throw new DatabaseError("not-found", `message ${String(id)} does not exist`);
+    }
+  }
+
+  /**
+   * Journal the signed outgoing envelope (ADR 0007 §7) so a crash or retry
+   * rebroadcasts identical bytes instead of producing a second signature.
+   */
+  async setPreparedEnvelope(id: number, prepared: PreparedEnvelope): Promise<void> {
+    const json = JSON.stringify({
+      envelope: toHex(prepared.envelopeBytes),
+      routeTag: toHex(prepared.routeTag),
+      conversationTag: toHex(prepared.conversationTag),
+      messageNonce: toHex(prepared.messageNonce),
+      messageId: toHex(prepared.messageId),
+    });
+    const result = await this.#db.run(
+      "UPDATE messages SET prepared_envelope = ?, updated_at_ms = ? WHERE id = ?",
+      [json, Date.now(), id],
+    );
+    if (result.changes === 0) {
+      throw new DatabaseError("not-found", `message ${String(id)} does not exist`);
+    }
+  }
+
+  async getPreparedEnvelope(id: number): Promise<PreparedEnvelope | undefined> {
+    const row = await this.#db.get("SELECT prepared_envelope FROM messages WHERE id = ?", [id]);
+    const text = row?.prepared_envelope;
+    if (text === null || text === undefined) {
+      return undefined;
+    }
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(String(text)) as Record<string, unknown>;
+    } catch (e) {
+      throw new DatabaseError("adapter-error", "prepared envelope is not valid JSON", e);
+    }
+    return {
+      envelopeBytes: fromHex(parsed.envelope, "envelope"),
+      routeTag: fromHex(parsed.routeTag, "routeTag"),
+      conversationTag: fromHex(parsed.conversationTag, "conversationTag"),
+      messageNonce: fromHex(parsed.messageNonce, "messageNonce"),
+      messageId: fromHex(parsed.messageId, "messageId"),
+    };
   }
 
   /* ---------------------------------------- receipt key (schema v10) -- */

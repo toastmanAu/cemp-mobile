@@ -1,7 +1,7 @@
 # ADR 0007: sender-signed envelopes (protocol version 3)
 
-- Status: Proposed (2026-11-03). Open questions at the end need a decision
-  before the schema and vectors are frozen.
+- Status: Accepted (2026-11-03). Decisions on the former open questions are
+  at the end.
 - Supersedes nothing. Builds on ADR 0006 (receipt proofs), which stays.
 - Handoff reference: `CellSend_Security_Hardening_Agent_Handoff.md` Phases B–D.
   The handoff calls this "v2"; v2 is taken by ADR 0006, so this is v3.
@@ -242,20 +242,14 @@ to v1 or v2.
 - **Testnet:** a maximum-size v3 text envelope and an image envelope are
   accepted by the pool. Measured capacity and fee are recorded in the spec.
 
-## Open questions (need a decision)
+## Resolved questions (accepted 2026-11-03)
 
-1. **Sign receipt-only acks too?** ADR 0006 proofs already authenticate a
-   receipt to someone who could decrypt the original. Leaving pure acks
-   unsigned saves about 3,300 CKB of locked capacity per ack (returned on
-   reclaim) but adds a second envelope shape and code path.
-   _Recommendation: sign everything._ One gate and one shape, and the capacity
-   is returned anyway.
-2. **Content type inside or outside?** Inside (as drafted) hides
-   text-versus-image from observers, though cell size and chunk cells largely
-   give it away. _Recommendation: inside;_ it costs nothing.
-3. **Pre-decryption rate limit key.** Funding lock hash per outpoint, or a
-   global per-sync budget? _Recommendation: global per-sync budget plus a
-   per-funding-lock budget._
-4. **Pinned-key mismatch with no provable rotation:** quarantine silently,
-   or show a blocking "key changed" card? _Recommendation: show the card_
-   (existing `key-changed-blocking` verdict), never the message body.
+1. **Receipt-only acks are signed too.** One envelope shape and one gate; the
+   extra capacity is returned on reclaim.
+2. **`content_type` is inside the ciphertext**, as drafted.
+3. **Pre-decryption rate limit:** a global per-sync budget plus a budget per
+   funding lock hash (the lock of the cell's first input, or the gateway
+   source for LoRa). The per-sender limit runs after verification.
+4. **Pinned-key mismatch without a provable rotation:** show the blocking
+   "key changed" card (`key-changed-blocking`); the message body is never
+   shown or acked.

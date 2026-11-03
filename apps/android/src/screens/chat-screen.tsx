@@ -35,6 +35,7 @@ import {
   classifyImageDownloadError,
   imageBubbleState,
   messageBubbleState,
+  senderAuthenticityPresentation,
   type BubbleStatus,
   type ImageDownloadState,
 } from "@cemp/ui";
@@ -363,7 +364,22 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
         renderItem={({ item }) => {
           const bubble = messageBubbleState(item);
           const outgoing = item.direction === "outgoing";
-          const label = STATUS_LABEL[bubble.status];
+          // ADR 0007: who the sender is, as far as the app could prove it.
+          const authenticity = senderAuthenticityPresentation(item);
+          if (authenticity.kind === "blocking-card") {
+            // The body is never shown (none is stored) and nothing is tappable.
+            return (
+              <View style={[styles.bubble, styles.bubbleIn, styles.blockingCard]}>
+                <Text style={styles.blockingTitle}>{authenticity.title}</Text>
+                <Text style={styles.blockingBody}>{authenticity.body}</Text>
+              </View>
+            );
+          }
+          const statusLabel = STATUS_LABEL[bubble.status];
+          const label =
+            authenticity.kind === "label"
+              ? [authenticity.label, statusLabel].filter((l) => l !== "").join(" · ")
+              : statusLabel;
           const attachment = attachmentsByMessage.get(item.id);
           if (attachment !== undefined && attachment.manifest !== null) {
             // Rule 4: the manifest blob is untrusted input — a corrupted one
@@ -407,7 +423,13 @@ export function ChatScreen({ route }: Props): React.JSX.Element {
                   {item.body ?? "[image]"}
                 </Text>
                 {label !== "" ? (
-                  <Text style={[styles.status, bubble.canRetry ? styles.statusRetry : null]}>
+                  <Text
+                    style={[
+                      styles.status,
+                      authenticity.kind === "label" ? styles.statusUnverified : null,
+                      bubble.canRetry ? styles.statusRetry : null,
+                    ]}
+                  >
                     {label}
                   </Text>
                 ) : null}
@@ -555,6 +577,10 @@ const styles = StyleSheet.create({
   bubbleTextIn: { color: "#111" },
   status: { fontSize: 10, color: "#d0d8e8", marginTop: 4 },
   statusRetry: { color: "#ffcccb", fontWeight: "700" },
+  statusUnverified: { color: "#8a5a00", fontWeight: "700" },
+  blockingCard: { backgroundColor: "#fdecea", borderWidth: 1, borderColor: "#b00020" },
+  blockingTitle: { color: "#b00020", fontWeight: "700", marginBottom: 4 },
+  blockingBody: { color: "#5f2120", fontSize: 13 },
   composer: { flexDirection: "row", alignItems: "flex-end", padding: 8, gap: 8 },
   input: {
     flex: 1,

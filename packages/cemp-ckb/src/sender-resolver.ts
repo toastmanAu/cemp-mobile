@@ -88,7 +88,12 @@ export type SenderVerdict =
       readonly reason: string;
     }
   | { readonly kind: "rejected"; readonly reason: string }
-  | { readonly kind: "deferred"; readonly reason: string };
+  | {
+      readonly kind: "deferred";
+      readonly reason: string;
+      /** The node answered "no such profile": counts toward giving up. */
+      readonly notFound?: true;
+    };
 
 const MAX_ROTATION_INPUTS = 32;
 
@@ -204,7 +209,11 @@ export class AuthenticatedSenderResolver {
       // shown or acked while deferred, so this is never a downgrade.
       return {
         kind: "verdict",
-        verdict: { kind: "deferred", reason: "no live profile cell for the claimed sender (yet)" },
+        verdict: {
+          kind: "deferred",
+          reason: "no live profile cell for the claimed sender (yet)",
+          notFound: true,
+        },
       };
     }
     let resolved: ResolvedProfile;

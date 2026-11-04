@@ -262,6 +262,7 @@ export const MIGRATIONS: readonly Migration[] = [
          next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
          cell_data BLOB,
          updated_at_ms INTEGER NOT NULL,
+         not_found_count INTEGER NOT NULL DEFAULT 0,
          PRIMARY KEY (source_key, outpoint_index)
        )`,
     ],

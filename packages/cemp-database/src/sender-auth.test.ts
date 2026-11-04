@@ -152,6 +152,44 @@ describe("incoming_dispositions", () => {
     }
   });
 
+  it("gives up after MAX_NOT_FOUND_DEFERRALS definite not-found answers", async () => {
+    const { db, dispositions } = await makeStack();
+    try {
+      const limit = IncomingDispositionRepository.MAX_NOT_FOUND_DEFERRALS;
+      let last;
+      for (let i = 1; i < limit; i++) {
+        last = await dispositions.markDeferred(key, 0, null, { notFound: true });
+        expect(last.disposition).toBe("deferred");
+      }
+      last = await dispositions.markDeferred(key, 0, null, { notFound: true });
+      expect(last.disposition).toBe("rejected");
+      expect((await dispositions.get(key))?.disposition).toBe("rejected");
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("transport failures never count toward the not-found limit", async () => {
+    const { db, dispositions } = await makeStack();
+    try {
+      const limit = IncomingDispositionRepository.MAX_NOT_FOUND_DEFERRALS;
+      for (let i = 0; i < limit * 3; i++) {
+        expect((await dispositions.markDeferred(key, 0)).disposition).toBe("deferred");
+      }
+      // one short of the limit, interleaved with transport failures: still deferred
+      for (let i = 1; i < limit; i++) {
+        await dispositions.markDeferred(key, 0, null, { notFound: true });
+        await dispositions.markDeferred(key, 0);
+      }
+      expect((await dispositions.get(key))?.disposition).toBe("deferred");
+      expect((await dispositions.markDeferred(key, 0, null, { notFound: true })).disposition).toBe(
+        "rejected",
+      );
+    } finally {
+      await db.close();
+    }
+  });
+
   it("stores LoRa objects (no outpoint) with their bytes and lists the due ones", async () => {
     const { db, dispositions } = await makeStack();
     try {

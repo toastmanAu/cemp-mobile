@@ -183,7 +183,9 @@ export async function ingestIncomingCellData(
   const outcome = await authenticateIncomingV3(opened.unverified, deps.senderResolver);
   switch (outcome.kind) {
     case "deferred":
-      await deps.dispositions.markDeferred(key, now, source === null ? cellData : null);
+      await deps.dispositions.markDeferred(key, now, source === null ? cellData : null, {
+        notFound: outcome.notFound === true,
+      });
       return;
     case "rejected":
       await deps.dispositions.markRejected(key, now);

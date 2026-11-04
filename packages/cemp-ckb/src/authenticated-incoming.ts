@@ -91,7 +91,7 @@ export type AuthenticationOutcome =
       readonly reason: string;
     }
   | { readonly kind: "rejected"; readonly reason: string }
-  | { readonly kind: "deferred"; readonly reason: string };
+  | { readonly kind: "deferred"; readonly reason: string; readonly notFound?: true };
 
 /**
  * Resolve the sender of a decrypted v3 message and verify its signature

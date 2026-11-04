@@ -790,6 +790,34 @@ describe("ADR 0007 receive pipeline: deferral and pre-decryption budgets", () =>
     }
   });
 
+  it("a sender profile that never appears is retried a bounded number of times, then rejected", async () => {
+    const ghost = aliceSignsToBob("signed by a profile that is not on chain");
+    // Alice's profile is not published: every lookup is a definite "not found".
+    const stack = await makeStack(BOB_DEVICE, [cellJson(ghost, 0xe1, ALICE_LOCK)], {
+      senders: [BOB_SENDER],
+    });
+    try {
+      const key = { txHash: fillHex(0xe1, 32), outpointIndex: 0 };
+      const limit = IncomingDispositionRepository.MAX_NOT_FOUND_DEFERRALS;
+      let now = 1_000_000;
+      for (let i = 1; i <= limit; i++) {
+        vi.spyOn(Date, "now").mockReturnValue(now);
+        await ingestIncomingCellData(
+          stack.deps,
+          BOB_PROFILE_ID,
+          bytesToHex(ghost.envelopeBytes),
+          key,
+        );
+        const record = await stack.deps.dispositions.get(key);
+        expect(record?.disposition).toBe(i < limit ? "deferred" : "rejected");
+        now = (record?.nextAttemptAtMs ?? now) + 1;
+      }
+      await expectNoTrace(stack, ghost.messageId, 0);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
   it("the per-funding-lock budget bounds work per tick; the rest stays untouched for the next tick", async () => {
     const messages = [aliceSignsToBob("one"), aliceSignsToBob("two"), aliceSignsToBob("three")];
     const stack = await makeStack(

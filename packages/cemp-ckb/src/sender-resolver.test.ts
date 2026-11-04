@@ -251,11 +251,15 @@ describe("unknown sender", () => {
       openedFrom(ALICE, ALICE_ID),
     );
     expect(verdict.kind).toBe("deferred");
+    // a transport failure says nothing about existence: never counted as not-found
+    if (verdict.kind === "deferred") expect(verdict.notFound).not.toBe(true);
   });
 
   it("no live profile → deferred (may be indexer lag; never shown meanwhile)", async () => {
     const verdict = await resolver(chain({})).resolve(openedFrom(ALICE, ALICE_ID));
     expect(verdict.kind).toBe("deferred");
+    // the node answered: counts toward the give-up limit
+    if (verdict.kind === "deferred") expect(verdict.notFound).toBe(true);
   });
 
   it("two live cells for one profile id (impossible under Type ID) → rejected", async () => {

@@ -275,7 +275,11 @@ the Phase A flips and these notes. Normative spec:
 - **Conservative additions.** `conversation_id` must equal
   `H(sender, me)` (it was unchecked in v1/v2, RCPT-04). A revoked profile is
   rejected. "No live profile cell" defers instead of rejecting, because it
-  may be indexer lag. An in-place key change under the same profile id is
+  may be indexer lag. That deferral is bounded: after 12 definite "no such
+  profile" answers (at least ~20 hours of backoff) the cell is rejected, so
+  cells naming fabricated profiles are not re-queried forever. Transport
+  failures never count toward the limit, so an outage cannot discard a
+  genuine message. An in-place key change under the same profile id is
   `key-changed-blocking`, since rotations always mint a new profile id. Rotation
   proof is single-hop; a longer chain blocks. Legacy content from a claimed
   sender who is not already a contact is dropped (an unverified claim never

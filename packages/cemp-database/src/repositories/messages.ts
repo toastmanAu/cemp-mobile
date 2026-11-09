@@ -111,6 +111,21 @@ function receiptKeyCopy(value: unknown): Uint8Array | null {
   return bytes === null || bytes.length !== 32 ? null : bytes.slice();
 }
 
+/**
+ * Logical-id prefixes of receipt-only acknowledgement rows: the envelope ack
+ * (`response:`, ADR 0005, 0x01) and the attachment-downloaded ack
+ * (`ack-attachment:`, 0x05). They are empty outgoing rows the response
+ * sender publishes; they are never chat bubbles or conversation previews.
+ */
+export const HIDDEN_ACK_PREFIXES = ["response:", "ack-attachment:"] as const;
+
+/** SQL predicate: `column` is not a hidden ack row. Prefixes are constants. */
+export function visibleMessageSql(column: string): string {
+  return HIDDEN_ACK_PREFIXES.map((prefix) => `${column} NOT LIKE '${prefix}%'`).join(" AND ");
+}
+
+const VISIBLE = visibleMessageSql("logical_message_id");
+
 export class MessageRepository {
   readonly #db: SqliteAdapter;
 
@@ -183,16 +198,16 @@ export class MessageRepository {
     options: { beforeId?: number; limit?: number } = {},
   ): Promise<Message[]> {
     const limit = options.limit ?? 50;
-    // Receipt-only acknowledgement rows (logical id `response:%`, ADR 0005) are
-    // internal — never shown as chat bubbles.
+    // Receipt-only acknowledgement rows (HIDDEN_ACK_PREFIXES) are internal —
+    // never shown as chat bubbles.
     const rows =
       options.beforeId === undefined
         ? await this.#db.all(
-            "SELECT * FROM messages WHERE conversation_id = ? AND logical_message_id NOT LIKE 'response:%' ORDER BY id DESC LIMIT ?",
+            `SELECT * FROM messages WHERE conversation_id = ? AND ${VISIBLE} ORDER BY id DESC LIMIT ?`,
             [conversationId, limit],
           )
         : await this.#db.all(
-            "SELECT * FROM messages WHERE conversation_id = ? AND id < ? AND logical_message_id NOT LIKE 'response:%' ORDER BY id DESC LIMIT ?",
+            `SELECT * FROM messages WHERE conversation_id = ? AND id < ? AND ${VISIBLE} ORDER BY id DESC LIMIT ?`,
             [conversationId, options.beforeId, limit],
           );
     return rows.map(rowToMessage);

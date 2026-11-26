@@ -74,6 +74,8 @@ export interface LifecycleStore {
     | undefined
   >;
   listOutgoingByState(state: string): Promise<LifecycleMessage[]>;
+  /** Current state of a message row, or undefined when it does not exist. */
+  getMessageState(rowId: number): Promise<string | undefined>;
 
   recordOutgoingTx(input: {
     txHash: string;
@@ -219,22 +221,49 @@ export class ResponseLifecycle {
       if (found === undefined || !ACKABLE_STATES.has(found.state)) {
         continue;
       }
-      if (found.state === "available_on_chain") {
-        await this.#deps.store.transitionMessage(found.rowId, "downloaded_by_recipient");
-      }
-      if (found.state !== "acknowledged") {
-        await this.#deps.store.transitionMessage(found.rowId, "acknowledged");
-      }
-      await this.#deps.store.transitionMessage(found.rowId, "reclaim_queued");
-      // Review E3: fund the reclaimable bucket from the journal's recorded
-      // cell capacity, so the later release has something to release.
-      const journal = await this.#deps.store.getMessageJournalInfo(found.rowId);
-      if (journal?.capacityShannon != null) {
-        await this.#deps.store.markCapacityReclaimable(journal.capacityShannon);
-      }
+      await this.#queueForReclaim(found);
       acked.push(found.rowId);
     }
     return acked;
+  }
+
+  /**
+   * Queue one of OUR acknowledgement cells for reclaim (ADR 0008). Acks are
+   * never acked back (ADR 0005), so they never reach `acknowledged` through
+   * a receipt; the caller has decided, by policy, that the cell may go.
+   * Walks the same legal edges as a receipt would and funds reclaimable the
+   * same way. No-op unless the row is still in an ack-able state, so a
+   * repeated pass never re-funds the bucket.
+   */
+  async queueAckForReclaim(rowId: number): Promise<boolean> {
+    // A FRESH read, and every ack-able state: a crash part-way through the
+    // walk below leaves the row at downloaded_by_recipient or acknowledged,
+    // and it must be resumable. Funding happens only on arrival at
+    // reclaim_queued, so resuming never funds twice, and a row already
+    // queued is refused here (a same-state transition would be a silent
+    // no-op, followed by a second funding).
+    const state = await this.#deps.store.getMessageState(rowId);
+    if (state === undefined || !ACKABLE_STATES.has(state)) {
+      return false;
+    }
+    await this.#queueForReclaim({ rowId, state });
+    return true;
+  }
+
+  async #queueForReclaim(found: { rowId: number; state: string }): Promise<void> {
+    if (found.state === "available_on_chain") {
+      await this.#deps.store.transitionMessage(found.rowId, "downloaded_by_recipient");
+    }
+    if (found.state !== "acknowledged") {
+      await this.#deps.store.transitionMessage(found.rowId, "acknowledged");
+    }
+    await this.#deps.store.transitionMessage(found.rowId, "reclaim_queued");
+    // Review E3: fund the reclaimable bucket from the journal's recorded
+    // cell capacity, so the later release has something to release.
+    const journal = await this.#deps.store.getMessageJournalInfo(found.rowId);
+    if (journal?.capacityShannon != null) {
+      await this.#deps.store.markCapacityReclaimable(journal.capacityShannon);
+    }
   }
 
   /**

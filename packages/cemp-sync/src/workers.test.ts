@@ -52,6 +52,7 @@ import {
   LORA_ENABLED_SETTING_KEY,
   LORA_GATEWAY_URL_SETTING_KEY,
   buildWorkerSpecs,
+  queueReclaimableAcks,
   type LoraPollSource,
   type SyncWorkerDeps,
 } from "./workers.js";
@@ -1306,6 +1307,315 @@ describe("attachment group reclaim (T17 finding F-2)", () => {
       };
       expect(await stack.engine.runWorker("reclaim-batch")).toBe("success");
       expect(calls).toBe(1); // retried once the group call succeeds again
+    } finally {
+      await stack.db.close();
+    }
+  });
+});
+
+describe("ack-cell reclaim (ADR 0008)", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const NOW = 1_800_000_000_000;
+  const ACK_CAPACITY = "523600000000"; // ~5,236 CKB, a v3 receipt-only cell
+  const CHUNK_TX = `0x${"5c".repeat(32)}`;
+
+  /** A transport whose get_live_cell answers `liveStatus` (default dead). */
+  function liveCellTransport(liveStatus: "live" | "dead" | "unknown"): JsonRpcTransport {
+    const rest = makeTransport([]);
+    return {
+      call(url, method, params) {
+        if (method === "get_live_cell") {
+          return Promise.resolve(
+            liveStatus === "live"
+              ? {
+                  cell: {
+                    output: {
+                      capacity: "0x0",
+                      lock: { code_hash: fillHex(0x01, 32), hash_type: "type", args: "0x" },
+                      type: null,
+                    },
+                    data: null,
+                  },
+                  status: "live",
+                }
+              : { cell: null, status: liveStatus },
+          );
+        }
+        return rest.call(url, method, params);
+      },
+    };
+  }
+
+  /**
+   * Bob received Alice's message `orig-1` and auto-acked it. The ack is an
+   * OUTGOING row `<prefix>orig-1`, committed `ageDays` before NOW and sitting
+   * at `available_on_chain`, the state every ack has stopped at until now.
+   */
+  async function seedAck(
+    stack: Stack,
+    opts: {
+      prefix: "response:" | "ack-attachment:";
+      originalState: "awaiting_remote_reclaim" | "remote_reclaimed";
+      ageDays: number;
+      withManifest?: boolean;
+    },
+  ) {
+    const alice = await stack.contacts.create({
+      displayName: "alice",
+      profileIdHex: "ab".repeat(32),
+    });
+    const conv = await stack.conversations.getOrCreateForContact(alice.id);
+    const original = await stack.messages.insert({
+      conversationId: conv.id,
+      direction: "incoming",
+      body: "hi",
+      logicalMessageId: "orig-1",
+      state: opts.originalState,
+    });
+    if (opts.withManifest === true) {
+      await stack.attachments.create({
+        messageId: original.id,
+        kind: "image",
+        byteLength: 3800,
+        manifest: codec.encodeAttachmentManifestV1({
+          attachment_id: new Uint8Array(16).fill(0x11),
+          ckbfs_root: { tx_hash: hexToBytes(CHUNK_TX.slice(2)), index: 0 },
+          chunk_outpoints: [{ tx_hash: hexToBytes(CHUNK_TX.slice(2)), index: 0 }],
+          encrypted_size: 4096n,
+          plaintext_size: 3800n,
+          mime_type: new TextEncoder().encode("image/webp"),
+          width: 640,
+          height: 480,
+          thumbnail: undefined,
+          content_hash: new Uint8Array(32).fill(0xc1),
+          cipher_hash: new Uint8Array(32).fill(0xc2),
+          encryption_nonce: new Uint8Array(12).fill(0x0c),
+          encryption_algorithm: { family: 0x03, parameter: 1 },
+          reclaim_group_id: new Uint8Array(16).fill(0x26),
+        }),
+      });
+    }
+    const ack = await stack.messages.insert({
+      conversationId: conv.id,
+      direction: "outgoing",
+      body: "",
+      logicalMessageId: `${opts.prefix}orig-1`,
+      state: "available_on_chain",
+    });
+    const txHash = `0x${"ac".repeat(32)}`;
+    await stack.outgoingTxs.record({
+      txHash,
+      purpose: `message:${opts.prefix}orig-1`,
+      state: "submitted",
+      capacityShannon: ACK_CAPACITY,
+    });
+    await stack.outgoingTxs.markState(txHash, "committed", {
+      committedAtMs: NOW - opts.ageDays * DAY_MS,
+    });
+    // The publish monitor reserved the ack's capacity at commit; model that.
+    const funded = BigInt(ACK_CAPACITY) * 10n;
+    await stack.deps.balances.setChainBalances(stack.deps.walletId, funded, funded);
+    await stack.deps.balances.reserveCapacity(stack.deps.walletId, BigInt(ACK_CAPACITY));
+    return { original, ack };
+  }
+
+  async function runAt(stack: Stack): Promise<number[]> {
+    const writable = stack.deps as { -readonly [K in keyof SyncWorkerDeps]: SyncWorkerDeps[K] };
+    writable.now = () => NOW;
+    return queueReclaimableAcks(stack.deps);
+  }
+
+  it("queues a 0x01 ack once the sender has reclaimed the original, funding reclaimable", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "remote_reclaimed",
+        ageDays: 0,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+      expect((await stack.messages.getById(ack.id))?.state).toBe("reclaim_queued");
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(BigInt(ACK_CAPACITY));
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("keeps a fresh 0x01 ack while the original is still live (sender may not have seen it)", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "awaiting_remote_reclaim",
+        ageDays: 1,
+      });
+      expect(await runAt(stack)).toEqual([]);
+      expect((await stack.messages.getById(ack.id))?.state).toBe("available_on_chain");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("falls back after 30 days even when the sender never reclaimed", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "awaiting_remote_reclaim",
+        ageDays: 31,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("does NOT queue a 0x05 ack just because the message cell is gone: chunks still live", async () => {
+    // The message cell went on the earlier 0x01. Only the CHUNK cells being
+    // spent proves the sender processed this 0x05; reclaiming it earlier would
+    // leave the sender's image chunks locked forever.
+    const stack = await makeStack({ transport: liveCellTransport("live") });
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "ack-attachment:",
+        originalState: "remote_reclaimed",
+        ageDays: 1,
+        withManifest: true,
+      });
+      expect(await runAt(stack)).toEqual([]);
+      expect((await stack.messages.getById(ack.id))?.state).toBe("available_on_chain");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("queues a 0x05 ack once the sender has spent the chunk cells", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("dead") });
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "ack-attachment:",
+        originalState: "remote_reclaimed",
+        ageDays: 1,
+        withManifest: true,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("an 'unknown' live-cell answer is not proof the chunks are spent", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("unknown") });
+    try {
+      await seedAck(stack, {
+        prefix: "ack-attachment:",
+        originalState: "remote_reclaimed",
+        ageDays: 1,
+        withManifest: true,
+      });
+      expect(await runAt(stack)).toEqual([]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("lifecycle.queueAckForReclaim refuses a row already queued (no double funding)", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "remote_reclaimed",
+        ageDays: 0,
+      });
+      expect(await stack.deps.lifecycle.queueAckForReclaim(ack.id)).toBe(true);
+      expect(await stack.deps.lifecycle.queueAckForReclaim(ack.id)).toBe(false);
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(BigInt(ACK_CAPACITY));
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("resumes an ack a crash left mid-walk (at acknowledged), funding it exactly once", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "remote_reclaimed",
+        ageDays: 0,
+      });
+      // The process died after these two edges, before reclaim_queued + funding.
+      await stack.messages.transitionState(ack.id, "downloaded_by_recipient");
+      await stack.messages.transitionState(ack.id, "acknowledged");
+      expect(await runAt(stack)).toEqual([ack.id]);
+      expect((await stack.messages.getById(ack.id))?.state).toBe("reclaim_queued");
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(BigInt(ACK_CAPACITY));
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("finds an ack behind more than 500 older content rows at available_on_chain", async () => {
+    const stack = await makeStack();
+    try {
+      const alice = await stack.contacts.create({
+        displayName: "carol",
+        profileIdHex: "cd".repeat(32),
+      });
+      const conv = await stack.conversations.getOrCreateForContact(alice.id);
+      for (let i = 0; i < 600; i++) {
+        await stack.messages.insert({
+          conversationId: conv.id,
+          direction: "outgoing",
+          body: "unacked",
+          logicalMessageId: `content-${String(i)}`,
+          state: "available_on_chain",
+        });
+      }
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "remote_reclaimed",
+        ageDays: 0,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("never touches an old CONTENT message waiting for its ack", async () => {
+    const stack = await makeStack();
+    try {
+      const alice = await stack.contacts.create({
+        displayName: "alice",
+        profileIdHex: "ab".repeat(32),
+      });
+      const conv = await stack.conversations.getOrCreateForContact(alice.id);
+      const content = await stack.messages.insert({
+        conversationId: conv.id,
+        direction: "outgoing",
+        body: "hello",
+        logicalMessageId: "content-1",
+        state: "available_on_chain",
+        createdAtMs: NOW - 90 * DAY_MS,
+      });
+      expect(await runAt(stack)).toEqual([]);
+      expect((await stack.messages.getById(content.id))?.state).toBe("available_on_chain");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("is idempotent: a second pass queues nothing and funds reclaimable once", async () => {
+    const stack = await makeStack();
+    try {
+      await seedAck(stack, { prefix: "response:", originalState: "remote_reclaimed", ageDays: 0 });
+      await runAt(stack);
+      expect(await runAt(stack)).toEqual([]);
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(BigInt(ACK_CAPACITY));
     } finally {
       await stack.db.close();
     }

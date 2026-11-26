@@ -53,6 +53,7 @@ import {
 export { ingestIncomingCellData } from "./ingest.js";
 import type { Notifier } from "@cemp/ui";
 import type { WorkerSpec } from "./engine.js";
+import { shouldReclaimAck } from "./ack-reclaim-policy.js";
 
 /** Worker ids + intervals (task 6; WorkManager floor is 15 minutes). */
 export const WORKER_INTERVALS = {
@@ -168,6 +169,8 @@ export interface SyncWorkerDeps {
     reclaimGroupId: Uint8Array;
     outpoints: readonly OutPoint[];
   }) => Promise<unknown>;
+  /** Wall clock (ms). Test seam for the ack-reclaim fallback; defaults to Date.now. */
+  readonly now?: () => number;
 }
 
 function spec(id: WorkerId, requiresNetwork: boolean, run: () => Promise<void>): WorkerSpec {
@@ -625,11 +628,101 @@ async function runReclaimBatch(deps: SyncWorkerDeps): Promise<void> {
     return; // another engine holds the reclaim job (task 10)
   }
   try {
+    // Acks first, so a newly eligible ack rides in this pass's batch. Its own
+    // failure (e.g. the listing query) must never block the batch reclaim of
+    // already-queued rows: those are re-examined next pass anyway.
+    try {
+      await queueReclaimableAcks(deps);
+    } catch {
+      // Swallowed by design; see above. The batch below still runs.
+    }
     await deps.lifecycle.executeReclaimBatch();
     await reclaimAttachmentGroups(deps);
   } finally {
     await deps.leases.release("reclaim:batch", deps.engineId);
   }
+}
+
+/**
+ * Queue our own acknowledgement cells for reclaim (ADR 0008). Before this,
+ * every ack stopped at `available_on_chain` forever: acks are never acked
+ * back (ADR 0005), so no receipt ever moved them on. Measured on testnet
+ * 2026-11-26: 32 live ack cells whose originals were long reclaimed.
+ *
+ * An ack goes when `shouldReclaimAck` says so: on proof the sender consumed
+ * it, or past the generous fallback age. Per-row failures are isolated and
+ * the row is simply re-examined next pass. Returns the queued row ids.
+ */
+export async function queueReclaimableAcks(deps: SyncWorkerDeps): Promise<number[]> {
+  const nowMs = (deps.now ?? Date.now)();
+  // The ONE place an ack is told apart from a content message: content rows
+  // are never reclaimed here, only through a genuine receipt.
+  // Every ack-able state, not just available_on_chain, so a row a crash left
+  // part-way through the walk is resumed (review M1).
+  const candidates = await deps.messages.listOutgoingAcks([
+    "available_on_chain",
+    "downloaded_by_recipient",
+    "acknowledged",
+  ]);
+  const acks = candidates.flatMap((m) => {
+    const kind = m.direction === "outgoing" ? receiptKindOf(m.logicalMessageId) : undefined;
+    return kind === undefined ? [] : [{ ack: m, kind }];
+  });
+  const queued: number[] = [];
+  for (const { ack, kind } of acks) {
+    try {
+      const original = await deps.messages.getByLogicalId(
+        ack.logicalMessageId.slice(kind.prefix.length),
+      );
+      const journal = await deps.outgoingTxs.findLatestByPurpose(`message:${ack.logicalMessageId}`);
+      const senderConsumedAck =
+        original === undefined
+          ? false
+          : kind.status === 0x01
+            ? // The sender spends the message cell only after reading our 0x01;
+              // the responder watch has already observed that spend.
+              original.state === "remote_reclaimed"
+            : // The message cell went on the earlier 0x01, so it proves nothing
+              // about THIS 0x05. The sender spends chunk cells only after it.
+              await chunkCellsSpent(deps, original.id);
+      const reclaim = shouldReclaimAck({
+        senderConsumedAck,
+        ackCommittedAtMs: journal?.committedAtMs ?? journal?.submittedAtMs ?? ack.createdAtMs,
+        nowMs,
+      });
+      if (reclaim && (await deps.lifecycle.queueAckForReclaim(ack.id))) {
+        queued.push(ack.id);
+      }
+    } catch {
+      // A transient chain/DB error on one ack must not block the others; the
+      // row stays at available_on_chain and is re-examined next pass.
+    }
+  }
+  return queued;
+}
+
+/**
+ * True only when the original image's first chunk cell is explicitly DEAD.
+ * `unknown` means the node has no information (review E4), not that the
+ * cell is gone. No manifest or no chunks gives false: there is nothing to
+ * prove consumption with, so only the age fallback can release the ack.
+ */
+async function chunkCellsSpent(deps: SyncWorkerDeps, originalRowId: number): Promise<boolean> {
+  const withManifest = (await deps.attachments.listForMessage(originalRowId)).find(
+    (a) => a.manifest !== null,
+  );
+  if (withManifest?.manifest == null) {
+    return false;
+  }
+  const [first] = codec.decodeAttachmentManifestV1(withManifest.manifest).chunk_outpoints;
+  if (first === undefined) {
+    return false;
+  }
+  const status = await deps.client.getLiveCell({
+    txHash: `0x${bytesToHex(first.tx_hash)}`,
+    index: `0x${first.index.toString(16)}`,
+  });
+  return status.status === "dead";
 }
 
 /**

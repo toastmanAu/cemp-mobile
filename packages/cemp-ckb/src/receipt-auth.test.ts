@@ -164,6 +164,9 @@ class RecordingLifecycleStore implements LifecycleStore {
           },
     );
   }
+  getMessageState(rowId: number): Promise<string | undefined> {
+    return Promise.resolve(this.rows.get(rowId)?.state);
+  }
   listOutgoingByState(state: string): Promise<LifecycleMessage[]> {
     return Promise.resolve(
       [...this.rows.values()]

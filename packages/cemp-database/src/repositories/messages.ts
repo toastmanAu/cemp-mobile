@@ -226,6 +226,26 @@ export class MessageRepository {
     return rows.map(rowToMessage);
   }
 
+  /**
+   * OUR acknowledgement rows (outgoing, hidden ack prefixes) in the given
+   * states, oldest first (ADR 0008). Filtered in SQL so unacked CONTENT rows
+   * sharing those states cannot fill the window and starve the acks.
+   */
+  async listOutgoingAcks(states: readonly MessageState[], limit = 500): Promise<Message[]> {
+    if (states.length === 0) {
+      return [];
+    }
+    const placeholders = states.map(() => "?").join(", ");
+    const isAck = HIDDEN_ACK_PREFIXES.map((prefix) => `logical_message_id LIKE '${prefix}%'`).join(
+      " OR ",
+    );
+    const rows = await this.#db.all(
+      `SELECT * FROM messages WHERE direction = 'outgoing' AND (${isAck}) AND state IN (${placeholders}) ORDER BY id LIMIT ?`,
+      [...states, limit],
+    );
+    return rows.map(rowToMessage);
+  }
+
   /** Count incoming messages not yet displayed (the shell's unread badge). */
   async countUnread(conversationId: number): Promise<number> {
     const row = await this.#db.get(

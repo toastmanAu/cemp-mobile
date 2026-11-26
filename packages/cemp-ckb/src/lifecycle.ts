@@ -463,6 +463,15 @@ export class ResponseLifecycle {
         // reclaimed — the direct edge does not exist).
         await store.transitionMessage(message.rowId, "reclaim_pending");
         await store.transitionMessage(message.rowId, "reclaimed");
+        // ADR 0009 review M2: release what queueing funded. No double release
+        // is possible: the resume path releases only AFTER moving its rows to
+        // `reclaimed`, so a row still reaching this branch was never released.
+        // The fee of whatever spent it is unknown here and is not burned; the
+        // balance refresh reconciles buckets against the chain.
+        const journal = await store.getMessageJournalInfo(message.rowId);
+        if (journal?.capacityShannon != null && journal.capacityShannon !== "0") {
+          await store.releaseReclaimedCapacity(journal.capacityShannon);
+        }
       }
       // `unknown`: no information this round — leave queued, retry later.
     }

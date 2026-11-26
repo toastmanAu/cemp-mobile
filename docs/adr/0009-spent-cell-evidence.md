@@ -65,3 +65,30 @@ reclaim) were already correct and are unchanged.
 - Each of the 6 guards (committed, depth, index range, and each call site) was
   mutation-probed on its own, rebuilding `@cemp/ckb` for the call-site probes;
   its named test went red every time.
+
+## Review (2026-11-27)
+
+An independent code review found no critical or high issues. It found no way
+to get a false `spent` from a single consistent node. Fixed, each with a test
+written first and a mutation probe:
+
+- **M1, one bad row aborted everything.** `resolveOutPointFate` makes up to
+  five RPC reads. A throw from any of them aborted the whole reclaim batch or
+  watch poll, so one row whose creating tx failed to parse could block every
+  reclaim. The helper now never throws: a node error is `unknown` for that out
+  point only.
+- **M2, capacity left in reclaimable.** The reclaim batch's `spent` branch
+  moved the row to `reclaimed` but never released the capacity that queueing
+  had funded. It now releases the journaled capacity. A double release is
+  impossible: the resume path releases only after moving its rows to
+  `reclaimed`. The spending tx's fee is unknown, so it is not burned; the
+  balance refresh reconciles.
+- **LOW-1, lagging backend.** Behind a load-balanced endpoint, the first
+  `unknown` may come from a backend more than 24 blocks behind, while another
+  backend supplies the "committed deep" evidence. `get_live_cell` is now read
+  again after the evidence, and both reads must say not-live.
+  This mitigates the case; it does not eliminate it. Pinning every read to one
+  backend is not possible over a plain JSON-RPC URL.
+
+Accepted (LOW-2): a watch whose creating tx is never found costs up to three
+extra RPCs per poll for as long as the watch exists.

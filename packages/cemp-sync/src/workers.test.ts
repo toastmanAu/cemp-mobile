@@ -1602,7 +1602,7 @@ describe("ack-cell reclaim (ADR 0008)", () => {
     }
   });
 
-  it("REAL NODE (ADR 0009): a queued row whose cell is already spent is closed as reclaimed", async () => {
+  it("REAL NODE (ADR 0009): a queued row whose cell is already spent is closed as reclaimed, releasing its capacity", async () => {
     const stack = await makeStack({ transport: liveCellTransport("real-node-spent") });
     try {
       const alice = await stack.contacts.create({
@@ -1621,8 +1621,25 @@ describe("ack-cell reclaim (ADR 0008)", () => {
         txHash: `0x${"0e".repeat(32)}`,
         outpointIndex: 0,
       });
+      // As the publish + ack paths left it: journaled capacity, reserved at
+      // commit, moved to reclaimable when it was queued.
+      await stack.outgoingTxs.record({
+        txHash: `0x${"0e".repeat(32)}`,
+        purpose: "message:spent-1",
+        state: "committed",
+        capacityShannon: ACK_CAPACITY,
+      });
+      const cap = BigInt(ACK_CAPACITY);
+      await stack.deps.balances.setChainBalances(stack.deps.walletId, cap * 10n, cap * 10n);
+      await stack.deps.balances.reserveCapacity(stack.deps.walletId, cap);
+      await stack.deps.balances.markReclaimable(stack.deps.walletId, cap);
+
       await stack.deps.lifecycle.executeReclaimBatch();
+
       expect((await stack.messages.getById(row.id))?.state).toBe("reclaimed");
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(0n);
+      expect(balance.availableShannon).toBe(cap * 10n);
     } finally {
       await stack.db.close();
     }

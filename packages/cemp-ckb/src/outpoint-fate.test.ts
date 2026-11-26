@@ -14,19 +14,28 @@ const TIP = 23_191_200;
  */
 function fakeNode(opts: {
   live?: LiveCellStatus["status"];
+  /** Answers for successive get_live_cell calls (overrides `live`). */
+  liveSeq?: LiveCellStatus["status"][];
+  throwOn?: "getTransaction" | "getTipHeader" | "getTransactionBody";
   txStatus?: TransactionStatus["status"];
   createdAt?: number;
   outputs?: number;
 }): FateClient {
-  const live = opts.live ?? "unknown";
+  let call = 0;
+  const boom = (name: string) => {
+    if (opts.throwOn === name) throw new Error(`rpc ${name} failed`);
+  };
   return {
-    getLiveCell: (outPoint) =>
-      Promise.resolve(
+    getLiveCell: (outPoint) => {
+      const live = opts.liveSeq?.[call++] ?? opts.live ?? "unknown";
+      return Promise.resolve(
         live === "live"
           ? { status: "live", cell: { outPoint } as unknown as Cell }
           : ({ status: live, outPoint } as LiveCellStatus),
-      ),
+      );
+    },
     getTransaction: (hash) => {
+      boom("getTransaction");
       const s = opts.txStatus ?? "committed";
       return Promise.resolve(
         s === "committed"
@@ -39,17 +48,21 @@ function fakeNode(opts: {
           : ({ status: s, txHash: hash } as TransactionStatus),
       );
     },
-    getTransactionBody: () =>
-      Promise.resolve({
+    getTransactionBody: () => {
+      boom("getTransactionBody");
+      return Promise.resolve({
         outputs: Array.from({ length: opts.outputs ?? 2 }, () => ({})),
-      } as unknown as Transaction),
-    getTipHeader: () =>
-      Promise.resolve({
+      } as unknown as Transaction);
+    },
+    getTipHeader: () => {
+      boom("getTipHeader");
+      return Promise.resolve({
         number: `0x${TIP.toString(16)}`,
         epoch: "0x0",
         timestamp: "0x0",
         hash: `0x${"ef".repeat(32)}`,
-      }),
+      });
+    },
   };
 }
 
@@ -97,5 +110,17 @@ describe("resolveOutPointFate", () => {
   it("the depth is a few minutes of blocks, not hours", () => {
     expect(SPENT_CONFIRMATION_DEPTH).toBeGreaterThanOrEqual(12);
     expect(SPENT_CONFIRMATION_DEPTH).toBeLessThanOrEqual(100);
+  });
+
+  it.each(["getTransaction", "getTipHeader", "getTransactionBody"] as const)(
+    "a node error in %s yields unknown and never throws (one bad row cannot block a batch)",
+    async (throwOn) => {
+      expect((await resolveOutPointFate(fakeNode({ throwOn }), OUT)).fate).toBe("unknown");
+    },
+  );
+
+  it("a cell that reads live on the re-check is live (lagging backend behind a load balancer)", async () => {
+    const fate = await resolveOutPointFate(fakeNode({ liveSeq: ["unknown", "live"] }), OUT);
+    expect(fate.fate).toBe("live");
   });
 });

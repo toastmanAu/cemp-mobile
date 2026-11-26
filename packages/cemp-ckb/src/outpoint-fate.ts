@@ -41,10 +41,23 @@ export type OutPointFate =
   | { readonly fate: "spent" }
   | { readonly fate: "unknown" };
 
+/**
+ * Never throws: a node error at any step is `unknown` for THIS out point, so
+ * one bad row cannot abort a whole reclaim batch or watch poll (review of
+ * ADR 0009, M1). Callers retry `unknown` on their next pass.
+ */
 export async function resolveOutPointFate(
   client: FateClient,
   outPoint: OutPoint,
 ): Promise<OutPointFate> {
+  try {
+    return await resolve(client, outPoint);
+  } catch {
+    return { fate: "unknown" };
+  }
+}
+
+async function resolve(client: FateClient, outPoint: OutPoint): Promise<OutPointFate> {
   const live = await client.getLiveCell(outPoint);
   if (live.status === "live") {
     return { fate: "live", cell: live.cell };
@@ -63,6 +76,13 @@ export async function resolveOutPointFate(
   const body = await client.getTransactionBody(outPoint.txHash);
   if (body === null || BigInt(outPoint.index) >= BigInt(body.outputs.length)) {
     return { fate: "unknown" };
+  }
+  // Re-check last (review LOW-1): behind a load-balanced endpoint the first
+  // `unknown` may have come from a lagging backend. Two independent reads
+  // must both say not-live, with the evidence gathered in between.
+  const again = await client.getLiveCell(outPoint);
+  if (again.status === "live") {
+    return { fate: "live", cell: again.cell };
   }
   return { fate: "spent" };
 }

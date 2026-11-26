@@ -22,6 +22,7 @@ import {
   balanceCategories,
   currentRoutingEpoch,
   findMessageCells,
+  resolveOutPointFate,
   type CempClient,
   type CempMessageTypeRef,
   type MessagePublisher,
@@ -702,9 +703,9 @@ export async function queueReclaimableAcks(deps: SyncWorkerDeps): Promise<number
 }
 
 /**
- * True only when the original image's first chunk cell is explicitly DEAD.
- * `unknown` means the node has no information (review E4), not that the
- * cell is gone. No manifest or no chunks gives false: there is nothing to
+ * True only when the original image's first chunk cell is provably SPENT
+ * (ADR 0009: positive evidence, since a real node never answers `dead`).
+ * No evidence either way (review E4) is not spent. No manifest or no chunks gives false: there is nothing to
  * prove consumption with, so only the age fallback can release the ack.
  */
 async function chunkCellsSpent(deps: SyncWorkerDeps, originalRowId: number): Promise<boolean> {
@@ -718,11 +719,11 @@ async function chunkCellsSpent(deps: SyncWorkerDeps, originalRowId: number): Pro
   if (first === undefined) {
     return false;
   }
-  const status = await deps.client.getLiveCell({
+  const fate = await resolveOutPointFate(deps.client, {
     txHash: `0x${bytesToHex(first.tx_hash)}`,
     index: `0x${first.index.toString(16)}`,
   });
-  return status.status === "dead";
+  return fate.fate === "spent";
 }
 
 /**

@@ -35,6 +35,7 @@ import {
   resumeJournaledBroadcast,
   waitForTransactionCommit,
 } from "./monitor.js";
+import { resolveOutPointFate } from "./outpoint-fate.js";
 import { trackBroadcastSpend } from "./signing.js";
 import type { MlDsaV2TxSigner } from "./signing.js";
 import type { Cell, OutPoint } from "./types.js";
@@ -448,13 +449,15 @@ export class ResponseLifecycle {
         txHash: ref.txHash,
         index: `0x${ref.outpointIndex.toString(16)}`,
       };
-      const status = await this.#deps.client.getLiveCell(outPoint);
-      if (status.status === "live") {
+      // ADR 0009: a real node reports a spent cell `unknown`, never `dead`;
+      // resolveOutPointFate concludes `spent` only from positive evidence.
+      const fate = await resolveOutPointFate(this.#deps.client, outPoint);
+      if (fate.fate === "live") {
         outpoints.push({ txHash: ref.txHash, index: outPoint.index });
-        resolvedCells.push(status.cell);
+        resolvedCells.push(fate.cell);
         covered.push(message);
-        releasedTotal += BigInt(status.cell.output.capacity);
-      } else if (status.status === "dead") {
+        releasedTotal += BigInt(fate.cell.output.capacity);
+      } else if (fate.fate === "spent") {
         // Already spent by us (prior reclaim committed while we were offline).
         // Review E2: walk the legal path (reclaim_queued → reclaim_pending →
         // reclaimed — the direct edge does not exist).
@@ -584,17 +587,16 @@ export class ResponseLifecycle {
         txHash: watch.txHash,
         index: `0x${watch.outpointIndex.toString(16)}`,
       };
-      const status = await this.#deps.client.getLiveCell(outPoint);
-      if (status.status === "live") {
+      const fate = await resolveOutPointFate(this.#deps.client, outPoint);
+      if (fate.fate !== "spent") {
+        // Live, or (review E4) no evidence either way: leave the watch active
+        // and retry next poll; never flip irreversible state on missing
+        // information. ADR 0009: a real node never says `dead` for a spent
+        // cell, so `spent` comes from resolveOutPointFate's positive evidence
+        // (creating tx committed deep, cell no longer live), not from `dead`.
         continue;
       }
-      if (status.status === "unknown") {
-        // Review E4: `unknown` means the NODE has no information — not that
-        // the cell is gone. Leave the watch active and retry next poll; never
-        // flip irreversible state from one unverified answer.
-        continue;
-      }
-      // Explicitly dead: the cell is gone. The spender is not resolvable
+      // Spent: the cell is gone. The spender is not resolvable
       // through get_live_cell — recorded as a sentinel; the watch is pruned
       // immediately after, so the sentinel never collides with a real hash.
       await store.markWatchSpent(watch.txHash, watch.outpointIndex, "unknown-spender");

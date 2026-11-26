@@ -24,6 +24,7 @@ export {
   type ReceiptSource,
 } from "./authenticated-incoming.js";
 export * from "./lifecycle.js";
+export * from "./outpoint-fate.js";
 export * from "./rate-limit.js";
 export * from "./rotation-verify.js";
 export * from "./sender-resolver.js";

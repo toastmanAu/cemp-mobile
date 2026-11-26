@@ -1320,26 +1320,51 @@ describe("ack-cell reclaim (ADR 0008)", () => {
   const CHUNK_TX = `0x${"5c".repeat(32)}`;
 
   /** A transport whose get_live_cell answers `liveStatus` (default dead). */
-  function liveCellTransport(liveStatus: "live" | "dead" | "unknown"): JsonRpcTransport {
+  /**
+   * A node with a chosen answer for every out point. `real-node-spent` is
+   * what testnet actually answers for a spent cell (2026-11-26): get_live_cell
+   * says `unknown`, while the creating tx is committed deep below the tip.
+   * `unknown-no-evidence` is a node that knows nothing about the tx either.
+   */
+  function liveCellTransport(
+    mode: "live" | "dead" | "unknown-no-evidence" | "real-node-spent",
+  ): JsonRpcTransport {
     const rest = makeTransport([]);
+    const lock = { code_hash: fillHex(0x01, 32), hash_type: "type", args: "0x" };
+    const output = { capacity: "0x0", lock, type: null };
     return {
       call(url, method, params) {
         if (method === "get_live_cell") {
           return Promise.resolve(
-            liveStatus === "live"
-              ? {
-                  cell: {
-                    output: {
-                      capacity: "0x0",
-                      lock: { code_hash: fillHex(0x01, 32), hash_type: "type", args: "0x" },
-                      type: null,
-                    },
-                    data: null,
-                  },
-                  status: "live",
-                }
-              : { cell: null, status: liveStatus },
+            mode === "live"
+              ? { cell: { output, data: null }, status: "live" }
+              : { cell: null, status: mode === "dead" ? "dead" : "unknown" },
           );
+        }
+        if (method === "get_transaction" && mode === "unknown-no-evidence") {
+          return Promise.resolve(null);
+        }
+        if (method === "get_transaction" && mode === "real-node-spent") {
+          return Promise.resolve({
+            transaction: {
+              version: "0x0",
+              cell_deps: [],
+              header_deps: [],
+              inputs: [],
+              outputs: [output, output, output, output],
+              outputs_data: ["0x", "0x", "0x", "0x"],
+              witnesses: [],
+            },
+            tx_status: { status: "committed", block_hash: fillHex(0x99, 32) },
+          });
+        }
+        if (method === "get_tip_header") {
+          return Promise.resolve({
+            number: "0x500", // 0x100 (creating block) + 1024: far past the depth
+            epoch: "0x0",
+            timestamp: "0x0",
+            hash: fillHex(0x98, 32),
+          });
         }
         return rest.call(url, method, params);
       },
@@ -1355,7 +1380,7 @@ describe("ack-cell reclaim (ADR 0008)", () => {
     stack: Stack,
     opts: {
       prefix: "response:" | "ack-attachment:";
-      originalState: "awaiting_remote_reclaim" | "remote_reclaimed";
+      originalState: "response_sent" | "awaiting_remote_reclaim" | "remote_reclaimed";
       ageDays: number;
       withManifest?: boolean;
     },
@@ -1505,8 +1530,8 @@ describe("ack-cell reclaim (ADR 0008)", () => {
     }
   });
 
-  it("an 'unknown' live-cell answer is not proof the chunks are spent", async () => {
-    const stack = await makeStack({ transport: liveCellTransport("unknown") });
+  it("an 'unknown' live-cell answer with no evidence is not proof the chunks are spent", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("unknown-no-evidence") });
     try {
       await seedAck(stack, {
         prefix: "ack-attachment:",
@@ -1515,6 +1540,89 @@ describe("ack-cell reclaim (ADR 0008)", () => {
         withManifest: true,
       });
       expect(await runAt(stack)).toEqual([]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("REAL NODE (ADR 0009): a 0x05 ack is queued once its chunk reads 'unknown' + committed", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("real-node-spent") });
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "ack-attachment:",
+        originalState: "remote_reclaimed",
+        ageDays: 1,
+        withManifest: true,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("REAL NODE (ADR 0009): the responder watch fires and the 0x01 ack is queued in one pass", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("real-node-spent") });
+    try {
+      const { original, ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "response_sent",
+        ageDays: 0,
+      });
+      await stack.deps.lifecycle.finalizeResponseSent({
+        responseRowId: original.id,
+        originalOutpoint: { txHash: `0x${"0f".repeat(32)}`, index: 0 },
+      });
+      // The sender reclaimed the original; the node says `unknown`, not `dead`.
+      expect(await stack.deps.lifecycle.pollWatchesOnce()).toEqual([
+        `response:${String(original.id)}`,
+      ]);
+      expect((await stack.messages.getById(original.id))?.state).toBe("remote_reclaimed");
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a watch stays active while the node has no evidence either way", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("unknown-no-evidence") });
+    try {
+      const { original } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "response_sent",
+        ageDays: 0,
+      });
+      await stack.deps.lifecycle.finalizeResponseSent({
+        responseRowId: original.id,
+        originalOutpoint: { txHash: `0x${"0f".repeat(32)}`, index: 0 },
+      });
+      expect(await stack.deps.lifecycle.pollWatchesOnce()).toEqual([]);
+      expect((await stack.messages.getById(original.id))?.state).toBe("awaiting_remote_reclaim");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("REAL NODE (ADR 0009): a queued row whose cell is already spent is closed as reclaimed", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("real-node-spent") });
+    try {
+      const alice = await stack.contacts.create({
+        displayName: "alice",
+        profileIdHex: "ab".repeat(32),
+      });
+      const conv = await stack.conversations.getOrCreateForContact(alice.id);
+      const row = await stack.messages.insert({
+        conversationId: conv.id,
+        direction: "outgoing",
+        body: "spent already",
+        logicalMessageId: "spent-1",
+        state: "reclaim_queued",
+      });
+      await stack.messages.setChainRef(row.id, {
+        txHash: `0x${"0e".repeat(32)}`,
+        outpointIndex: 0,
+      });
+      await stack.deps.lifecycle.executeReclaimBatch();
+      expect((await stack.messages.getById(row.id))?.state).toBe("reclaimed");
     } finally {
       await stack.db.close();
     }

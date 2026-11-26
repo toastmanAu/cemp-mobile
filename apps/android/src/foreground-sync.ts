@@ -42,6 +42,14 @@ export interface ForegroundSyncDeps {
    * again. Never receives message content — only the thrown error.
    */
   readonly onError?: (error: unknown) => void;
+  /**
+   * Called once after EVERY sweep settles (scheduled, resumed or `runNow`),
+   * success or failure. Screens that render from the database re-read on it:
+   * a sweep writes new messages into the database, and nothing else tells a
+   * mounted list that its snapshot is stale. A throwing listener is contained
+   * and never disturbs the cadence.
+   */
+  readonly onSettled?: (outcome: { readonly ok: boolean }) => void;
 }
 
 /** Tight cadence while the user is watching a conversation for a reply. */
@@ -176,9 +184,11 @@ export class ForegroundSync {
   }
 
   async #sweep(): Promise<void> {
+    let ok = true;
     try {
       await this.#deps.sync();
     } catch (error: unknown) {
+      ok = false;
       // A failed sweep never stops the loop — the workers retry with backoff
       // (rule 5) and the next tick tries again. Swallowing it silently is what
       // made the sync failures in this app invisible, so it is surfaced.
@@ -189,6 +199,11 @@ export class ForegroundSync {
       // the sweep was in flight.
       if (this.#started && !this.#paused) {
         this.#rearm();
+      }
+      try {
+        this.#deps.onSettled?.({ ok });
+      } catch {
+        // A listener's bug is the listener's: the sync loop must keep going.
       }
     }
   }

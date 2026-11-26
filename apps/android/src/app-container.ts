@@ -86,6 +86,8 @@ export class AppContainer {
   #listeners = new Set<() => void>();
   #poll: ReturnType<typeof setInterval> | null = null;
   #foregroundSync: ForegroundSync | null = null;
+  /** Notified after every foreground sweep settles (see `onSyncSettled`). */
+  #syncSettledListeners = new Set<(outcome: { readonly ok: boolean }) => void>();
   #appStateSub: NativeEventSubscription | null = null;
 
   static #current: AppContainer | null = null;
@@ -202,6 +204,20 @@ export class AppContainer {
   subscribe(listener: () => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  /**
+   * Run `listener` after every foreground sync sweep settles, scheduled or
+   * screen-initiated, success or failure. Screens that render from the
+   * database subscribe while focused and re-read: the sweep writes new
+   * messages into the database, and nothing else tells them. Returns the
+   * unsubscribe function.
+   */
+  onSyncSettled(listener: (outcome: { readonly ok: boolean }) => void): () => void {
+    this.#syncSettledListeners.add(listener);
+    return () => {
+      this.#syncSettledListeners.delete(listener);
+    };
   }
 
   #setState(state: AppContainerState): void {
@@ -335,6 +351,15 @@ export class AppContainer {
         // the chats screen already surfaces sync status where the user can
         // act on it. Never log — a sync error can carry chain identifiers
         // (rule 2).
+      },
+      onSettled: (outcome) => {
+        for (const listener of [...this.#syncSettledListeners]) {
+          try {
+            listener(outcome);
+          } catch {
+            // One screen's bug must not starve the others of the update.
+          }
+        }
       },
     });
     this.#foregroundSync = sync;

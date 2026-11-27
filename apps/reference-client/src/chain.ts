@@ -11,7 +11,13 @@ import {
   collectCells,
 } from "@cemp/ckb";
 import type { BuiltTransaction, Cell, CempMessageTypeRef, Hash } from "@cemp/ckb";
-import { IDENTITY_HANDLES, IDENTITY_NAMES, deriveIdentity } from "./identities.js";
+import {
+  IDENTITY_HANDLES,
+  IDENTITY_NAMES,
+  currentRotationIndex,
+  deriveIdentity,
+  deriveProfileKeys,
+} from "./identities.js";
 import type { IdentityName } from "./identities.js";
 import { StateStore, defaultIdentityState, defaultSharedState } from "./state.js";
 import type { DeploymentRecord, IdentityState, SharedState } from "./state.js";
@@ -38,7 +44,17 @@ export class StepFailure extends Error {
 export interface RuntimeIdentity {
   name: IdentityName;
   handle: string;
-  bundle: IdentityKeyBundle;
+  /**
+   * The keys of this identity's CURRENT profile: envelope signing, inbound
+   * decryption, profile publication. Follows `shared.rotation`, so after the
+   * rotate step it is the rotation-1 bundle the live profile publishes.
+   * (It used to stay at rotation 0, and every envelope alice signed after a
+   * rotation was rejected: "signature does not verify under the sender's
+   * live profile key".)
+   */
+  readonly bundle: IdentityKeyBundle;
+  /** Rotation-0 keys behind `signer`/`lock`: the funding wallet, which a profile rotation does not move. */
+  readonly walletBundle: IdentityKeyBundle;
   signer: MlDsaV2TxSigner;
   lock: CccScript;
   address: string;
@@ -71,8 +87,8 @@ export async function loadCtx(stateDir: string): Promise<Ctx> {
 
   const identities = {} as Record<IdentityName, RuntimeIdentity>;
   for (const name of IDENTITY_NAMES) {
-    const bundle = deriveIdentity(name);
-    const signer = MlDsaV2TxSigner.fromIdentityKeys(bundle, client.ccc, CKB_TESTNET);
+    const walletBundle = deriveIdentity(name);
+    const signer = MlDsaV2TxSigner.fromIdentityKeys(walletBundle, client.ccc, CKB_TESTNET);
     const lock = signer.lockScript();
     const addressObjs = await signer.getAddressObjs();
     const address = addressObjs[0]?.toString();
@@ -98,10 +114,23 @@ export async function loadCtx(stateDir: string): Promise<Ctx> {
     } else {
       state = defaultIdentityState(name, derived);
     }
+    const rotatedBundles = new Map<number, IdentityKeyBundle>();
     identities[name] = {
       name,
       handle: derived.handle,
-      bundle,
+      // A getter, read live: the rotate step records `shared.rotation` mid-run
+      // and every later step must see the new keys without reloading.
+      get bundle(): IdentityKeyBundle {
+        const rotation = currentRotationIndex(name, shared.rotation);
+        if (rotation === 0) return walletBundle;
+        let keys = rotatedBundles.get(rotation);
+        if (keys === undefined) {
+          keys = deriveProfileKeys(name, rotation);
+          rotatedBundles.set(rotation, keys);
+        }
+        return keys;
+      },
+      walletBundle,
       signer,
       lock,
       address,

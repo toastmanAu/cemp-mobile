@@ -27,8 +27,13 @@ export const CONSERVATIVE_PER_CHUNK_SHANNON =
 /**
  * Upper-bound capacity for the manifest-carrying message cell: the envelope +
  * manifest (incl. ≤32 KiB thumbnail) + cell overhead, bounded generously.
+ *
+ * ADR 0007: a v3 envelope also carries the 3,309-byte ML-DSA-65 signature,
+ * so the bound is 32 KiB + 8 KiB. Measured: the largest v3 manifest cell
+ * (32 KiB thumbnail, 33 chunks) occupies ~39,917 CKB incl. the 1 CKB builder
+ * margin; the old 36,864 CKB bound under-counted it (capacity.test.ts).
  */
-export const CONSERVATIVE_MESSAGE_CELL_SHANNON = (32_768n + 4_096n) * SHANNON_PER_CKB;
+export const CONSERVATIVE_MESSAGE_CELL_SHANNON = (32_768n + 8_192n) * SHANNON_PER_CKB;
 
 export function estimateImageSendShannon(input: {
   readonly chunkCount: number;

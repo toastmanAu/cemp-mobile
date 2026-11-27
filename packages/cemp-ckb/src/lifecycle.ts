@@ -23,12 +23,19 @@
 import { buildReclaimTx, type CempMessageTypeRef } from "./builders.js";
 import type { TransactionLike } from "@ckb-ccc/core";
 import { CempCkbError, type CempClient } from "./client.js";
-import type { IncomingTextMessage } from "./incoming.js";
+import { verifyReceiptProof } from "@cemp/crypto";
+import {
+  isAuthenticatedIncoming,
+  isLegacyIncoming,
+  type ReceiptSource,
+} from "./authenticated-incoming.js";
+import type { IncomingReceipt } from "./incoming.js";
 import {
   JournaledAbandonedError,
   resumeJournaledBroadcast,
   waitForTransactionCommit,
 } from "./monitor.js";
+import { resolveOutPointFate } from "./outpoint-fate.js";
 import { trackBroadcastSpend } from "./signing.js";
 import type { MlDsaV2TxSigner } from "./signing.js";
 import type { Cell, OutPoint } from "./types.js";
@@ -51,10 +58,25 @@ export interface LifecycleWatch {
 export interface LifecycleStore {
   transitionMessage(rowId: number, to: string): Promise<void>;
   setMessageChainRef(rowId: number, ref: { txHash: string; outpointIndex: number }): Promise<void>;
-  findOutgoingByEnvelopeMessageId(
-    envelopeMessageIdHex: string,
-  ): Promise<{ rowId: number; state: string } | undefined>;
+  /**
+   * The OUTGOING message with this envelope id, plus the profile id of the
+   * contact it was sent to (null when that contact has no profile id) and
+   * the receipt key stored before broadcast (null for rows sent before ADR
+   * 0006). Used to bind a receipt to the message's recipient and to verify
+   * its proof of decryption. `receiptKey` is a fresh copy the caller wipes.
+   */
+  findOutgoingByEnvelopeMessageId(envelopeMessageIdHex: string): Promise<
+    | {
+        rowId: number;
+        state: string;
+        recipientProfileIdHex: string | null;
+        receiptKey: Uint8Array | null;
+      }
+    | undefined
+  >;
   listOutgoingByState(state: string): Promise<LifecycleMessage[]>;
+  /** Current state of a message row, or undefined when it does not exist. */
+  getMessageState(rowId: number): Promise<string | undefined>;
 
   recordOutgoingTx(input: {
     txHash: string;
@@ -170,14 +192,24 @@ export class ResponseLifecycle {
    *
    * Unknown ids are skipped silently (the reply may reference messages of
    * another device). Returns the acked row ids.
+   *
+   * Every receipt must pass the ADR 0006 acceptance rules
+   * ({@link #findReceiptTarget}); one that does not has NO side effect, and
+   * the remaining receipts are still processed.
+   *
+   * ADR 0007 §6: the input must be verifier-made — an `AuthenticatedIncoming`
+   * (v3, sender signature verified) or a `LegacyIncoming` (v1/v2, receipts
+   * proven per entry). Anything else, including a structural copy of either,
+   * has no effect.
    */
-  async processAcknowledgements(incoming: IncomingTextMessage): Promise<number[]> {
+  async processAcknowledgements(incoming: ReceiptSource): Promise<number[]> {
+    if (!isAuthenticatedIncoming(incoming) && !isLegacyIncoming(incoming)) {
+      return [];
+    }
     const acked: number[] = [];
     for (const receipt of incoming.receipts) {
       if (receipt.status === 0x05) {
-        const target = await this.#deps.store.findOutgoingByEnvelopeMessageId(
-          bytesToHex(receipt.messageId),
-        );
+        const target = await this.#findReceiptTarget(incoming, receipt);
         if (target !== undefined) {
           await this.#deps.store.markAttachmentRemoteDownloaded(target.rowId);
         }
@@ -186,28 +218,103 @@ export class ResponseLifecycle {
       if (receipt.status !== 0x01) {
         continue;
       }
-      const found = await this.#deps.store.findOutgoingByEnvelopeMessageId(
-        bytesToHex(receipt.messageId),
-      );
+      const found = await this.#findReceiptTarget(incoming, receipt);
       if (found === undefined || !ACKABLE_STATES.has(found.state)) {
         continue;
       }
-      if (found.state === "available_on_chain") {
-        await this.#deps.store.transitionMessage(found.rowId, "downloaded_by_recipient");
-      }
-      if (found.state !== "acknowledged") {
-        await this.#deps.store.transitionMessage(found.rowId, "acknowledged");
-      }
-      await this.#deps.store.transitionMessage(found.rowId, "reclaim_queued");
-      // Review E3: fund the reclaimable bucket from the journal's recorded
-      // cell capacity, so the later release has something to release.
-      const journal = await this.#deps.store.getMessageJournalInfo(found.rowId);
-      if (journal?.capacityShannon != null) {
-        await this.#deps.store.markCapacityReclaimable(journal.capacityShannon);
-      }
+      await this.#queueForReclaim(found);
       acked.push(found.rowId);
     }
     return acked;
+  }
+
+  /**
+   * Queue one of OUR acknowledgement cells for reclaim (ADR 0008). Acks are
+   * never acked back (ADR 0005), so they never reach `acknowledged` through
+   * a receipt; the caller has decided, by policy, that the cell may go.
+   * Walks the same legal edges as a receipt would and funds reclaimable the
+   * same way. No-op unless the row is still in an ack-able state, so a
+   * repeated pass never re-funds the bucket.
+   */
+  async queueAckForReclaim(rowId: number): Promise<boolean> {
+    // A FRESH read, and every ack-able state: a crash part-way through the
+    // walk below leaves the row at downloaded_by_recipient or acknowledged,
+    // and it must be resumable. Funding happens only on arrival at
+    // reclaim_queued, so resuming never funds twice, and a row already
+    // queued is refused here (a same-state transition would be a silent
+    // no-op, followed by a second funding).
+    const state = await this.#deps.store.getMessageState(rowId);
+    if (state === undefined || !ACKABLE_STATES.has(state)) {
+      return false;
+    }
+    await this.#queueForReclaim({ rowId, state });
+    return true;
+  }
+
+  async #queueForReclaim(found: { rowId: number; state: string }): Promise<void> {
+    if (found.state === "available_on_chain") {
+      await this.#deps.store.transitionMessage(found.rowId, "downloaded_by_recipient");
+    }
+    if (found.state !== "acknowledged") {
+      await this.#deps.store.transitionMessage(found.rowId, "acknowledged");
+    }
+    await this.#deps.store.transitionMessage(found.rowId, "reclaim_queued");
+    // Review E3: fund the reclaimable bucket from the journal's recorded
+    // cell capacity, so the later release has something to release.
+    const journal = await this.#deps.store.getMessageJournalInfo(found.rowId);
+    if (journal?.capacityShannon != null) {
+      await this.#deps.store.markCapacityReclaimable(journal.capacityShannon);
+    }
+  }
+
+  /**
+   * ADR 0006 receipt acceptance. A receipt names a target only when ALL hold:
+   *
+   * 1. it arrived in a version-2 or version-3 payload (v1 receipts carry no
+   *    proof);
+   * 2. its message id names an OUTGOING row whose conversation contact is
+   *    the receipt's claimed sender (the recipient binding from `dbae853`,
+   *    kept as defence in depth; fails closed with no contact profile id);
+   * 3. that row has a stored receipt key (rows sent before ADR 0006 have
+   *    none and can never be released by a receipt);
+   * 4. the proof verifies, in constant time, for that message id AND status.
+   *
+   * Only the sender and the intended recipient can derive the receipt key,
+   * so a chain observer impersonating the recipient (RCPT-01/02/04) cannot
+   * produce rule 4, and a genuine proof cannot be relabelled or moved.
+   */
+  async #findReceiptTarget(
+    incoming: ReceiptSource,
+    receipt: IncomingReceipt,
+  ): Promise<{ rowId: number; state: string } | undefined> {
+    if (incoming.protocolVersion === 1 || receipt.proof === null) {
+      return undefined;
+    }
+    const found = await this.#deps.store.findOutgoingByEnvelopeMessageId(
+      bytesToHex(receipt.messageId),
+    );
+    if (found === undefined) {
+      return undefined;
+    }
+    const receiptKey = found.receiptKey;
+    try {
+      if (found.recipientProfileIdHex === null) {
+        return undefined;
+      }
+      const sender = bytesToHex(incoming.senderProfileId).toLowerCase();
+      if (found.recipientProfileIdHex.toLowerCase() !== sender) {
+        return undefined;
+      }
+      if (receiptKey === null) {
+        return undefined;
+      }
+      if (!verifyReceiptProof(receiptKey, receipt.messageId, receipt.status, receipt.proof)) {
+        return undefined;
+      }
+      return { rowId: found.rowId, state: found.state };
+    } finally {
+      receiptKey?.fill(0);
+    }
   }
 
   /* ---------------- worker-driven commit finalization (review M-2) ------ */
@@ -342,18 +449,29 @@ export class ResponseLifecycle {
         txHash: ref.txHash,
         index: `0x${ref.outpointIndex.toString(16)}`,
       };
-      const status = await this.#deps.client.getLiveCell(outPoint);
-      if (status.status === "live") {
+      // ADR 0009: a real node reports a spent cell `unknown`, never `dead`;
+      // resolveOutPointFate concludes `spent` only from positive evidence.
+      const fate = await resolveOutPointFate(this.#deps.client, outPoint);
+      if (fate.fate === "live") {
         outpoints.push({ txHash: ref.txHash, index: outPoint.index });
-        resolvedCells.push(status.cell);
+        resolvedCells.push(fate.cell);
         covered.push(message);
-        releasedTotal += BigInt(status.cell.output.capacity);
-      } else if (status.status === "dead") {
+        releasedTotal += BigInt(fate.cell.output.capacity);
+      } else if (fate.fate === "spent") {
         // Already spent by us (prior reclaim committed while we were offline).
         // Review E2: walk the legal path (reclaim_queued → reclaim_pending →
         // reclaimed — the direct edge does not exist).
         await store.transitionMessage(message.rowId, "reclaim_pending");
         await store.transitionMessage(message.rowId, "reclaimed");
+        // ADR 0009 review M2: release what queueing funded. No double release
+        // is possible: the resume path releases only AFTER moving its rows to
+        // `reclaimed`, so a row still reaching this branch was never released.
+        // The fee of whatever spent it is unknown here and is not burned; the
+        // balance refresh reconciles buckets against the chain.
+        const journal = await store.getMessageJournalInfo(message.rowId);
+        if (journal?.capacityShannon != null && journal.capacityShannon !== "0") {
+          await store.releaseReclaimedCapacity(journal.capacityShannon);
+        }
       }
       // `unknown`: no information this round — leave queued, retry later.
     }
@@ -478,17 +596,16 @@ export class ResponseLifecycle {
         txHash: watch.txHash,
         index: `0x${watch.outpointIndex.toString(16)}`,
       };
-      const status = await this.#deps.client.getLiveCell(outPoint);
-      if (status.status === "live") {
+      const fate = await resolveOutPointFate(this.#deps.client, outPoint);
+      if (fate.fate !== "spent") {
+        // Live, or (review E4) no evidence either way: leave the watch active
+        // and retry next poll; never flip irreversible state on missing
+        // information. ADR 0009: a real node never says `dead` for a spent
+        // cell, so `spent` comes from resolveOutPointFate's positive evidence
+        // (creating tx committed deep, cell no longer live), not from `dead`.
         continue;
       }
-      if (status.status === "unknown") {
-        // Review E4: `unknown` means the NODE has no information — not that
-        // the cell is gone. Leave the watch active and retry next poll; never
-        // flip irreversible state from one unverified answer.
-        continue;
-      }
-      // Explicitly dead: the cell is gone. The spender is not resolvable
+      // Spent: the cell is gone. The spender is not resolvable
       // through get_live_cell — recorded as a sentinel; the watch is pruned
       // immediately after, so the sentinel never collides with a real hash.
       await store.markWatchSpent(watch.txHash, watch.outpointIndex, "unknown-spender");

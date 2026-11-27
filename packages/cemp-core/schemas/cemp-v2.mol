@@ -1,0 +1,38 @@
+// CEMP protocol version 2 — Molecule schema additions (normative; ADR 0006,
+// docs/adr/0006-receipt-proof-of-decryption.md).
+//
+// Read together with cemp-v1.mol: every type used here and not declared here
+// (Byte16, Byte32, Bytes, BytesOpt, Byte16Opt, Uint64, OutPointOpt,
+// AttachmentManifestVec) is the cemp-v1.mol declaration, unchanged. The
+// envelope (CempEnvelopeHeaderV1 / CempEnvelopeV1) is unchanged; its
+// `protocol_version` byte selects the payload layout: 1 → CempPayloadV1,
+// 2 → CempPayloadV2. Receivers dispatch on that byte; they never try one
+// layout and fall back to the other.
+//
+// Serialization changes require updating this schema, the protocol spec, the
+// golden vectors, and the serialization version together (AGENTS.md rule 1).
+
+// proof = HMAC-SHA256(receipt_key, "CEMP-RECEIPT-PROOF-V1" || message_id || status)
+table ReceiptEntryV2 {
+  message_id: Byte16,
+  status: byte,
+  proof: Byte32,
+}
+
+vector ReceiptVecV2 <ReceiptEntryV2>;
+
+// CempPayloadV1 with receipts: ReceiptVecV2. All other fields identical, same order.
+table CempPayloadV2 {
+  message_id: Byte16,
+  body_type: byte,
+  recipient_profile_id: Byte32,
+  text: BytesOpt,
+  attachment_manifests: AttachmentManifestVec,
+  reply_to_message_id: Byte16Opt,
+  reply_to_outpoint: OutPointOpt,
+  receipts: ReceiptVecV2,
+  receipt_request: byte,
+  client_timestamp: Uint64,
+  sender_device_id: Byte16,
+  padding: Bytes,
+}

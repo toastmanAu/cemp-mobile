@@ -14,7 +14,7 @@ import { DatabaseError } from "../errors.js";
 import type { MessageState } from "../message-states.js";
 import type { AttachmentRepository } from "./attachments.js";
 import type { BalanceRepository } from "./balances.js";
-import type { MessageRepository } from "./messages.js";
+import type { MessageRepository, PreparedEnvelope } from "./messages.js";
 import type { OutgoingTransactionRepository } from "./outgoing-transactions.js";
 import type { WatchedOutpointRepository } from "./watched-outpoints.js";
 
@@ -93,6 +93,20 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
     await this.#messages.setEnvelopeMessageId(messageRowId, envelopeMessageIdHex);
   }
 
+  /** ADR 0007 §7: the signed envelope, journaled before any tx is built. */
+  async setPreparedEnvelope(messageRowId: number, prepared: PreparedEnvelope): Promise<void> {
+    await this.#messages.setPreparedEnvelope(messageRowId, prepared);
+  }
+
+  async getPreparedEnvelope(messageRowId: number): Promise<PreparedEnvelope | undefined> {
+    return await this.#messages.getPreparedEnvelope(messageRowId);
+  }
+
+  /** ADR 0006: the outgoing row's receipt key, stored before broadcast. */
+  async setReceiptKey(messageRowId: number, receiptKey: Uint8Array): Promise<void> {
+    await this.#messages.setReceiptKey(messageRowId, receiptKey);
+  }
+
   async recordOutgoingTx(input: {
     txHash: string;
     purpose: string;
@@ -130,11 +144,25 @@ export class DatabasePublicationStore implements PublicationStore, LifecycleStor
 
   /* -------------------------------------------------- lifecycle (P8) -- */
 
-  async findOutgoingByEnvelopeMessageId(
-    envelopeMessageIdHex: string,
-  ): Promise<{ rowId: number; state: string } | undefined> {
-    const message = await this.#messages.getByEnvelopeMessageId(envelopeMessageIdHex);
-    return message === undefined ? undefined : { rowId: message.id, state: message.state };
+  async findOutgoingByEnvelopeMessageId(envelopeMessageIdHex: string): Promise<
+    | {
+        rowId: number;
+        state: string;
+        recipientProfileIdHex: string | null;
+        receiptKey: Uint8Array | null;
+      }
+    | undefined
+  > {
+    const found =
+      await this.#messages.getOutgoingWithRecipientByEnvelopeMessageId(envelopeMessageIdHex);
+    return found === undefined
+      ? undefined
+      : {
+          rowId: found.message.id,
+          state: found.message.state,
+          recipientProfileIdHex: found.recipientProfileIdHex,
+          receiptKey: found.receiptKey,
+        };
   }
 
   async listOutgoingByState(

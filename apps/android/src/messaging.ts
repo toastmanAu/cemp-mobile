@@ -8,6 +8,7 @@
  */
 
 import {
+  AuthenticatedSenderResolver,
   CempClient,
   MessagePublisher,
   MlDsaV2TxSigner,
@@ -53,7 +54,13 @@ import {
   type IdentityKeyBundle,
 } from "@cemp/crypto";
 import { RateLimiter, DEFAULT_RATE_LIMITS } from "@cemp/ckb";
-import { SyncEngine, BackoffPolicy, buildWorkerSpecs, type Scheduler } from "@cemp/sync";
+import {
+  SyncEngine,
+  BackoffPolicy,
+  buildWorkerSpecs,
+  contactPinnedSenderLookup,
+  type Scheduler,
+} from "@cemp/sync";
 import type { Notifier } from "@cemp/ui";
 import type { SecureVaultImpl } from "@cemp/secure-vault";
 import {
@@ -62,6 +69,7 @@ import {
   ContactRepository,
   ConversationRepository,
   DatabasePublicationStore,
+  IncomingDispositionRepository,
   LocalSettingsRepository,
   MessageRepository,
   OutgoingTransactionRepository,
@@ -235,6 +243,12 @@ export class MessagingService {
       // user publishes in the same session existed.
       senderProfileId: () => requireActiveSenderProfileId(profiles, accountId),
       senderDeviceId: deviceId,
+      // ADR 0007 §7: envelopes are signed with this device's profile key —
+      // the same ML-DSA key the published profile advertises and whose lock
+      // holds the profile cell (this app publishes profiles from the bundle
+      // and has no rotation flow). Never a caller-chosen identity.
+      envelopeSigningKey: () =>
+        Promise.resolve({ publicKey: bundle.mlDsa.publicKey, secretKey: bundle.mlDsa.secretKey }),
     });
     const lifecycle = new ResponseLifecycle({ client, signer, messageType, store });
     const cursors = new SyncCursorRepository(db);
@@ -258,6 +272,15 @@ export class MessagingService {
         leases,
         balances,
         rateLimiter: new RateLimiter(new RateLimitRepository(db), { ...DEFAULT_RATE_LIMITS }),
+        // ADR 0007 §5: every v3 message's sender is resolved and its
+        // signature verified before any contact, block-list, rate-limit,
+        // notification or receipt decision.
+        senderResolver: new AuthenticatedSenderResolver({
+          chain: client,
+          contacts: contactPinnedSenderLookup(contacts),
+          mlDsaLock: { codeHash: mlDsaDeployment.codeHash, hashType: mlDsaDeployment.hashType },
+        }),
+        dispositions: new IncomingDispositionRepository(db),
         walletId,
         walletLock: { codeHash: lock.codeHash, hashType: lock.hashType, args: lock.args },
         notifier,

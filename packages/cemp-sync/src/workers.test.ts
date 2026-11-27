@@ -3,7 +3,7 @@ import { CKB_TESTNET, codec, deriveRouteTag } from "@cemp/core";
 import {
   MessagePublisher,
   ResponseLifecycle,
-  assembleTextMessage,
+  assembleTextMessageV3,
   buildRouteTagPrefix,
   currentRoutingEpoch,
   incomingLogicalMessageId,
@@ -12,8 +12,9 @@ import {
 import { CempClient, type JsonRpcTransport } from "@cemp/ckb";
 import { MockCkbClient, fillHex, hashFromRpcBody } from "@cemp/ckb/testing";
 import {
+  computeReceiptProof,
   deriveIdentityKeys,
-  decryptEnvelope,
+  openEnvelopeV3,
   mldsaV2KeygenFromSeed,
   mnemonicToSeed,
 } from "@cemp/crypto";
@@ -23,6 +24,7 @@ import {
   ContactRepository,
   ConversationRepository,
   DatabasePublicationStore,
+  IncomingDispositionRepository,
   LocalSettingsRepository,
   MessageRepository,
   OutgoingTransactionRepository,
@@ -42,6 +44,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import vectors from "../../cemp-test-vectors/vectors/mldsa-v2.json";
 import { InMemoryScheduler, SyncEngine } from "./engine.js";
+import { makeTestResolver, makeTestSender, withSenderProfiles } from "./test-helpers.js";
 import { BackoffPolicy } from "./retry.js";
 import { EndpointRotator } from "./endpoints.js";
 import {
@@ -49,6 +52,7 @@ import {
   LORA_ENABLED_SETTING_KEY,
   LORA_GATEWAY_URL_SETTING_KEY,
   buildWorkerSpecs,
+  queueReclaimableAcks,
   type LoraPollSource,
   type SyncWorkerDeps,
 } from "./workers.js";
@@ -77,6 +81,12 @@ const BOB = deriveIdentityKeys(
 );
 const BOB_PROFILE_ID = hexToBytes("bb".repeat(32));
 const ALICE_PROFILE_ID = hexToBytes("aa".repeat(32));
+/** Alice publishes a profile bound to her ML-DSA lock and signs v3 (ADR 0007). */
+const ALICE = makeTestSender(0x07, ALICE_PROFILE_ID);
+const ALICE_SIGNS = {
+  signerSecretKey: ALICE.keys.mlDsa.secretKey,
+  signerPublicKey: ALICE.keys.mlDsa.publicKey,
+} as const;
 const signerKeyPair = mldsaV2KeygenFromSeed(hexToBytes(vectors.keygen[0]!.seed));
 
 const MESSAGE_TYPE_REF: CempMessageTypeRef = {
@@ -102,7 +112,7 @@ class RecordingNotifier implements Notifier {
 
 /** Wrap an assembled envelope as an indexer message-cell JSON (alice → bob). */
 function assembledCellJson(
-  assembled: ReturnType<typeof assembleTextMessage>,
+  assembled: ReturnType<typeof assembleTextMessageV3>,
   outPointByte = 0xd1,
 ): { json: unknown; messageId: Uint8Array } {
   const typeArgs = new Uint8Array(81);
@@ -140,7 +150,8 @@ function discoveryCellJson(
   messageId?: Uint8Array,
 ): { json: unknown; messageId: Uint8Array } {
   return assembledCellJson(
-    assembleTextMessage({
+    assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text,
       senderProfileId: ALICE_PROFILE_ID,
       recipientProfileId: BOB_PROFILE_ID,
@@ -161,7 +172,8 @@ function discoveryAttachmentCellJson(manifest: codec.AttachmentManifestV1): {
   messageId: Uint8Array;
 } {
   return assembledCellJson(
-    assembleTextMessage({
+    assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text: "",
       contentType: 0x03,
       attachmentManifests: [manifest],
@@ -176,12 +188,15 @@ function discoveryAttachmentCellJson(manifest: codec.AttachmentManifestV1): {
 }
 
 /** A receipt-only ack cell (empty body + 0x01 receipts) addressed to Bob. */
-function receiptOnlyCellJson(receipts: readonly { messageId: Uint8Array; status: number }[]): {
+function receiptOnlyCellJson(
+  receipts: readonly { messageId: Uint8Array; status: number; proof: Uint8Array }[],
+): {
   json: unknown;
   messageId: Uint8Array;
 } {
   return assembledCellJson(
-    assembleTextMessage({
+    assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text: "",
       senderProfileId: ALICE_PROFILE_ID,
       recipientProfileId: BOB_PROFILE_ID,
@@ -343,7 +358,9 @@ async function makeStack(
     attachments,
   });
 
-  const client = new CempClient({ transport: opts.transport ?? makeTransport(opts.cells ?? []) });
+  const client = new CempClient({
+    transport: withSenderProfiles(opts.transport ?? makeTransport(opts.cells ?? []), [ALICE]),
+  });
   const mockChain = new MockCkbClient();
   const signer = new (await import("@cemp/ckb")).MlDsaV2TxSigner({
     keyPair: signerKeyPair,
@@ -357,6 +374,7 @@ async function makeStack(
     store,
     senderProfileId: () => Promise.resolve(BOB_PROFILE_ID),
     senderDeviceId: hexToBytes("02".repeat(16)),
+    envelopeSigningKey: () => Promise.resolve(BOB.mlDsa),
   });
   const notifier = new RecordingNotifier();
   const engineId = opts.engineId ?? "engine-test";
@@ -376,6 +394,8 @@ async function makeStack(
     leases,
     balances,
     rateLimiter,
+    senderResolver: makeTestResolver(client, contacts),
+    dispositions: new IncomingDispositionRepository(db),
     walletId,
     walletLock: {
       codeHash: walletLockScript.codeHash,
@@ -679,7 +699,10 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
 
   it("a receipt-only ack advances our outgoing message, no bubble, no re-ack (ADR 0005)", async () => {
     const envId = hexToBytes("cd".repeat(16)); // envelope message ids are 16 bytes
-    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01 }]);
+    // ADR 0006: our row holds the receipt key; Alice's ack proves it.
+    const receiptKey = new Uint8Array(32).fill(0x6b);
+    const proof = computeReceiptProof(receiptKey, envId, 0x01);
+    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01, proof }]);
     const stack = await makeStack({ cells: [json] });
     try {
       // Seed one of OUR outgoing messages, on-chain, awaiting acknowledgement.
@@ -696,6 +719,7 @@ describe("incoming-discovery worker (exit criterion 1)", () => {
         state: "available_on_chain",
       });
       await stack.messages.setEnvelopeMessageId(mine.id, bytesToHex(envId));
+      await stack.messages.setReceiptKey(mine.id, receiptKey);
 
       expect(await stack.engine.runWorker("incoming-discovery")).toBe("success");
 
@@ -839,7 +863,7 @@ describe("processDiscoveredCell image branch (Task 12)", () => {
     // The expected key is the one derivable from THIS envelope — the same
     // decryption the worker performs (test fixture material, not a log).
     const cellData = hexToBytes((json as { output_data: string }).output_data);
-    const expectedKey = decryptEnvelope({
+    const expectedKey = openEnvelopeV3({
       envelopeBytes: cellData,
       recipientKemSecretKey: BOB.mlKem.secretKey,
       ownProfileId: BOB_PROFILE_ID,
@@ -1082,7 +1106,9 @@ describe("pending-transactions worker (exit criterion 2)", () => {
     // consumed by the discovery cursor — permanently losing the ack, so the
     // message can never reach delivered/read. Found live on-device.
     const envId = hexToBytes("ef".repeat(16));
-    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01 }]);
+    const receiptKey = new Uint8Array(32).fill(0x6c);
+    const proof = computeReceiptProof(receiptKey, envId, 0x01);
+    const { json } = receiptOnlyCellJson([{ messageId: envId, status: 0x01, proof }]);
     const stack = await makeStack({ cells: [json] });
     try {
       const contact = await stack.contacts.create({
@@ -1098,6 +1124,7 @@ describe("pending-transactions worker (exit criterion 2)", () => {
         state: "pending",
       });
       await stack.messages.setEnvelopeMessageId(mine.id, bytesToHex(envId));
+      await stack.messages.setReceiptKey(mine.id, receiptKey);
       // Its tx already committed (the monitor was interrupted before advancing
       // the row), so pending-transactions must make it ack-able THIS pass.
       await stack.outgoingTxs.record({
@@ -1280,6 +1307,440 @@ describe("attachment group reclaim (T17 finding F-2)", () => {
       };
       expect(await stack.engine.runWorker("reclaim-batch")).toBe("success");
       expect(calls).toBe(1); // retried once the group call succeeds again
+    } finally {
+      await stack.db.close();
+    }
+  });
+});
+
+describe("ack-cell reclaim (ADR 0008)", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const NOW = 1_800_000_000_000;
+  const ACK_CAPACITY = "523600000000"; // ~5,236 CKB, a v3 receipt-only cell
+  const CHUNK_TX = `0x${"5c".repeat(32)}`;
+
+  /** A transport whose get_live_cell answers `liveStatus` (default dead). */
+  /**
+   * A node with a chosen answer for every out point. `real-node-spent` is
+   * what testnet actually answers for a spent cell (2026-11-26): get_live_cell
+   * says `unknown`, while the creating tx is committed deep below the tip.
+   * `unknown-no-evidence` is a node that knows nothing about the tx either.
+   */
+  function liveCellTransport(
+    mode: "live" | "dead" | "unknown-no-evidence" | "real-node-spent",
+  ): JsonRpcTransport {
+    const rest = makeTransport([]);
+    const lock = { code_hash: fillHex(0x01, 32), hash_type: "type", args: "0x" };
+    const output = { capacity: "0x0", lock, type: null };
+    return {
+      call(url, method, params) {
+        if (method === "get_live_cell") {
+          return Promise.resolve(
+            mode === "live"
+              ? { cell: { output, data: null }, status: "live" }
+              : { cell: null, status: mode === "dead" ? "dead" : "unknown" },
+          );
+        }
+        if (method === "get_transaction" && mode === "unknown-no-evidence") {
+          return Promise.resolve(null);
+        }
+        if (method === "get_transaction" && mode === "real-node-spent") {
+          return Promise.resolve({
+            transaction: {
+              version: "0x0",
+              cell_deps: [],
+              header_deps: [],
+              inputs: [],
+              outputs: [output, output, output, output],
+              outputs_data: ["0x", "0x", "0x", "0x"],
+              witnesses: [],
+            },
+            tx_status: { status: "committed", block_hash: fillHex(0x99, 32) },
+          });
+        }
+        if (method === "get_tip_header") {
+          return Promise.resolve({
+            number: "0x500", // 0x100 (creating block) + 1024: far past the depth
+            epoch: "0x0",
+            timestamp: "0x0",
+            hash: fillHex(0x98, 32),
+          });
+        }
+        return rest.call(url, method, params);
+      },
+    };
+  }
+
+  /**
+   * Bob received Alice's message `orig-1` and auto-acked it. The ack is an
+   * OUTGOING row `<prefix>orig-1`, committed `ageDays` before NOW and sitting
+   * at `available_on_chain`, the state every ack has stopped at until now.
+   */
+  async function seedAck(
+    stack: Stack,
+    opts: {
+      prefix: "response:" | "ack-attachment:";
+      originalState: "response_sent" | "awaiting_remote_reclaim" | "remote_reclaimed";
+      ageDays: number;
+      withManifest?: boolean;
+    },
+  ) {
+    const alice = await stack.contacts.create({
+      displayName: "alice",
+      profileIdHex: "ab".repeat(32),
+    });
+    const conv = await stack.conversations.getOrCreateForContact(alice.id);
+    const original = await stack.messages.insert({
+      conversationId: conv.id,
+      direction: "incoming",
+      body: "hi",
+      logicalMessageId: "orig-1",
+      state: opts.originalState,
+    });
+    if (opts.withManifest === true) {
+      await stack.attachments.create({
+        messageId: original.id,
+        kind: "image",
+        byteLength: 3800,
+        manifest: codec.encodeAttachmentManifestV1({
+          attachment_id: new Uint8Array(16).fill(0x11),
+          ckbfs_root: { tx_hash: hexToBytes(CHUNK_TX.slice(2)), index: 0 },
+          chunk_outpoints: [{ tx_hash: hexToBytes(CHUNK_TX.slice(2)), index: 0 }],
+          encrypted_size: 4096n,
+          plaintext_size: 3800n,
+          mime_type: new TextEncoder().encode("image/webp"),
+          width: 640,
+          height: 480,
+          thumbnail: undefined,
+          content_hash: new Uint8Array(32).fill(0xc1),
+          cipher_hash: new Uint8Array(32).fill(0xc2),
+          encryption_nonce: new Uint8Array(12).fill(0x0c),
+          encryption_algorithm: { family: 0x03, parameter: 1 },
+          reclaim_group_id: new Uint8Array(16).fill(0x26),
+        }),
+      });
+    }
+    const ack = await stack.messages.insert({
+      conversationId: conv.id,
+      direction: "outgoing",
+      body: "",
+      logicalMessageId: `${opts.prefix}orig-1`,
+      state: "available_on_chain",
+    });
+    const txHash = `0x${"ac".repeat(32)}`;
+    await stack.outgoingTxs.record({
+      txHash,
+      purpose: `message:${opts.prefix}orig-1`,
+      state: "submitted",
+      capacityShannon: ACK_CAPACITY,
+    });
+    await stack.outgoingTxs.markState(txHash, "committed", {
+      committedAtMs: NOW - opts.ageDays * DAY_MS,
+    });
+    // The publish monitor reserved the ack's capacity at commit; model that.
+    const funded = BigInt(ACK_CAPACITY) * 10n;
+    await stack.deps.balances.setChainBalances(stack.deps.walletId, funded, funded);
+    await stack.deps.balances.reserveCapacity(stack.deps.walletId, BigInt(ACK_CAPACITY));
+    return { original, ack };
+  }
+
+  async function runAt(stack: Stack): Promise<number[]> {
+    const writable = stack.deps as { -readonly [K in keyof SyncWorkerDeps]: SyncWorkerDeps[K] };
+    writable.now = () => NOW;
+    return queueReclaimableAcks(stack.deps);
+  }
+
+  it("queues a 0x01 ack once the sender has reclaimed the original, funding reclaimable", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "remote_reclaimed",
+        ageDays: 0,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+      expect((await stack.messages.getById(ack.id))?.state).toBe("reclaim_queued");
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(BigInt(ACK_CAPACITY));
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("keeps a fresh 0x01 ack while the original is still live (sender may not have seen it)", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "awaiting_remote_reclaim",
+        ageDays: 1,
+      });
+      expect(await runAt(stack)).toEqual([]);
+      expect((await stack.messages.getById(ack.id))?.state).toBe("available_on_chain");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("falls back after 30 days even when the sender never reclaimed", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "awaiting_remote_reclaim",
+        ageDays: 31,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("does NOT queue a 0x05 ack just because the message cell is gone: chunks still live", async () => {
+    // The message cell went on the earlier 0x01. Only the CHUNK cells being
+    // spent proves the sender processed this 0x05; reclaiming it earlier would
+    // leave the sender's image chunks locked forever.
+    const stack = await makeStack({ transport: liveCellTransport("live") });
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "ack-attachment:",
+        originalState: "remote_reclaimed",
+        ageDays: 1,
+        withManifest: true,
+      });
+      expect(await runAt(stack)).toEqual([]);
+      expect((await stack.messages.getById(ack.id))?.state).toBe("available_on_chain");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("queues a 0x05 ack once the sender has spent the chunk cells", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("dead") });
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "ack-attachment:",
+        originalState: "remote_reclaimed",
+        ageDays: 1,
+        withManifest: true,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("an 'unknown' live-cell answer with no evidence is not proof the chunks are spent", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("unknown-no-evidence") });
+    try {
+      await seedAck(stack, {
+        prefix: "ack-attachment:",
+        originalState: "remote_reclaimed",
+        ageDays: 1,
+        withManifest: true,
+      });
+      expect(await runAt(stack)).toEqual([]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("REAL NODE (ADR 0009): a 0x05 ack is queued once its chunk reads 'unknown' + committed", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("real-node-spent") });
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "ack-attachment:",
+        originalState: "remote_reclaimed",
+        ageDays: 1,
+        withManifest: true,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("REAL NODE (ADR 0009): the responder watch fires and the 0x01 ack is queued in one pass", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("real-node-spent") });
+    try {
+      const { original, ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "response_sent",
+        ageDays: 0,
+      });
+      await stack.deps.lifecycle.finalizeResponseSent({
+        responseRowId: original.id,
+        originalOutpoint: { txHash: `0x${"0f".repeat(32)}`, index: 0 },
+      });
+      // The sender reclaimed the original; the node says `unknown`, not `dead`.
+      expect(await stack.deps.lifecycle.pollWatchesOnce()).toEqual([
+        `response:${String(original.id)}`,
+      ]);
+      expect((await stack.messages.getById(original.id))?.state).toBe("remote_reclaimed");
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("a watch stays active while the node has no evidence either way", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("unknown-no-evidence") });
+    try {
+      const { original } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "response_sent",
+        ageDays: 0,
+      });
+      await stack.deps.lifecycle.finalizeResponseSent({
+        responseRowId: original.id,
+        originalOutpoint: { txHash: `0x${"0f".repeat(32)}`, index: 0 },
+      });
+      expect(await stack.deps.lifecycle.pollWatchesOnce()).toEqual([]);
+      expect((await stack.messages.getById(original.id))?.state).toBe("awaiting_remote_reclaim");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("REAL NODE (ADR 0009): a queued row whose cell is already spent is closed as reclaimed, releasing its capacity", async () => {
+    const stack = await makeStack({ transport: liveCellTransport("real-node-spent") });
+    try {
+      const alice = await stack.contacts.create({
+        displayName: "alice",
+        profileIdHex: "ab".repeat(32),
+      });
+      const conv = await stack.conversations.getOrCreateForContact(alice.id);
+      const row = await stack.messages.insert({
+        conversationId: conv.id,
+        direction: "outgoing",
+        body: "spent already",
+        logicalMessageId: "spent-1",
+        state: "reclaim_queued",
+      });
+      await stack.messages.setChainRef(row.id, {
+        txHash: `0x${"0e".repeat(32)}`,
+        outpointIndex: 0,
+      });
+      // As the publish + ack paths left it: journaled capacity, reserved at
+      // commit, moved to reclaimable when it was queued.
+      await stack.outgoingTxs.record({
+        txHash: `0x${"0e".repeat(32)}`,
+        purpose: "message:spent-1",
+        state: "committed",
+        capacityShannon: ACK_CAPACITY,
+      });
+      const cap = BigInt(ACK_CAPACITY);
+      await stack.deps.balances.setChainBalances(stack.deps.walletId, cap * 10n, cap * 10n);
+      await stack.deps.balances.reserveCapacity(stack.deps.walletId, cap);
+      await stack.deps.balances.markReclaimable(stack.deps.walletId, cap);
+
+      await stack.deps.lifecycle.executeReclaimBatch();
+
+      expect((await stack.messages.getById(row.id))?.state).toBe("reclaimed");
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(0n);
+      expect(balance.availableShannon).toBe(cap * 10n);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("lifecycle.queueAckForReclaim refuses a row already queued (no double funding)", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "remote_reclaimed",
+        ageDays: 0,
+      });
+      expect(await stack.deps.lifecycle.queueAckForReclaim(ack.id)).toBe(true);
+      expect(await stack.deps.lifecycle.queueAckForReclaim(ack.id)).toBe(false);
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(BigInt(ACK_CAPACITY));
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("resumes an ack a crash left mid-walk (at acknowledged), funding it exactly once", async () => {
+    const stack = await makeStack();
+    try {
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "remote_reclaimed",
+        ageDays: 0,
+      });
+      // The process died after these two edges, before reclaim_queued + funding.
+      await stack.messages.transitionState(ack.id, "downloaded_by_recipient");
+      await stack.messages.transitionState(ack.id, "acknowledged");
+      expect(await runAt(stack)).toEqual([ack.id]);
+      expect((await stack.messages.getById(ack.id))?.state).toBe("reclaim_queued");
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(BigInt(ACK_CAPACITY));
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("finds an ack behind more than 500 older content rows at available_on_chain", async () => {
+    const stack = await makeStack();
+    try {
+      const alice = await stack.contacts.create({
+        displayName: "carol",
+        profileIdHex: "cd".repeat(32),
+      });
+      const conv = await stack.conversations.getOrCreateForContact(alice.id);
+      for (let i = 0; i < 600; i++) {
+        await stack.messages.insert({
+          conversationId: conv.id,
+          direction: "outgoing",
+          body: "unacked",
+          logicalMessageId: `content-${String(i)}`,
+          state: "available_on_chain",
+        });
+      }
+      const { ack } = await seedAck(stack, {
+        prefix: "response:",
+        originalState: "remote_reclaimed",
+        ageDays: 0,
+      });
+      expect(await runAt(stack)).toEqual([ack.id]);
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("never touches an old CONTENT message waiting for its ack", async () => {
+    const stack = await makeStack();
+    try {
+      const alice = await stack.contacts.create({
+        displayName: "alice",
+        profileIdHex: "ab".repeat(32),
+      });
+      const conv = await stack.conversations.getOrCreateForContact(alice.id);
+      const content = await stack.messages.insert({
+        conversationId: conv.id,
+        direction: "outgoing",
+        body: "hello",
+        logicalMessageId: "content-1",
+        state: "available_on_chain",
+        createdAtMs: NOW - 90 * DAY_MS,
+      });
+      expect(await runAt(stack)).toEqual([]);
+      expect((await stack.messages.getById(content.id))?.state).toBe("available_on_chain");
+    } finally {
+      await stack.db.close();
+    }
+  });
+
+  it("is idempotent: a second pass queues nothing and funds reclaimable once", async () => {
+    const stack = await makeStack();
+    try {
+      await seedAck(stack, { prefix: "response:", originalState: "remote_reclaimed", ageDays: 0 });
+      await runAt(stack);
+      expect(await runAt(stack)).toEqual([]);
+      const balance = await stack.deps.balances.getBalance(stack.deps.walletId);
+      expect(balance.reclaimableShannon).toBe(BigInt(ACK_CAPACITY));
     } finally {
       await stack.db.close();
     }
@@ -1614,7 +2075,8 @@ describe("lora gateway poll worker", () => {
   const EVE_PROFILE_ID = hexToBytes("ee".repeat(32));
 
   function loraObjectForBob(text: string, messageId?: Uint8Array): LoraObject {
-    const assembled = assembleTextMessage({
+    const assembled = assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text,
       senderProfileId: ALICE_PROFILE_ID,
       recipientProfileId: BOB_PROFILE_ID,
@@ -1633,7 +2095,8 @@ describe("lora gateway poll worker", () => {
   }
 
   function loraObjectForEve(text: string): LoraObject {
-    const assembled = assembleTextMessage({
+    const assembled = assembleTextMessageV3({
+      ...ALICE_SIGNS,
       text,
       senderProfileId: ALICE_PROFILE_ID,
       recipientProfileId: EVE_PROFILE_ID,

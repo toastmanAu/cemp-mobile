@@ -6,7 +6,7 @@
  */
 import type { CempClient, CempMessageTypeRef, MessagePublisher, MlDsaV2TxSigner } from "@cemp/ckb";
 import { codec } from "@cemp/core";
-import { deriveSendAttachmentKey } from "@cemp/crypto";
+import { deriveSendAttachmentKeyV3 } from "@cemp/crypto";
 import type { ImageCodec, ImageEncodeFormat } from "./codec.js";
 import type { PreparedImage } from "./prepare.js";
 import {
@@ -64,11 +64,12 @@ export async function publishImageMessage(
   // §6 SAFETY: fresh, single-use encapsulation randomness per message.
   const kemMessage = deps.randomBytes(32);
   const nonce = deps.randomBytes(12);
-  const attachmentKey = deriveSendAttachmentKey({
+  // Protocol v3 key schedule (ADR 0007): the publisher seals a v3 envelope
+  // around this same encapsulation, so the recipient re-derives this key.
+  const attachmentKey = deriveSendAttachmentKeyV3({
     recipientKemPublicKey: input.recipientKemPublicKey,
     kemMessage,
     nonce,
-    senderProfileId: deps.senderProfileId,
     recipientProfileId: input.recipientProfileId,
   });
 

@@ -15,7 +15,8 @@
  */
 
 import { codec } from "@cemp/core";
-import { decryptEnvelope } from "@cemp/crypto";
+import { decryptEnvelope, openEnvelopeV3, type OpenedEnvelopeV3 } from "@cemp/crypto";
+import { internalMintLegacyIncoming, type LegacyIncoming } from "./authenticated-incoming.js";
 import { CempCkbError } from "./client.js";
 
 /** Parsed 81-byte message-cell type args (spec §6). */
@@ -56,11 +57,29 @@ export function parseMessageTypeArgs(args: Uint8Array): MessageTypeArgs {
   };
 }
 
+/**
+ * One receipt carried by an incoming payload. `proof` is the ADR 0006 proof
+ * of decryption from a version-2 payload, or `null` for a version-1 receipt,
+ * which is UNPROVEN and must never change state or capacity.
+ */
+export interface IncomingReceipt {
+  readonly messageId: Uint8Array;
+  readonly status: number;
+  readonly proof: Uint8Array | null;
+}
+
 /** A decrypted, fully validated incoming message (text and/or attachments). */
 export interface IncomingTextMessage {
+  /**
+   * Envelope protocol_version: 1 or 2 (legacy, sender UNVERIFIED) or 3
+   * (sender-signed, ADR 0007 — authenticated only once it is an
+   * `AuthenticatedIncoming`).
+   */
+  readonly protocolVersion: 1 | 2 | 3;
   readonly contentType: number;
   readonly messageId: Uint8Array;
   readonly conversationId: Uint8Array;
+  /** The sender id: a CLAIM unless this object is an `AuthenticatedIncoming`. */
   readonly senderProfileId: Uint8Array;
   /** Text body (empty for pure attachment messages, content_type 0x03). */
   readonly text: string;
@@ -68,7 +87,7 @@ export interface IncomingTextMessage {
   readonly attachmentManifests: readonly codec.AttachmentManifestV1[];
   readonly replyToMessageId: Uint8Array | null;
   readonly replyToOutpoint: { txHash: string; index: number } | null;
-  readonly receipts: readonly { messageId: Uint8Array; status: number }[];
+  readonly receipts: readonly IncomingReceipt[];
   readonly clientTimestamp: bigint;
   readonly senderDeviceId: Uint8Array;
   /**
@@ -76,6 +95,13 @@ export interface IncomingTextMessage {
    * after downloading attachments). Byte-identical to the sender's.
    */
   readonly attachmentKey: Uint8Array;
+  /**
+   * The envelope-derived receipt key (ADR 0006; SECRET — the caller stores it
+   * on the incoming row, then wipes this copy). Byte-identical to the
+   * sender's. `null` for a version-1 envelope: its sender is a pre-ADR-0006
+   * build that cannot verify a proof, so no proven receipt is ever owed.
+   */
+  readonly receiptKey: Uint8Array | null;
 }
 
 export interface ProcessIncomingTextInput {
@@ -92,21 +118,44 @@ export interface ProcessIncomingTextInput {
  * on any validation/decryption failure — the caller records the cell as
  * `invalid` (§11) and moves on; one bad cell must never stall discovery.
  */
-export function processIncomingText(input: ProcessIncomingTextInput): IncomingTextMessage {
-  const { header, payloadBytes, attachmentKey } = decryptEnvelope({
+export function processIncomingText(input: ProcessIncomingTextInput): LegacyIncoming {
+  const { header, payloadBytes, attachmentKey, receiptKey } = decryptEnvelope({
     envelopeBytes: input.cellData,
     recipientKemSecretKey: input.ownKemSecretKey,
     ownProfileId: input.ownProfileId,
   });
-  const payloadCheck = codec.validatePayload(payloadBytes);
+  try {
+    return internalMintLegacyIncoming(
+      buildIncoming(header, payloadBytes, input.ownProfileId, attachmentKey, receiptKey),
+    );
+  } catch (error) {
+    // Nothing is returned on failure, so nobody else will wipe the keys.
+    attachmentKey.fill(0);
+    receiptKey.fill(0);
+    throw error;
+  }
+}
+
+function buildIncoming(
+  header: codec.CempEnvelopeHeaderV1,
+  payloadBytes: Uint8Array,
+  ownProfileId: Uint8Array,
+  attachmentKey: Uint8Array,
+  receiptKey: Uint8Array,
+): IncomingTextMessage {
+  // ADR 0006: the header's protocol_version selects the payload layout.
+  // Explicit dispatch — a payload that does not match is rejected, never
+  // re-tried as the other version.
+  const payloadCheck = codec.validatePayloadForVersion(header.protocol_version, payloadBytes);
   if (!payloadCheck.ok) {
     throw new CempCkbError(
       "processIncomingText",
       `payload failed validation: ${payloadCheck.reason}`,
     );
   }
-  const payload = codec.decodeCempPayloadV1(payloadBytes);
-  const consistency = codec.validateSemanticConsistency(header, payload, input.ownProfileId);
+  const decoded = codec.decodeCempPayload(header.protocol_version, payloadBytes);
+  const payload = decoded.payload;
+  const consistency = codec.validateSemanticConsistency(header, payload, ownProfileId);
   if (!consistency.ok) {
     throw new CempCkbError("processIncomingText", `header/payload mismatch: ${consistency.reason}`);
   }
@@ -118,7 +167,23 @@ export function processIncomingText(input: ProcessIncomingTextInput): IncomingTe
       `unsupported payload body_type ${String(payload.body_type)}`,
     );
   }
+  const receipts: IncomingReceipt[] =
+    decoded.version === 2
+      ? decoded.payload.receipts.map((receipt) => ({
+          messageId: receipt.message_id,
+          status: receipt.status,
+          proof: receipt.proof,
+        }))
+      : decoded.payload.receipts.map((receipt) => ({
+          messageId: receipt.message_id,
+          status: receipt.status,
+          proof: null,
+        }));
+  if (decoded.version === 1) {
+    receiptKey.fill(0);
+  }
   return {
+    protocolVersion: decoded.version,
     contentType: payload.body_type,
     messageId: payload.message_id,
     conversationId: header.conversation_id,
@@ -133,13 +198,94 @@ export function processIncomingText(input: ProcessIncomingTextInput): IncomingTe
             txHash: codec.bytesToHex(payload.reply_to_outpoint.tx_hash),
             index: Number(payload.reply_to_outpoint.index),
           },
-    receipts: payload.receipts.map((receipt) => ({
-      messageId: receipt.message_id,
-      status: receipt.status,
-    })),
+    receipts,
     clientTimestamp: payload.client_timestamp,
     senderDeviceId: payload.sender_device_id,
     attachmentKey,
+    receiptKey: decoded.version === 2 ? receiptKey : null,
+  };
+}
+
+/**
+ * A decrypted v3 message whose key-free checks passed but whose SIGNATURE IS
+ * NOT YET VERIFIED. `message.senderProfileId` is only a claim; pass this to
+ * `authenticateIncomingV3` before using any of it.
+ */
+export interface UnverifiedIncomingV3 {
+  readonly message: IncomingTextMessage;
+  readonly opened: OpenedEnvelopeV3;
+}
+
+/** One decrypted message cell, tagged by the envelope version family. */
+export type OpenedIncoming =
+  | { readonly kind: "legacy"; readonly message: LegacyIncoming }
+  | { readonly kind: "v3"; readonly unverified: UnverifiedIncomingV3 };
+
+/**
+ * Decrypt + validate one message cell of ANY accepted version (ADR 0007 §4):
+ * the header's version byte selects the pipeline, never a fallback. v1/v2
+ * yield a {@link LegacyIncoming}; v3 yields an {@link UnverifiedIncomingV3}
+ * that still needs `authenticateIncomingV3`. Throws on any failure.
+ */
+export function openIncoming(input: ProcessIncomingTextInput): OpenedIncoming {
+  let version: number;
+  try {
+    version = codec.peekEnvelopeProtocolVersion(input.cellData);
+  } catch (e) {
+    throw new CempCkbError("openIncoming", `not a CEMP envelope: ${(e as Error).message}`);
+  }
+  if (version !== 3) {
+    return { kind: "legacy", message: processIncomingText(input) };
+  }
+  const opened = openEnvelopeV3({
+    envelopeBytes: input.cellData,
+    recipientKemSecretKey: input.ownKemSecretKey,
+    ownProfileId: input.ownProfileId,
+  });
+  try {
+    return { kind: "v3", unverified: { message: incomingFromInnerV3(opened), opened } };
+  } catch (error) {
+    opened.attachmentKey.fill(0);
+    opened.receiptKey.fill(0);
+    throw error;
+  }
+}
+
+function incomingFromInnerV3(opened: OpenedEnvelopeV3): IncomingTextMessage {
+  const { inner } = opened;
+  const payload = inner.payload;
+  // Text (0x01) and attachment-manifest (0x03) only, as for v1/v2.
+  if (payload.body_type !== 0x01 && payload.body_type !== 0x03) {
+    throw new CempCkbError(
+      "openIncoming",
+      `unsupported payload body_type ${String(payload.body_type)}`,
+    );
+  }
+  return {
+    protocolVersion: 3,
+    contentType: inner.content_type,
+    messageId: payload.message_id,
+    conversationId: inner.conversation_id,
+    senderProfileId: inner.sender_profile_id.slice(),
+    text: payload.text === undefined ? "" : new TextDecoder().decode(payload.text),
+    attachmentManifests: payload.attachment_manifests,
+    replyToMessageId: payload.reply_to_message_id ?? null,
+    replyToOutpoint:
+      payload.reply_to_outpoint === null || payload.reply_to_outpoint === undefined
+        ? null
+        : {
+            txHash: codec.bytesToHex(payload.reply_to_outpoint.tx_hash),
+            index: Number(payload.reply_to_outpoint.index),
+          },
+    receipts: payload.receipts.map((receipt) => ({
+      messageId: receipt.message_id,
+      status: receipt.status,
+      proof: receipt.proof,
+    })),
+    clientTimestamp: payload.client_timestamp,
+    senderDeviceId: payload.sender_device_id,
+    attachmentKey: opened.attachmentKey,
+    receiptKey: opened.receiptKey,
   };
 }
 

@@ -1,5 +1,6 @@
-import { deriveIdentityKeys, mnemonicToSeed, validateMnemonic } from "@cemp/crypto";
+import { deriveRotatedIdentityKeys, mnemonicToSeed, validateMnemonic } from "@cemp/crypto";
 import type { IdentityKeyBundle } from "@cemp/crypto";
+import type { RotationRecord } from "./state.js";
 
 /**
  * ⚠️⚠️ TESTNET THROWAWAY IDENTITIES — NEVER SEND REAL FUNDS ⚠️⚠️
@@ -38,10 +39,32 @@ function mnemonicFor(name: IdentityName): string {
  * ML-KEM-768 keygen). Deterministic across runs by construction.
  */
 export function deriveIdentity(name: IdentityName): IdentityKeyBundle {
+  return deriveProfileKeys(name, 0);
+}
+
+/**
+ * The key bundle of an identity's profile at `rotation` (protocol §5.1:
+ * rotation n is deterministic from the same seed). Rotation 0 is the base
+ * identity, which is also the funding wallet in this harness.
+ */
+export function deriveProfileKeys(name: IdentityName, rotation: number): IdentityKeyBundle {
   const mnemonic = mnemonicFor(name);
   if (!validateMnemonic(mnemonic)) {
     // Static phrases shipped in this file — a failure here is a code edit bug.
     throw new Error(`identities.ts: the hard-coded ${name} mnemonic failed checksum validation`);
   }
-  return deriveIdentityKeys(mnemonicToSeed(mnemonic));
+  const seed = mnemonicToSeed(mnemonic);
+  try {
+    return deriveRotatedIdentityKeys(seed, rotation);
+  } finally {
+    seed.fill(0);
+  }
+}
+
+/**
+ * Which rotation an identity's LIVE profile is at. Only alice rotates in this
+ * harness (the rotate step, recorded in `shared.rotation`), once.
+ */
+export function currentRotationIndex(name: IdentityName, rotation: RotationRecord | null): number {
+  return name === "alice" && rotation !== null ? 1 : 0;
 }

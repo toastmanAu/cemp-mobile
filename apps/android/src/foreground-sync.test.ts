@@ -18,6 +18,7 @@ function makeHarness() {
   const syncCalls: number[] = [];
   let syncShouldReject = false;
   const errors: unknown[] = [];
+  const settled: ("ok" | "failed")[] = [];
 
   const deps = {
     sync: (): Promise<unknown> => {
@@ -41,11 +42,15 @@ function makeHarness() {
     onError: (e: unknown): void => {
       errors.push(e);
     },
+    onSettled: (outcome: { ok: boolean }): void => {
+      settled.push(outcome.ok ? "ok" : "failed");
+    },
   };
 
   return {
     deps,
     errors,
+    settled,
     get syncCount(): number {
       return syncCalls.length;
     },
@@ -226,6 +231,63 @@ describe("ForegroundSync", () => {
     expect(h.errors).toHaveLength(1);
     // A failed sweep must not kill autonomous sync — that is how a transient
     // RPC error would silently strand the app until the next app launch.
+    expect(h.armed()?.ms).toBe(IDLE_CADENCE_MS);
+  });
+
+  /*
+   * onSettled: screens that READ the database (the chats list) re-read on it.
+   * Without it, autonomous sweeps wrote new messages into the database while
+   * the list kept showing what it loaded on focus (device report 2026-11-27).
+   */
+  it("reports every settled sweep, scheduled or on demand", async () => {
+    const h = makeHarness();
+    const sync = new ForegroundSync(h.deps);
+
+    sync.start(IDLE_CADENCE_MS);
+    expect(h.settled).toEqual([]); // not before the sweep has landed
+    await h.finishSync();
+    expect(h.settled).toEqual(["ok"]);
+
+    h.fire(); // the scheduled tick
+    await h.finishSync();
+    const pending = sync.runNow(); // a screen-initiated sweep
+    await h.finishSync();
+    await pending;
+    expect(h.settled).toEqual(["ok", "ok", "ok"]);
+  });
+
+  it("reports a failed sweep as settled too, once", async () => {
+    const h = makeHarness();
+    const sync = new ForegroundSync(h.deps);
+    h.failNext();
+
+    sync.start(IDLE_CADENCE_MS);
+    await h.flush();
+    expect(h.settled).toEqual(["failed"]);
+  });
+
+  it("a joined runNow does not report the shared sweep twice", async () => {
+    const h = makeHarness();
+    const sync = new ForegroundSync(h.deps);
+
+    sync.start(IDLE_CADENCE_MS);
+    const joined = sync.runNow(); // joins the in-flight start() sweep
+    await h.finishSync();
+    await joined;
+    expect(h.settled).toEqual(["ok"]);
+  });
+
+  it("a throwing listener never breaks the loop's cadence", async () => {
+    const h = makeHarness();
+    const sync = new ForegroundSync({
+      ...h.deps,
+      onSettled: () => {
+        throw new Error("listener bug");
+      },
+    });
+
+    sync.start(IDLE_CADENCE_MS);
+    await h.finishSync();
     expect(h.armed()?.ms).toBe(IDLE_CADENCE_MS);
   });
 });

@@ -13,6 +13,7 @@
  */
 
 import type { SqliteAdapter, SqlRow } from "../adapter.js";
+import { blobToBytes } from "../blob.js";
 import { DatabaseError } from "../errors.js";
 import {
   canTransitionMessage,
@@ -30,8 +31,51 @@ export interface Message {
   readonly logicalMessageId: string;
   /** Envelope message id (schema v3; null until published/processed). */
   readonly envelopeMessageIdHex: string | null;
+  /**
+   * Sender authentication of an INCOMING row (schema v11, ADR 0007): null for
+   * outgoing and pre-upgrade rows. The UI labels `legacy-unverified` rows
+   * "Unverified (legacy)" and shows a blocking card for
+   * `key-changed-blocking` rows (whose body is never stored).
+   */
+  readonly authStatus: MessageAuthStatus | null;
+  /** ckbHash of the key that verified this incoming v3 message, hex. */
+  readonly senderKeyHashHex: string | null;
   readonly createdAtMs: number;
   readonly updatedAtMs: number;
+}
+
+export const MESSAGE_AUTH_STATUSES = [
+  "verified",
+  "legacy-unverified",
+  "key-changed-blocking",
+] as const;
+export type MessageAuthStatus = (typeof MESSAGE_AUTH_STATUSES)[number];
+
+/** A signed outgoing envelope journaled before broadcast (schema v11). */
+export interface PreparedEnvelope {
+  readonly envelopeBytes: Uint8Array;
+  readonly routeTag: Uint8Array;
+  readonly conversationTag: Uint8Array;
+  readonly messageNonce: Uint8Array;
+  readonly messageId: Uint8Array;
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function fromHex(value: unknown, label: string): Uint8Array {
+  const text = typeof value === "string" ? value : "";
+  if (text.length % 2 !== 0 || !/^[0-9a-f]*$/.test(text)) {
+    throw new DatabaseError("adapter-error", `prepared envelope field ${label} is not hex`);
+  }
+  const out = new Uint8Array(text.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(text.slice(2 * i, 2 * i + 2), 16);
+  return out;
+}
+
+function nullableText(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
 }
 
 export interface MessageChainRef {
@@ -54,10 +98,33 @@ function rowToMessage(row: SqlRow): Message {
       row.envelope_message_id_hex === null || row.envelope_message_id_hex === undefined
         ? null
         : String(row.envelope_message_id_hex),
+    authStatus: nullableText(row.auth_status) as MessageAuthStatus | null,
+    senderKeyHashHex: nullableText(row.sender_key_hash_hex),
     createdAtMs: Number(row.created_at_ms),
     updatedAtMs: Number(row.updated_at_ms),
   };
 }
+
+/** A driver-agnostic copy of a stored 32-byte receipt key; anything else is null. */
+function receiptKeyCopy(value: unknown): Uint8Array | null {
+  const bytes = blobToBytes(value);
+  return bytes === null || bytes.length !== 32 ? null : bytes.slice();
+}
+
+/**
+ * Logical-id prefixes of receipt-only acknowledgement rows: the envelope ack
+ * (`response:`, ADR 0005, 0x01) and the attachment-downloaded ack
+ * (`ack-attachment:`, 0x05). They are empty outgoing rows the response
+ * sender publishes; they are never chat bubbles or conversation previews.
+ */
+export const HIDDEN_ACK_PREFIXES = ["response:", "ack-attachment:"] as const;
+
+/** SQL predicate: `column` is not a hidden ack row. Prefixes are constants. */
+export function visibleMessageSql(column: string): string {
+  return HIDDEN_ACK_PREFIXES.map((prefix) => `${column} NOT LIKE '${prefix}%'`).join(" AND ");
+}
+
+const VISIBLE = visibleMessageSql("logical_message_id");
 
 export class MessageRepository {
   readonly #db: SqliteAdapter;
@@ -131,16 +198,16 @@ export class MessageRepository {
     options: { beforeId?: number; limit?: number } = {},
   ): Promise<Message[]> {
     const limit = options.limit ?? 50;
-    // Receipt-only acknowledgement rows (logical id `response:%`, ADR 0005) are
-    // internal — never shown as chat bubbles.
+    // Receipt-only acknowledgement rows (HIDDEN_ACK_PREFIXES) are internal —
+    // never shown as chat bubbles.
     const rows =
       options.beforeId === undefined
         ? await this.#db.all(
-            "SELECT * FROM messages WHERE conversation_id = ? AND logical_message_id NOT LIKE 'response:%' ORDER BY id DESC LIMIT ?",
+            `SELECT * FROM messages WHERE conversation_id = ? AND ${VISIBLE} ORDER BY id DESC LIMIT ?`,
             [conversationId, limit],
           )
         : await this.#db.all(
-            "SELECT * FROM messages WHERE conversation_id = ? AND id < ? AND logical_message_id NOT LIKE 'response:%' ORDER BY id DESC LIMIT ?",
+            `SELECT * FROM messages WHERE conversation_id = ? AND id < ? AND ${VISIBLE} ORDER BY id DESC LIMIT ?`,
             [conversationId, options.beforeId, limit],
           );
     return rows.map(rowToMessage);
@@ -154,6 +221,26 @@ export class MessageRepository {
     const placeholders = states.map(() => "?").join(", ");
     const rows = await this.#db.all(
       `SELECT * FROM messages WHERE state IN (${placeholders}) ORDER BY id LIMIT ?`,
+      [...states, limit],
+    );
+    return rows.map(rowToMessage);
+  }
+
+  /**
+   * OUR acknowledgement rows (outgoing, hidden ack prefixes) in the given
+   * states, oldest first (ADR 0008). Filtered in SQL so unacked CONTENT rows
+   * sharing those states cannot fill the window and starve the acks.
+   */
+  async listOutgoingAcks(states: readonly MessageState[], limit = 500): Promise<Message[]> {
+    if (states.length === 0) {
+      return [];
+    }
+    const placeholders = states.map(() => "?").join(", ");
+    const isAck = HIDDEN_ACK_PREFIXES.map((prefix) => `logical_message_id LIKE '${prefix}%'`).join(
+      " OR ",
+    );
+    const rows = await this.#db.all(
+      `SELECT * FROM messages WHERE direction = 'outgoing' AND (${isAck}) AND state IN (${placeholders}) ORDER BY id LIMIT ?`,
       [...states, limit],
     );
     return rows.map(rowToMessage);
@@ -284,6 +371,138 @@ export class MessageRepository {
     if (result.changes === 0) {
       throw new DatabaseError("not-found", `message ${String(id)} does not exist`);
     }
+  }
+
+  /* ------------------------------ sender authentication (schema v11) -- */
+
+  /** Record how an incoming row's sender was authenticated (ADR 0007 §5, §8). */
+  async setSenderAuthentication(
+    id: number,
+    auth: { authStatus: MessageAuthStatus; senderKeyHashHex: string | null },
+  ): Promise<void> {
+    if (!(MESSAGE_AUTH_STATUSES as readonly string[]).includes(auth.authStatus)) {
+      throw new DatabaseError(
+        "constraint-violation",
+        `unknown auth status ${String(auth.authStatus)}`,
+      );
+    }
+    if (auth.senderKeyHashHex !== null && !/^[0-9a-f]{64}$/.test(auth.senderKeyHashHex)) {
+      throw new DatabaseError(
+        "constraint-violation",
+        "sender key hash must be 32-byte lowercase hex",
+      );
+    }
+    const result = await this.#db.run(
+      "UPDATE messages SET auth_status = ?, sender_key_hash_hex = ?, updated_at_ms = ? WHERE id = ?",
+      [auth.authStatus, auth.senderKeyHashHex, Date.now(), id],
+    );
+    if (result.changes === 0) {
+      throw new DatabaseError("not-found", `message ${String(id)} does not exist`);
+    }
+  }
+
+  /**
+   * Journal the signed outgoing envelope (ADR 0007 §7) so a crash or retry
+   * rebroadcasts identical bytes instead of producing a second signature.
+   */
+  async setPreparedEnvelope(id: number, prepared: PreparedEnvelope): Promise<void> {
+    const json = JSON.stringify({
+      envelope: toHex(prepared.envelopeBytes),
+      routeTag: toHex(prepared.routeTag),
+      conversationTag: toHex(prepared.conversationTag),
+      messageNonce: toHex(prepared.messageNonce),
+      messageId: toHex(prepared.messageId),
+    });
+    const result = await this.#db.run(
+      "UPDATE messages SET prepared_envelope = ?, updated_at_ms = ? WHERE id = ?",
+      [json, Date.now(), id],
+    );
+    if (result.changes === 0) {
+      throw new DatabaseError("not-found", `message ${String(id)} does not exist`);
+    }
+  }
+
+  async getPreparedEnvelope(id: number): Promise<PreparedEnvelope | undefined> {
+    const row = await this.#db.get("SELECT prepared_envelope FROM messages WHERE id = ?", [id]);
+    const text = row?.prepared_envelope;
+    if (text === null || text === undefined) {
+      return undefined;
+    }
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(String(text)) as Record<string, unknown>;
+    } catch (e) {
+      throw new DatabaseError("adapter-error", "prepared envelope is not valid JSON", e);
+    }
+    return {
+      envelopeBytes: fromHex(parsed.envelope, "envelope"),
+      routeTag: fromHex(parsed.routeTag, "routeTag"),
+      conversationTag: fromHex(parsed.conversationTag, "conversationTag"),
+      messageNonce: fromHex(parsed.messageNonce, "messageNonce"),
+      messageId: fromHex(parsed.messageId, "messageId"),
+    };
+  }
+
+  /* ---------------------------------------- receipt key (schema v10) -- */
+
+  /**
+   * Persist the message's ADR 0006 receipt key. SECRET: kept only in the
+   * encrypted database (rule 3), deliberately absent from {@link Message} so
+   * ordinary reads never carry it.
+   */
+  async setReceiptKey(id: number, receiptKey: Uint8Array): Promise<void> {
+    if (receiptKey.length !== 32) {
+      throw new DatabaseError(
+        "constraint-violation",
+        `receipt key is ${String(receiptKey.length)} bytes, expected 32`,
+      );
+    }
+    const result = await this.#db.run(
+      "UPDATE messages SET receipt_key = ?, updated_at_ms = ? WHERE id = ?",
+      [receiptKey.slice(), Date.now(), id],
+    );
+    if (result.changes === 0) {
+      throw new DatabaseError("not-found", `message ${String(id)} does not exist`);
+    }
+  }
+
+  /** The stored receipt key (a fresh copy the caller wipes), or null. */
+  async getReceiptKey(id: number): Promise<Uint8Array | null> {
+    const row = await this.#db.get("SELECT receipt_key FROM messages WHERE id = ?", [id]);
+    return receiptKeyCopy(row?.receipt_key);
+  }
+
+  /**
+   * An OUTGOING message by envelope id, with the profile id of the contact its
+   * conversation is with — the party allowed to acknowledge it — and the
+   * receipt key that verifies the proof (null for pre-ADR-0006 rows).
+   */
+  async getOutgoingWithRecipientByEnvelopeMessageId(envelopeMessageIdHex: string): Promise<
+    | {
+        message: Message;
+        recipientProfileIdHex: string | null;
+        receiptKey: Uint8Array | null;
+      }
+    | undefined
+  > {
+    const row = await this.#db.get(
+      `SELECT m.*, ct.profile_id_hex AS recipient_profile_id_hex
+         FROM messages m
+         JOIN conversations c ON c.id = m.conversation_id
+         JOIN contacts ct ON ct.id = c.contact_id
+        WHERE m.envelope_message_id_hex = ? AND m.direction = 'outgoing'`,
+      [envelopeMessageIdHex],
+    );
+    if (row === undefined) {
+      return undefined;
+    }
+    const recipient = row.recipient_profile_id_hex;
+    return {
+      message: rowToMessage(row),
+      recipientProfileIdHex:
+        recipient === null || recipient === undefined ? null : String(recipient),
+      receiptKey: receiptKeyCopy(row.receipt_key),
+    };
   }
 
   /** Find a message by its envelope message id (receipt/reply matching). */

@@ -39,11 +39,16 @@ export function ChatsScreen(): React.JSX.Element {
     void container.syncNow().finally(() => void vm.refresh());
   }, [container, vm]);
 
-  // Sweep once on focus so the list is fresh the moment it appears; the
-  // container's autonomous scheduler keeps it fresh from then on. Routed
+  // Sweep once on focus so the list is fresh the moment it appears. Routed
   // through `container.syncNow()` rather than `messaging.syncNow()` so this
   // cannot race a scheduled sweep. Failures stay quiet (rule 5) beyond the
   // status line.
+  //
+  // While focused, ALSO re-read after every autonomous sweep. The scheduler
+  // keeps the DATABASE fresh, not this screen: without this subscription a
+  // new message landed in the database every 30s while the list (and its
+  // "synced …" line) kept showing what it loaded on focus, until the user
+  // left and came back (device report 2026-11-27).
   useFocusEffect(
     useCallback(() => {
       if (!container.hasMessaging) return;
@@ -55,6 +60,12 @@ export function ChatsScreen(): React.JSX.Element {
           setSyncStatus(`sync error: ${e instanceof Error ? e.message : String(e)}`),
         )
         .finally(() => void vm.refresh());
+      return container.onSyncSettled((outcome) => {
+        if (outcome.ok) {
+          setSyncStatus(`synced ${new Date().toLocaleTimeString()}`);
+        }
+        void vm.refresh();
+      });
     }, [container, vm]),
   );
 

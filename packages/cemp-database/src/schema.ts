@@ -31,9 +31,22 @@
  *   AttachmentDownloaded` receipt (spec §8), which is what permits chunk-cell
  *   reclaim. Reclaiming on the plain `0x01` envelope ack destroyed images
  *   before a lazily-tapped download could ever fetch them.
+ * - 10: messages.receipt_key (ADR 0006) — the per-message receipt key. On an
+ *   OUTGOING row (stored before broadcast) it verifies the recipient's
+ *   receipt proofs; on an INCOMING row (stored at first ingest) it produces
+ *   them, possibly after the sender has reclaimed the message cell. NULL for
+ *   rows from before the upgrade and for legacy v1 incoming messages.
+ * - 11: sender-signed envelopes (ADR 0007) — messages.auth_status
+ *   (`verified` | `legacy-unverified` | `key-changed-blocking`; NULL for
+ *   outgoing and pre-upgrade rows), messages.sender_key_hash_hex (ckbHash of
+ *   the key that verified an incoming v3 message, so history stays
+ *   explainable after a rotation), messages.prepared_envelope (the signed
+ *   outgoing envelope, journaled so a retry rebroadcasts identical bytes),
+ *   and incoming_dispositions (per-cell ingested/rejected/deferred with a
+ *   bounded backoff; deferred cells stay undisposed and are retried).
  */
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 11;
 
 /** Core tables (spec §11). */
 export const TABLE_NAMES = [
@@ -55,5 +68,6 @@ export const TABLE_NAMES = [
   "network_endpoints",
   "security_events",
   "settings",
+  "incoming_dispositions",
 ] as const;
 export type TableName = (typeof TABLE_NAMES)[number];

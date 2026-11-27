@@ -7,10 +7,9 @@ describe("schema constants", () => {
   });
 
   it("tracks the current schema version (bump on every migration)", () => {
-    // v9: attachments.remote_downloaded — the recipient's `0x05` receipt,
-    // which gates chunk-cell reclaim so a lazily-downloaded image is not
-    // destroyed on the envelope ack alone.
-    expect(SCHEMA_VERSION).toBe(9);
+    // v11: ADR 0007 sender authentication (auth status, verifying key hash,
+    // journaled signed envelope, incoming dispositions).
+    expect(SCHEMA_VERSION).toBe(11);
   });
 
   it("covers the spec §11 core tables", () => {

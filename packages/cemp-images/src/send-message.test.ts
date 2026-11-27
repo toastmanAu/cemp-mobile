@@ -1,5 +1,5 @@
-import { assembleTextMessage } from "@cemp/ckb";
-import { decryptEnvelope } from "@cemp/crypto";
+import { assembleTextMessageV3 } from "@cemp/ckb";
+import { mldsaV2KeygenFromSeed, openEnvelopeV3 } from "@cemp/crypto";
 import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
 import { codec } from "@cemp/core";
 import { describe, expect, it } from "vitest";
@@ -106,9 +106,13 @@ describe("publishImageMessage", () => {
       kemMessage: Uint8Array;
       nonce: Uint8Array;
     };
-    const assembled = assembleTextMessage({
+    // Production sends are v3 (ADR 0007): signed by the sender's key.
+    const senderKey = mldsaV2KeygenFromSeed(new Uint8Array(32).fill(0x0a));
+    const assembled = assembleTextMessageV3({
       text: "",
       senderProfileId: sender,
+      signerSecretKey: senderKey.secretKey,
+      signerPublicKey: senderKey.publicKey,
       recipientProfileId: recipient,
       recipientKemPublicKey: publicKey,
       senderDeviceId,
@@ -116,7 +120,7 @@ describe("publishImageMessage", () => {
       attachmentManifests: [result.manifest],
       attachmentEnvelope,
     });
-    const dec = decryptEnvelope({
+    const dec = openEnvelopeV3({
       envelopeBytes: assembled.envelopeBytes,
       recipientKemSecretKey: secretKey,
       ownProfileId: recipient,

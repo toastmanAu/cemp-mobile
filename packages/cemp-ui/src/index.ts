@@ -4,3 +4,4 @@ export * from "./composer.js";
 export * from "./bubble.js";
 export * from "./notifier.js";
 export * from "./image-bubble.js";
+export * from "./authenticity.js";

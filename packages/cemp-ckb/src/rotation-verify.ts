@@ -19,7 +19,7 @@
 
 import { CempCkbError, type CempClient } from "./client.js";
 import type { ResolvedProfile } from "./profiles.js";
-import type { OutPoint } from "./types.js";
+import type { OutPoint, Transaction } from "./types.js";
 
 export interface RotationPredecessorRef {
   /** The retired profile cell's outpoint (the one a real rotation spends). */
@@ -47,16 +47,13 @@ function sameOutPoint(a: OutPoint, b: OutPoint): boolean {
  * the user could tap past.
  */
 export async function verifyRotationLinkOnChain(
-  client: CempClient,
+  client: Pick<CempClient, "getTransactionBody">,
   predecessor: RotationPredecessorRef,
   successor: ResolvedProfile,
 ): Promise<void> {
-  // (1) The successor's type args are the profile id its data claims to succeed.
-  const typeArgs = successor.cell.output.type?.args;
-  if (typeArgs === undefined) {
+  if (successor.cell.output.type?.args === undefined) {
     throw new CempCkbError("rotation-verify", "successor cell has no type script");
   }
-  // (2) Its creating transaction consumed the predecessor outpoint.
   const creatingTxHash = successor.cell.outPoint.txHash;
   const body = await client.getTransactionBody(creatingTxHash);
   if (body === null) {
@@ -65,7 +62,28 @@ export async function verifyRotationLinkOnChain(
       `node does not know the creating tx ${creatingTxHash}`,
     );
   }
-  const consumed = body.inputs.some((input) =>
+  checkRotationLink(body, predecessor, successor);
+}
+
+/**
+ * The pure half of {@link verifyRotationLinkOnChain}, on an already-fetched
+ * creating transaction: (1) the successor has a type script, (2) the
+ * creating tx consumed the predecessor outpoint, (3) the successor's
+ * `previous_profile_id` names the predecessor. Throws {@link CempCkbError}
+ * on any failure. Shared with the v3 sender resolver, which fetches the
+ * transaction itself so it can tell an RPC failure from a negative answer.
+ */
+export function checkRotationLink(
+  creatingTx: Transaction,
+  predecessor: RotationPredecessorRef,
+  successor: ResolvedProfile,
+): void {
+  // (1) The successor's type args are the profile id its data claims to succeed.
+  if (successor.cell.output.type?.args === undefined) {
+    throw new CempCkbError("rotation-verify", "successor cell has no type script");
+  }
+  // (2) Its creating transaction consumed the predecessor outpoint.
+  const consumed = creatingTx.inputs.some((input) =>
     sameOutPoint(
       { txHash: input.previousOutput.txHash, index: input.previousOutput.index },
       predecessor.outPoint,
@@ -97,7 +115,7 @@ export async function verifyRotationLinkOnChain(
  * resolved live (dead is expected — it was consumed).
  */
 export async function verifyRotationChainOnChain(
-  client: CempClient,
+  client: Pick<CempClient, "getTransactionBody">,
   links: readonly { predecessor: RotationPredecessorRef; successor: ResolvedProfile }[],
 ): Promise<void> {
   if (links.length === 0) {

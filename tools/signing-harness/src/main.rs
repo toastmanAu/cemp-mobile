@@ -10,6 +10,11 @@
 //!       Recompute the FIPS-204 final message from the CighashAll stream and
 //!       verify the ML-DSA-65 signature against it. Prints OK / FAIL, exit 0/1.
 //!
+//!   signing-harness envelope-v3 --vectors <path>
+//!       Independent check of the CEMP protocol v3 envelope signature vectors
+//!       (ADR 0007): verify, deterministic re-sign, transcript rebuild. See
+//!       src/envelope_v3.rs. Prints one result line per case.
+//!
 //! The algorithm code lives in the vendored library modules (src/lib.rs,
 //! src/message.rs, src/ckb_tx_message_all_host.rs). Keygen and the
 //! CighashAll stream mirror ~/code/key-vault-wasm
@@ -29,6 +34,8 @@
 //! let the crate apply the M' framing once. Do not "fix" this back.
 
 use std::process::ExitCode;
+
+mod envelope_v3;
 
 use ckb_types::{
     bytes::Bytes,
@@ -477,7 +484,8 @@ fn usage() {
     eprintln!(
         "usage:\n  \
          signing-harness vectors --out <path>\n  \
-         signing-harness verify --pubkey <hex> --signature <hex> --stream <hex>"
+         signing-harness verify --pubkey <hex> --signature <hex> --stream <hex>\n  \
+         signing-harness envelope-v3 --vectors <path>"
     );
 }
 
@@ -485,6 +493,13 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("vectors") => match cmd_vectors(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {}", e);
+                ExitCode::from(2)
+            }
+        },
+        Some("envelope-v3") => match envelope_v3::cmd_envelope_v3(&args[1..], opt_value) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("error: {}", e);
